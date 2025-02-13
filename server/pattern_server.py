@@ -8,9 +8,9 @@ from typing import Dict, Any, Optional, List, Tuple
 import paho.mqtt.client as mqtt
 import math
 
-from .config.grid_config import GridConfig, DEFAULT_CONFIG
-from .patterns.base import Pattern, PatternRegistry
-from .modifiers.base import Modifier, ModifierRegistry
+from server.config.grid_config import GridConfig, DEFAULT_CONFIG
+from server.patterns.base import Pattern, PatternRegistry
+from server.modifiers.base import Modifier, ModifierRegistry
 
 
 class PatternServer:
