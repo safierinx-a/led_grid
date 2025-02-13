@@ -8,6 +8,7 @@ import threading
 from typing import Dict, Any, Optional, List, Tuple
 import paho.mqtt.client as mqtt
 import math
+import signal
 
 from server.config.grid_config import GridConfig, DEFAULT_CONFIG
 from server.patterns.base import Pattern, PatternRegistry
@@ -161,92 +162,76 @@ class PatternServer:
 if __name__ == "__main__":
     import time
 
-    # Example usage with modifiers
+    # Create and start server
     server = PatternServer()
     server.connect()
-    server.start()  # Start the update thread
+    server.start()
 
+    # Set up MQTT command handlers
+    def on_message(client, userdata, msg):
+        try:
+            data = json.loads(msg.payload.decode())
+            topic = msg.topic
+
+            if topic == "led/command/pattern":
+                server.set_pattern(data["name"], data.get("params", {}))
+
+            elif topic == "led/command/params":
+                server.update_pattern_params(data["params"])
+
+            elif topic == "led/command/modifier/add":
+                server.add_modifier(data["name"], data.get("params", {}))
+
+            elif topic == "led/command/modifier/remove":
+                server.remove_modifier(data["index"])
+
+            elif topic == "led/command/modifier/clear":
+                server.clear_modifiers()
+
+            elif topic == "led/command/modifier/params":
+                server.update_modifier_params(data["index"], data["params"])
+
+            elif topic == "led/command/list":
+                # Send back pattern and modifier information
+                response = {
+                    "patterns": server.list_patterns(),
+                    "modifiers": server.list_modifiers(),
+                    "current_pattern": server.current_pattern.definition().name
+                    if server.current_pattern
+                    else None,
+                    "current_modifiers": [
+                        (m.definition().name, p) for m, p in server.modifiers
+                    ],
+                }
+                server.mqtt_client.publish("led/status/list", json.dumps(response))
+
+            elif topic == "led/command/stop":
+                server.set_pattern(None)
+
+            elif topic == "led/command/clear":
+                server.mqtt_client.publish(
+                    "led/pixels", json.dumps({"command": "clear"})
+                )
+
+        except Exception as e:
+            print(f"Error handling command: {e}")
+
+    # Subscribe to command topics
+    server.mqtt_client.on_message = on_message
+    server.mqtt_client.subscribe("led/command/#")
+
+    # Handle graceful shutdown
+    def signal_handler(signum, frame):
+        print("\nShutting down...")
+        server.stop()
+        exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Keep the main thread alive
     try:
-        # Demo 1: Rainbow Wave with Dynamic Effects
-        print("\n=== Demo 1: Rainbow Wave with Dynamic Effects ===")
-        server.set_pattern(
-            "rainbow_wave", {"speed": 1.0, "saturation": 1.0, "direction": "horizontal"}
-        )
-        server.add_modifier("mirror", {"axis": "vertical"})
-
-        # Run for 5 seconds
-        start_time = time.time()
-        while time.time() - start_time < 5:
-            # Dynamically adjust brightness based on time
-            brightness = 0.3 + (math.sin(time.time() * 2) + 1) * 0.35
-            server.update_modifier_params(0, {"level": brightness})
-            time.sleep(0.05)  # Small delay to control update rate
-
-        # Demo 2: Matrix Rain with Tiling and Strobing
-        print("\n=== Demo 2: Matrix Rain with Tiling and Strobing ===")
-        server.clear_modifiers()
-        server.set_pattern("matrix_rain", {"speed": 0.5, "density": 0.2})
-        server.add_modifier("tile", {"x_tiles": 2, "y_tiles": 2})
-        server.add_modifier("strobe", {"frequency": 2.0, "duty_cycle": 0.8})
-
-        # Run for 8 seconds
-        start_time = time.time()
-        while time.time() - start_time < 8:
-            # Gradually increase strobe frequency
-            freq = 2.0 + (time.time() - start_time) * 0.5
-            server.update_modifier_params(1, {"frequency": freq})
-            time.sleep(0.05)  # Small delay to control update rate
-
-        # Demo 3: Particle System with Complex Modifiers
-        print("\n=== Demo 3: Particle System with Complex Modifiers ===")
-        server.clear_modifiers()
-        server.set_pattern(
-            "particle_system", {"num_particles": 50, "speed": 1.0, "decay": 0.98}
-        )
-        server.add_modifier("mirror", {"axis": "both"})
-        server.add_modifier("brightness", {"level": 0.8})
-
-        # Run for 10 seconds
-        start_time = time.time()
-        while time.time() - start_time < 10:
-            # Oscillate particle count
-            particles = 30 + int(math.sin(time.time()) * 20)
-            server.update_pattern_params({"num_particles": particles})
-            time.sleep(0.05)  # Small delay to control update rate
-
-        # Demo 4: Color Cycling Pattern with Spatial Effects
-        print("\n=== Demo 4: Color Cycling with Spatial Effects ===")
-        server.clear_modifiers()
-        server.set_pattern("color_cycle", {"speed": 0.5, "saturation": 1.0})
-        server.add_modifier("tile", {"x_tiles": 3, "y_tiles": 3})
-        server.add_modifier("mirror", {"axis": "both"})
-
-        # Run for 8 seconds
-        start_time = time.time()
-        while time.time() - start_time < 8:
-            # Rotate through different tile configurations
-            tiles = 2 + int((time.time() - start_time) / 2) % 3
-            server.update_modifier_params(0, {"x_tiles": tiles, "y_tiles": tiles})
-            time.sleep(0.05)  # Small delay to control update rate
-
-        # Final Demo: Combined Effects
-        print("\n=== Final Demo: Combined Effects ===")
-        server.clear_modifiers()
-        server.set_pattern("rainbow_wave", {"speed": 2.0, "direction": "diagonal"})
-        server.add_modifier("mirror", {"axis": "both"})
-        server.add_modifier("brightness", {"level": 0.7})
-        server.add_modifier("strobe", {"frequency": 4.0, "duty_cycle": 0.9})
-
-        # Run for 10 seconds
-        start_time = time.time()
-        while time.time() - start_time < 10:
-            # Create a pulsing effect
-            phase = (time.time() - start_time) / 10
-            brightness = 0.4 + (math.sin(phase * math.pi * 2) + 1) * 0.3
-            server.update_modifier_params(1, {"level": brightness})
-            time.sleep(0.05)  # Small delay to control update rate
-
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("\nDemo stopped by user")
-    finally:
-        server.stop()  # Clean shutdown
+        server.stop()
