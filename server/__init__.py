@@ -1,4 +1,4 @@
-"""LED Grid Control Server Package"""
+"""LED Grid Server Package"""
 
 from .pattern_server import PatternServer
 from .config.grid_config import GridConfig, DEFAULT_CONFIG

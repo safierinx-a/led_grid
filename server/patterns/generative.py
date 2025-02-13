@@ -2,7 +2,7 @@ import random
 import math
 import numpy as np
 from typing import Dict, Any, List
-from .base import Pattern, PatternDefinition, Parameter, PatternRegistry
+from server.patterns.base import Pattern, PatternDefinition, Parameter, PatternRegistry
 
 
 @PatternRegistry.register

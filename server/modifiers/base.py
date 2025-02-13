@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Type, Optional
-from ..config.grid_config import GridConfig
-from ..patterns.base import Parameter, PatternDefinition
+from server.config.grid_config import GridConfig
+from server.patterns.base import Parameter, PatternDefinition
 
 
 @dataclass

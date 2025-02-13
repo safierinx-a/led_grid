@@ -1,7 +1,12 @@
 import math
 import time
 from typing import Dict, Any, List
-from .base import Modifier, ModifierDefinition, ModifierRegistry, Parameter
+from server.modifiers.base import (
+    Modifier,
+    ModifierDefinition,
+    ModifierRegistry,
+    Parameter,
+)
 
 
 @ModifierRegistry.register
