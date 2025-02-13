@@ -37,6 +37,10 @@ class RainbowWave(Pattern):
             tags=["rainbow", "wave", "colorful"],
         )
 
+    def __init__(self, grid_config):
+        super().__init__(grid_config)
+        self._step = 0
+
     def wheel(self, pos: int, saturation: float = 1.0) -> tuple[int, int, int]:
         """Generate rainbow colors across 0-255 positions."""
         pos = pos % 255
@@ -56,19 +60,16 @@ class RainbowWave(Pattern):
         saturation = params["saturation"]
         direction = params["direction"]
 
-        # Get the current step from params or initialize to 0
-        step = params.get("_step", 0)
         pixels = []
-
         for y in range(self.height):
             for x in range(self.width):
                 # Calculate hue based on direction
                 if direction == "horizontal":
-                    hue = (x + int(step)) % 255
+                    hue = (x + self._step) % 255
                 elif direction == "vertical":
-                    hue = (y + int(step)) % 255
+                    hue = (y + self._step) % 255
                 else:  # diagonal
-                    hue = (x + y + int(step)) % 255
+                    hue = (x + y + self._step) % 255
 
                 # Get color and create pixel
                 r, g, b = self.wheel(hue, saturation)
@@ -82,6 +83,6 @@ class RainbowWave(Pattern):
                 )
 
         # Update step for next frame
-        params["_step"] = step + speed
+        self._step = (self._step + speed) % 255
 
         return pixels
