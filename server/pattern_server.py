@@ -4,6 +4,7 @@ import time
 import json
 import importlib
 import pkgutil
+import threading
 from typing import Dict, Any, Optional, List, Tuple
 import paho.mqtt.client as mqtt
 import math
@@ -25,7 +26,9 @@ class PatternServer:
         # Modifier chain
         self.modifiers: List[Tuple[Modifier, Dict[str, Any]]] = []
 
+        # Thread control
         self.is_running = False
+        self.update_thread = None
 
         # Load all patterns and modifiers
         self._load_patterns()
@@ -54,6 +57,7 @@ class PatternServer:
     def connect(self):
         """Connect to MQTT broker"""
         self.mqtt_client.connect("localhost", 1883, 60)
+        self.mqtt_client.loop_start()
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
         """Set the current pattern"""
@@ -103,12 +107,10 @@ class PatternServer:
         message = {"command": "set_pixels", "pixels": pixels}
         self.mqtt_client.publish("led/pixels", json.dumps(message))
 
-    def run(self):
-        """Main run loop"""
-        self.is_running = True
-
-        try:
-            while self.is_running:
+    def _update_loop(self):
+        """Main update loop running in background thread"""
+        while self.is_running:
+            try:
                 if self.current_pattern:
                     # Generate base frame
                     frame = self.current_pattern.generate_frame(self.current_params)
@@ -122,11 +124,26 @@ class PatternServer:
 
                 time.sleep(0.05)  # 20fps
 
-        except KeyboardInterrupt:
-            print("Shutting down...")
-            self.is_running = False
-            # Send clear command
-            self.mqtt_client.publish("led/pixels", json.dumps({"command": "clear"}))
+            except Exception as e:
+                print(f"Error in update loop: {e}")
+                time.sleep(0.1)  # Brief pause on error
+
+    def start(self):
+        """Start the pattern server"""
+        if not self.is_running:
+            self.is_running = True
+            self.update_thread = threading.Thread(target=self._update_loop)
+            self.update_thread.daemon = True
+            self.update_thread.start()
+
+    def stop(self):
+        """Stop the pattern server"""
+        self.is_running = False
+        if self.update_thread:
+            self.update_thread.join(timeout=1.0)
+        self.clear_modifiers()
+        self.mqtt_client.publish("led/pixels", json.dumps({"command": "clear"}))
+        self.mqtt_client.loop_stop()
 
     def list_patterns(self):
         """List all available patterns"""
