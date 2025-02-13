@@ -164,6 +164,7 @@ if __name__ == "__main__":
     # Example usage with modifiers
     server = PatternServer()
     server.connect()
+    server.start()  # Start the update thread
 
     try:
         # Demo 1: Rainbow Wave with Dynamic Effects
@@ -179,7 +180,7 @@ if __name__ == "__main__":
             # Dynamically adjust brightness based on time
             brightness = 0.3 + (math.sin(time.time() * 2) + 1) * 0.35
             server.update_modifier_params(0, {"level": brightness})
-            server.run()
+            time.sleep(0.05)  # Small delay to control update rate
 
         # Demo 2: Matrix Rain with Tiling and Strobing
         print("\n=== Demo 2: Matrix Rain with Tiling and Strobing ===")
@@ -194,7 +195,7 @@ if __name__ == "__main__":
             # Gradually increase strobe frequency
             freq = 2.0 + (time.time() - start_time) * 0.5
             server.update_modifier_params(1, {"frequency": freq})
-            server.run()
+            time.sleep(0.05)  # Small delay to control update rate
 
         # Demo 3: Particle System with Complex Modifiers
         print("\n=== Demo 3: Particle System with Complex Modifiers ===")
@@ -211,7 +212,7 @@ if __name__ == "__main__":
             # Oscillate particle count
             particles = 30 + int(math.sin(time.time()) * 20)
             server.update_pattern_params({"num_particles": particles})
-            server.run()
+            time.sleep(0.05)  # Small delay to control update rate
 
         # Demo 4: Color Cycling Pattern with Spatial Effects
         print("\n=== Demo 4: Color Cycling with Spatial Effects ===")
@@ -226,7 +227,7 @@ if __name__ == "__main__":
             # Rotate through different tile configurations
             tiles = 2 + int((time.time() - start_time) / 2) % 3
             server.update_modifier_params(0, {"x_tiles": tiles, "y_tiles": tiles})
-            server.run()
+            time.sleep(0.05)  # Small delay to control update rate
 
         # Final Demo: Combined Effects
         print("\n=== Final Demo: Combined Effects ===")
@@ -243,9 +244,9 @@ if __name__ == "__main__":
             phase = (time.time() - start_time) / 10
             brightness = 0.4 + (math.sin(phase * math.pi * 2) + 1) * 0.3
             server.update_modifier_params(1, {"level": brightness})
-            server.run()
+            time.sleep(0.05)  # Small delay to control update rate
 
     except KeyboardInterrupt:
         print("\nDemo stopped by user")
-        server.clear_modifiers()
-        server.mqtt_client.publish("led/pixels", json.dumps({"command": "clear"}))
+    finally:
+        server.stop()  # Clean shutdown
