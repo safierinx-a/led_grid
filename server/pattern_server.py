@@ -9,9 +9,9 @@ from typing import Dict, Any, Optional, List, Tuple
 import paho.mqtt.client as mqtt
 import math
 
-from server.config.grid_config import GridConfig, DEFAULT_CONFIG
-from server.patterns.base import Pattern, PatternRegistry
-from server.modifiers.base import Modifier, ModifierRegistry
+from config.grid_config import GridConfig, DEFAULT_CONFIG
+from patterns.base import Pattern, PatternRegistry
+from modifiers.base import Modifier, ModifierRegistry
 
 
 class PatternServer:
@@ -36,23 +36,23 @@ class PatternServer:
 
     def _load_patterns(self):
         """Dynamically load all pattern modules"""
-        import server.patterns
+        import patterns
 
-        package = server.patterns
+        package = patterns
 
         for _, name, _ in pkgutil.iter_modules(package.__path__):
             if name != "base":
-                importlib.import_module(f"server.patterns.{name}")
+                importlib.import_module(f"patterns.{name}")
 
     def _load_modifiers(self):
         """Dynamically load all modifier modules"""
-        import server.modifiers
+        import modifiers
 
-        package = server.modifiers
+        package = modifiers
 
         for _, name, _ in pkgutil.iter_modules(package.__path__):
             if name != "base":
-                importlib.import_module(f"server.modifiers.{name}")
+                importlib.import_module(f"modifiers.{name}")
 
     def connect(self):
         """Connect to MQTT broker"""
