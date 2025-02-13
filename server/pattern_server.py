@@ -61,6 +61,10 @@ class PatternServer:
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
         """Set the current pattern"""
+        # Clear the current pattern by sending a clear command
+        self.mqtt_client.publish("led/pixels", json.dumps({"command": "clear"}))
+
+        # Set the new pattern
         pattern_class = PatternRegistry.get_pattern(pattern_name)
         if pattern_class:
             self.current_pattern = pattern_class(self.grid_config)
