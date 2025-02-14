@@ -394,16 +394,16 @@ class MatrixRain(Pattern):
 
         # Generate pattern based on variation
         pattern_pixels = []
-        if variation == "classic":
-            pattern_pixels = self._generate_classic(params)
+        if variation == "bold":
+            pattern_pixels = self._generate_bold(params)
+        elif variation == "data":
+            pattern_pixels = self._generate_data(params)
+        elif variation == "cascade":
+            pattern_pixels = self._generate_cascade(params)
         elif variation == "binary":
             pattern_pixels = self._generate_binary(params)
-        elif variation == "hex":
-            pattern_pixels = self._generate_hex(params)
-        elif variation == "kanji":
-            pattern_pixels = self._generate_kanji(params)
-        else:  # code
-            pattern_pixels = self._generate_code(params)
+        else:  # corner
+            pattern_pixels = self._generate_corner(params)
 
         self._step += 1
         return self._ensure_all_pixels_handled(pattern_pixels)

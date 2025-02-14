@@ -488,17 +488,24 @@ class ColorCycle(Pattern):
         variation = params["variation"]
 
         # Generate pattern based on variation
-        pattern_pixels = []
-        if variation == "rainbow":
-            pattern_pixels = self._generate_rainbow(params)
-        elif variation == "gradient":
-            pattern_pixels = self._generate_gradient(params)
-        elif variation == "pulse":
-            pattern_pixels = self._generate_pulse(params)
+        if variation == "radial":
+            pattern_pixels = self._generate_radial(params)
         elif variation == "wave":
             pattern_pixels = self._generate_wave(params)
-        else:  # spectrum
-            pattern_pixels = self._generate_spectrum(params)
+        elif variation == "spiral":
+            pattern_pixels = self._generate_spiral(params)
+        elif variation == "blocks":
+            pattern_pixels = self._generate_blocks(params)
+        elif variation == "gradient":
+            pattern_pixels = self._generate_gradient(params)
+        elif variation == "ripple":
+            pattern_pixels = self._generate_ripple(params)
+        elif variation == "vortex":
+            pattern_pixels = self._generate_vortex(params)
+        elif variation == "pulse":
+            pattern_pixels = self._generate_pulse(params)
+        else:  # mosaic
+            pattern_pixels = self._generate_mosaic(params)
 
         self._step += 1
         return self._ensure_all_pixels_handled(pattern_pixels)

@@ -374,17 +374,18 @@ class RainbowWave(Pattern):
         variation = params["variation"]
 
         # Generate pattern based on variation
-        pattern_pixels = []
-        if variation == "wave":
-            pattern_pixels = self._generate_wave(params)
-        elif variation == "ripple":
-            pattern_pixels = self._generate_ripple(params)
-        elif variation == "spiral":
-            pattern_pixels = self._generate_spiral(params)
-        elif variation == "pulse":
-            pattern_pixels = self._generate_pulse(params)
-        else:  # flow
-            pattern_pixels = self._generate_flow(params)
+        if variation == "bold":
+            pattern_pixels = self._generate_bold_wave(params)
+        elif variation == "quad":
+            pattern_pixels = self._generate_quad_wave(params)
+        elif variation == "edge":
+            pattern_pixels = self._generate_edge_wave(params)
+        elif variation == "bands":
+            pattern_pixels = self._generate_bands(params)
+        elif variation == "grid":
+            pattern_pixels = self._generate_grid_wave(params)
+        else:  # classic
+            pattern_pixels = self._generate_classic_wave(params)
 
         self._step += 1
         return self._ensure_all_pixels_handled(pattern_pixels)
