@@ -85,8 +85,8 @@ class GenerativeArt(Pattern):
             tags=["generative", "abstract", "art", "algorithmic"],
         )
 
-    def __init__(self, center_point: Point):
-        super().__init__(center_point)
+    def __init__(self, grid_config):
+        super().__init__(grid_config)
         self.step = 0
         self.particles = []
         self.voronoi_points = []
@@ -98,6 +98,7 @@ class GenerativeArt(Pattern):
         self.circuit_paths = []
         self.color_buffer = {}
         self.last_update = time.time()
+        self._particles = []  # Initialize particles list
 
     def _get_color(self, x: float, y: float, t: float, mode: str) -> tuple:
         """Get color based on position, time and color mode."""

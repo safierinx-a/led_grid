@@ -158,14 +158,14 @@ class MatrixRain(Pattern):
                         if pattern[dy][dx]:  # Only light up pixels in the pattern
                             px, py = int(x + dx), int(y + dy)
                             if px < self.width and py < self.height:
-                            pixels.append(
-                                {
+                                pixels.append(
+                                    {
                                         "index": self.grid_config.xy_to_index(px, py),
-                                    "r": r,
-                                    "g": g,
-                                    "b": b,
-                                }
-                            )
+                                        "r": r,
+                                        "g": g,
+                                        "b": b,
+                                    }
+                                )
 
         return pixels
 
@@ -203,16 +203,16 @@ class MatrixRain(Pattern):
                                 if pattern[dy][dx]:
                                     px, py = x + dx, y + dy
                                     if px < self.width and py < self.height:
-                        pixels.append(
-                            {
+                                        pixels.append(
+                                            {
                                                 "index": self.grid_config.xy_to_index(
                                                     px, py
                                                 ),
-                                "r": r,
-                                "g": g,
-                                "b": b,
-                            }
-                        )
+                                                "r": r,
+                                                "g": g,
+                                                "b": b,
+                                            }
+                                        )
                 new_streams.append((x, intensity * 0.99))
 
         self._data_streams = new_streams
@@ -254,35 +254,36 @@ class MatrixRain(Pattern):
                         if pattern[dy][dx]:
                             px, py = int(x + dx), int(y + dy)
                             if px < self.width and py < self.height:
-                pixels.append(
-                    {
+                                pixels.append(
+                                    {
                                         "index": self.grid_config.xy_to_index(px, py),
-                        "r": r,
-                        "g": g,
-                        "b": b,
-                    }
-                )
+                                        "r": r,
+                                        "g": g,
+                                        "b": b,
+                                    }
+                                )
 
         return pixels
 
     def _generate_binary(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Sparse, bold binary patterns"""
+        """Binary-style matrix rain with more complex patterns"""
         speed = params["speed"]
         density = params["density"]
         brightness = params["brightness"]
         color_mode = params["color_mode"]
         drop_size = params["drop_size"]
 
-        # Update existing drops with emphasis on binary patterns
+        # Update existing drops
         new_drops = []
         for x, y, intensity, size, pattern in self.drops:
             if y < self.height - size + 1:
-                if random.random() < 0.1:  # 10% chance to change pattern
+                # Randomly change pattern occasionally
+                if random.random() < 0.1:
                     pattern = self._create_binary_char(size)
-                new_drops.append((x, y + speed, intensity * 0.97, size, pattern))
+                new_drops.append((x, y + speed, intensity * 0.95, size, pattern))
 
-        # Add new drops sparsely
-        if random.random() < density * 0.7:
+        # Add new drops
+        if random.random() < density:
             x = random.randint(0, self.width - drop_size)
             pattern = self._create_binary_char(drop_size)
             new_drops.append((x, 0, 1.0, drop_size, pattern))
@@ -299,101 +300,107 @@ class MatrixRain(Pattern):
                         if pattern[dy][dx]:
                             px, py = int(x + dx), int(y + dy)
                             if px < self.width and py < self.height:
-                pixels.append(
-                    {
+                                pixels.append(
+                                    {
                                         "index": self.grid_config.xy_to_index(px, py),
-                        "r": r,
-                        "g": g,
-                        "b": b,
-                    }
-                )
+                                        "r": r,
+                                        "g": g,
+                                        "b": b,
+                                    }
+                                )
 
         return pixels
 
     def _generate_corner(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Data that follows serpentine wiring pattern"""
+        """Corner-to-corner flowing patterns"""
         speed = params["speed"]
         density = params["density"]
         brightness = params["brightness"]
         color_mode = params["color_mode"]
         drop_size = params["drop_size"]
 
-        # Define corner flow paths
-        if not self._corner_flow:
-            # Create paths from each corner
-            corners = [
-                (0, 0),
-                (self.width - drop_size, 0),
-                (0, self.height - drop_size),
-                (self.width - drop_size, self.height - drop_size),
-            ]
-            for corner in corners:
-        if random.random() < density:
-                    pattern = self._create_binary_char(drop_size)
-                    self._corner_flow.append((corner[0], corner[1], 1.0, pattern, []))
+        # Update corner flow
+        if not self._corner_flow or random.random() < 0.05:
+            # Start new flow from a corner
+            corner = random.choice(["tl", "tr", "bl", "br"])
+            if corner == "tl":
+                x, y = 0, 0
+                dx, dy = 1, 1
+            elif corner == "tr":
+                x, y = self.width - drop_size, 0
+                dx, dy = -1, 1
+            elif corner == "bl":
+                x, y = 0, self.height - drop_size
+                dx, dy = 1, -1
+            else:  # br
+                x, y = self.width - drop_size, self.height - drop_size
+                dx, dy = -1, -1
+
+            self._corner_flow.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "dx": dx,
+                    "dy": dy,
+                    "intensity": 1.0,
+                    "pattern": self._create_binary_char(drop_size),
+                }
+            )
 
         # Generate frame
         pixels = []
-        new_flows = []
-        for x, y, intensity, pattern, path in self._corner_flow:
-            if intensity > 0.2:
-                # Draw current position
-                r, g, b = self._get_color(intensity * brightness, color_mode)
-                for dx in range(drop_size):
-                    for dy in range(drop_size):
-                        if pattern[dy][dx]:
-                            px, py = int(x + dx), int(y + dy)
-                            if 0 <= px < self.width and 0 <= py < self.height:
-                pixels.append(
-                    {
-                                        "index": self.grid_config.xy_to_index(px, py),
-                        "r": r,
-                        "g": g,
-                        "b": b,
-                    }
-                )
-
-                # Move along serpentine path
-                if not path:
-                    # Generate new path segment
-                    if y < self.height // 2:
-                        path = [
-                            (x, y + speed)
-                            for y in range(int(y), self.height // 2, int(speed))
-                        ]
-                    else:
-                        path = [
-                            (x, y - speed)
-                            for y in range(int(y), self.height // 2, -int(speed))
-                        ]
-
-                if path:
-                    next_pos = path.pop(0)
-                    new_flows.append(
-                        (next_pos[0], next_pos[1], intensity * 0.99, pattern, path)
+        new_flow = []
+        for flow in self._corner_flow:
+            if 0.2 < flow["intensity"]:
+                x, y = flow["x"], flow["y"]
+                if (
+                    0 <= x < self.width - drop_size + 1
+                    and 0 <= y < self.height - drop_size + 1
+                ):
+                    # Draw current position
+                    r, g, b = self._get_color(
+                        flow["intensity"] * brightness, color_mode
                     )
+                    pattern = flow["pattern"]
+                    for dx in range(drop_size):
+                        for dy in range(drop_size):
+                            if pattern[dy][dx]:
+                                px, py = int(x + dx), int(y + dy)
+                                if px < self.width and py < self.height:
+                                    pixels.append(
+                                        {
+                                            "index": self.grid_config.xy_to_index(
+                                                px, py
+                                            ),
+                                            "r": r,
+                                            "g": g,
+                                            "b": b,
+                                        }
+                                    )
 
-        self._corner_flow = new_flows
+                    # Update position
+                    flow["x"] += flow["dx"] * speed
+                    flow["y"] += flow["dy"] * speed
+                    flow["intensity"] *= 0.99
+                    new_flow.append(flow)
+
+        self._corner_flow = new_flow
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        # Validate parameters
+        """Generate a single frame of the pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
 
-        # Generate frame based on variation
-        if variation == "data":
-            frame = self._generate_data(params)
+        self._step += 1
+
+        if variation == "bold":
+            return self._generate_bold(params)
+        elif variation == "data":
+            return self._generate_data(params)
         elif variation == "cascade":
-            frame = self._generate_cascade(params)
+            return self._generate_cascade(params)
         elif variation == "binary":
-            frame = self._generate_binary(params)
-        elif variation == "corner":
-            frame = self._generate_corner(params)
-        else:  # bold
-            frame = self._generate_bold(params)
-
-        # Update step
-        self._step = (self._step + 1) % 1000
-
-        return frame
+            return self._generate_binary(params)
+        else:  # corner
+            return self._generate_corner(params)
