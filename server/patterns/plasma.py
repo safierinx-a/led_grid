@@ -376,16 +376,18 @@ class Plasma(Pattern):
         params = self.validate_params(params)
         variation = params["variation"]
 
-        if variation == "grid":
-            frame = self._generate_grid(params)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "block":
+            pattern_pixels = self._generate_block(params)
+        elif variation == "grid":
+            pattern_pixels = self._generate_grid(params)
         elif variation == "corner":
-            frame = self._generate_corner(params)
+            pattern_pixels = self._generate_corner(params)
         elif variation == "quad":
-            frame = self._generate_quad(params)
-        elif variation == "digital":
-            frame = self._generate_digital(params)
-        else:  # block
-            frame = self._generate_block(params)
+            pattern_pixels = self._generate_quad(params)
+        else:  # digital
+            pattern_pixels = self._generate_digital(params)
 
         self._step += 1
-        return frame
+        return self._ensure_all_pixels_handled(pattern_pixels)

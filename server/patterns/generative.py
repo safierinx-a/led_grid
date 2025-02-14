@@ -439,32 +439,57 @@ class GenerativeArt(Pattern):
         # Update step counter
         self.step += dt
 
+        # Initialize all pixels as off
+        all_pixels = []
+        for y in range(self.height):
+            for x in range(self.width):
+                all_pixels.append(
+                    {
+                        "index": self.grid_config.xy_to_index(x, y),
+                        "r": 0,
+                        "g": 0,
+                        "b": 0,
+                    }
+                )
+
         # Generate pattern based on selected variation
         variation = params["variation"]
+        pattern_pixels = []
         if variation == "flow_field":
-            return self.generate_flow_field(
+            pattern_pixels = self.generate_flow_field(
                 params["speed"], params["complexity"], params["color_shift"]
             )
         elif variation == "voronoi":
-            return self.generate_voronoi(
+            pattern_pixels = self.generate_voronoi(
                 params["speed"], params["complexity"], params["color_shift"]
             )
         elif variation == "maze":
-            return self.generate_maze(
+            pattern_pixels = self.generate_maze(
                 params["speed"], params["complexity"], params["color_shift"]
             )
         elif variation == "fractal":
-            return self.generate_fractal(
+            pattern_pixels = self.generate_fractal(
                 params["speed"], params["complexity"], params["color_shift"]
             )
         elif variation == "cellular":
-            return self._generate_cellular(params)
+            pattern_pixels = self._generate_cellular(params)
         elif variation == "swarm":
-            return self._generate_swarm(params)
+            pattern_pixels = self._generate_swarm(params)
         elif variation == "crystal":
-            return self._generate_crystal(params)
+            pattern_pixels = self._generate_crystal(params)
         else:  # circuit
-            return self._generate_circuit(params)
+            pattern_pixels = self._generate_circuit(params)
+
+        # Update the pixels that are part of the pattern
+        pixel_dict = {pixel["index"]: pixel for pixel in pattern_pixels}
+        for pixel in all_pixels:
+            if pixel["index"] in pixel_dict:
+                pattern_pixel = pixel_dict[pixel["index"]]
+                pixel["r"] = pattern_pixel["r"]
+                pixel["g"] = pattern_pixel["g"]
+                pixel["b"] = pattern_pixel["b"]
+
+        return all_pixels
 
     def clear_frame(self) -> List[Dict[str, int]]:
         """Clear the current frame."""

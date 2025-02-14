@@ -58,6 +58,32 @@ class Pattern(ABC):
         """
         pass
 
+    def _ensure_all_pixels_handled(
+        self, pattern_pixels: List[Dict[str, int]]
+    ) -> List[Dict[str, int]]:
+        """Ensures all pixels in the grid are accounted for, turning off unused ones.
+
+        Args:
+            pattern_pixels: List of pixels that should be lit up
+
+        Returns:
+            Complete list of all pixels in the grid with their states
+        """
+        # Create a map of pixels that should be on
+        active_pixels = {pixel["index"]: pixel for pixel in pattern_pixels}
+
+        # Create the complete pixel list
+        all_pixels = []
+        for y in range(self.height):
+            for x in range(self.width):
+                index = self.grid_config.xy_to_index(x, y)
+                if index in active_pixels:
+                    all_pixels.append(active_pixels[index])
+                else:
+                    all_pixels.append({"index": index, "r": 0, "g": 0, "b": 0})
+
+        return all_pixels
+
     def validate_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and fill in default parameters"""
         definition = self.definition()

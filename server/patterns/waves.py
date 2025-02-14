@@ -245,31 +245,32 @@ class Waves(Pattern):
         color_mode = params["color_mode"]
         intensity = params["intensity"]
 
-        pixels = []
+        pattern_pixels = []
         for y in range(self.height):
             for x in range(self.width):
-                # Generate wave value based on variation
-                if variation == "vortex":
+                # Get wave value based on variation
+                if variation == "pulse":
+                    value = self._generate_pulse(x, y, params)
+                elif variation == "vortex":
                     value = self._generate_vortex(x, y, params)
                 elif variation == "cross":
                     value = self._generate_cross(x, y, params)
                 elif variation == "crystal":
                     value = self._generate_crystal(x, y, params)
-                elif variation == "cascade":
+                else:  # cascade
                     value = self._generate_cascade(x, y, params)
-                else:  # pulse
-                    value = self._generate_pulse(x, y, params)
 
-                # Get color and add pixel
-                r, g, b = self._get_color(value, color_mode, intensity)
-                pixels.append(
-                    {
-                        "index": self.grid_config.xy_to_index(x, y),
-                        "r": r,
-                        "g": g,
-                        "b": b,
-                    }
-                )
+                # Only add non-black pixels to pattern_pixels
+                color = self._get_color(value, color_mode, intensity)
+                if color != (0, 0, 0):
+                    pattern_pixels.append(
+                        {
+                            "index": self.grid_config.xy_to_index(x, y),
+                            "r": color[0],
+                            "g": color[1],
+                            "b": color[2],
+                        }
+                    )
 
         self._step += 1
-        return pixels
+        return self._ensure_all_pixels_handled(pattern_pixels)

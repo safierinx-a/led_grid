@@ -369,25 +369,22 @@ class RainbowWave(Pattern):
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        # Validate parameters
+        """Generate a frame of the rainbow wave pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
 
-        # Generate frame based on variation
-        if variation == "bold":
-            frame = self._generate_bold_wave(params)
-        elif variation == "quad":
-            frame = self._generate_quad_wave(params)
-        elif variation == "edge":
-            frame = self._generate_edge_wave(params)
-        elif variation == "bands":
-            frame = self._generate_bands(params)
-        elif variation == "grid":
-            frame = self._generate_grid_wave(params)
-        else:  # classic
-            frame = self._generate_classic_wave(params)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "wave":
+            pattern_pixels = self._generate_wave(params)
+        elif variation == "ripple":
+            pattern_pixels = self._generate_ripple(params)
+        elif variation == "spiral":
+            pattern_pixels = self._generate_spiral(params)
+        elif variation == "pulse":
+            pattern_pixels = self._generate_pulse(params)
+        else:  # flow
+            pattern_pixels = self._generate_flow(params)
 
-        # Update step
-        self._step = (self._step + 1) % 1000
-
-        return frame
+        self._step += 1
+        return self._ensure_all_pixels_handled(pattern_pixels)

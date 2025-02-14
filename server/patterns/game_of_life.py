@@ -282,59 +282,22 @@ class GameOfLife(Pattern):
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
+        """Generate a frame of the Game of Life pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
-        density = params["density"]
-        color_mode = params["color_mode"]
-        speed = params["speed"]
-        cell_size = params["size"]
 
-        # Initialize if needed
-        if self.grid is None:
-            self._init_grid(density, variation)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "classic":
+            pattern_pixels = self._generate_classic(params)
+        elif variation == "color":
+            pattern_pixels = self._generate_color(params)
+        elif variation == "trails":
+            pattern_pixels = self._generate_trails(params)
+        elif variation == "chaos":
+            pattern_pixels = self._generate_chaos(params)
+        else:  # glider
+            pattern_pixels = self._generate_glider(params)
 
-        # Update counter
-        self._update_counter += speed * 0.1
-
-        # Update grid state when counter reaches 1
-        if self._update_counter >= 1:
-            self._update_counter = 0
-            self._step += 1
-
-            # Calculate next generation
-            new_grid = np.zeros_like(self.grid)
-            new_energy = np.zeros_like(self.energy)
-            new_ages = np.copy(self.ages)
-
-            for y in range(0, self.height, cell_size):
-                for x in range(0, self.width, cell_size):
-                    neighbors, avg_energy = self._count_neighbors(y, x)
-                    state, energy = self._apply_rules(
-                        y, x, neighbors, avg_energy, variation
-                    )
-
-                    # Apply state to all pixels in the cell
-                    for dy in range(cell_size):
-                        for dx in range(cell_size):
-                            py, px = y + dy, x + dx
-                            if px < self.width and py < self.height:
-                                new_grid[py, px] = state
-                                new_energy[py, px] = energy
-                                if state:
-                                    new_ages[py, px] += 1
-                    else:
-                        new_ages[py, px] = 0
-
-            self.grid = new_grid
-            self.energy = new_energy
-            self.ages = new_ages
-
-        # Generate frame
-        pixels = []
-        for y in range(0, self.height, cell_size):
-            for x in range(0, self.width, cell_size):
-                if self.grid[y, x]:
-                    color = self._get_cell_color(y, x, color_mode, cell_size)
-                    pixels.extend(self._draw_cell(x, y, cell_size, color))
-
-        return pixels
+        self._step += 1
+        return self._ensure_all_pixels_handled(pattern_pixels)
