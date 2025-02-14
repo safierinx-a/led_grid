@@ -311,6 +311,66 @@ class Plasma(Pattern):
                             )
         return pixels
 
+    def _get_palette_color(
+        self, value: float, palette: str, intensity: float
+    ) -> tuple[int, int, int]:
+        """Get color from palette based on value and intensity"""
+        value = max(0.0, min(1.0, value))  # Clamp value to [0,1]
+        intensity = max(0.1, min(2.0, intensity))  # Clamp intensity
+
+        if palette == "plasma":
+            # Purple to orange plasma
+            hue = 0.8 + value * 0.3  # Range from purple (0.8) to orange (1.1)
+            sat = 0.8 + value * 0.2
+            val = value * intensity
+        elif palette == "cosmic":
+            # Deep blue to bright purple
+            hue = 0.6 + value * 0.15
+            sat = 0.7 + value * 0.3
+            val = value * intensity
+        elif palette == "fire":
+            # Red to yellow
+            hue = value * 0.15  # Range from red (0.0) to yellow (0.15)
+            sat = 1.0 - value * 0.3
+            val = value * intensity
+        elif palette == "ocean":
+            # Deep blue to cyan
+            hue = 0.5 + value * 0.15
+            sat = 0.8
+            val = value * intensity
+        else:  # neon
+            # Bright neon colors
+            hue = value
+            sat = 0.8 + value * 0.2
+            val = 0.8 * intensity
+
+        # Convert HSV to RGB
+        h = hue % 1.0
+        if sat == 0.0:
+            rgb = (val, val, val)
+        else:
+            i = int(h * 6.0)
+            f = (h * 6.0) - i
+            p = val * (1.0 - sat)
+            q = val * (1.0 - sat * f)
+            t = val * (1.0 - sat * (1.0 - f))
+            i = i % 6
+
+            if i == 0:
+                rgb = (val, t, p)
+            elif i == 1:
+                rgb = (q, val, p)
+            elif i == 2:
+                rgb = (p, val, t)
+            elif i == 3:
+                rgb = (p, q, val)
+            elif i == 4:
+                rgb = (t, p, val)
+            else:
+                rgb = (val, p, q)
+
+        return (int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255))
+
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate a frame of the plasma pattern"""
         params = self.validate_params(params)
