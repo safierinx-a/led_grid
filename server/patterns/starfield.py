@@ -201,58 +201,22 @@ class Starfield(Pattern):
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
+        """Generate a frame of the starfield pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
-        speed = params["speed"]
-        num_stars = params["num_stars"]
-        color_mode = params["color_mode"]
-        max_size = params["size"]
 
-        # Initialize stars if needed
-        if len(self.stars) != num_stars:
-            self.init_stars(num_stars, max_size)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "classic":
+            pattern_pixels = self._generate_classic(params)
+        elif variation == "warp":
+            pattern_pixels = self._generate_warp(params)
+        elif variation == "nebula":
+            pattern_pixels = self._generate_nebula(params)
+        elif variation == "comet":
+            pattern_pixels = self._generate_comet(params)
+        else:  # galaxy
+            pattern_pixels = self._generate_galaxy(params)
 
-        pixels = []
-        new_stars = []
-
-        for star in self.stars:
-            # Update star position based on variation
-            if variation == "nebula":
-                new_star = self._update_nebula(star, speed)
-            elif variation == "vortex":
-                new_star = self._update_vortex(star, speed)
-            elif variation == "pulse":
-                new_star = self._update_pulse(star, speed)
-            elif variation == "shower":
-                new_star = self._update_shower(star, speed)
-            else:  # warp
-                new_star = self._update_warp(star, speed)
-
-            x, y, z, size = new_star
-
-            # Reset star if it goes out of bounds
-            if z <= 0 or z >= 1 or x < -2 or x > 2 or y < -2 or y > 2:
-                x = random.uniform(-1, 1)
-                y = random.uniform(-1, 1)
-                z = 1
-                size = random.randint(1, max_size)
-                new_star = [x, y, z, size]
-
-            new_stars.append(new_star)
-
-            # Project star to screen space
-            screen_x, screen_y, brightness = self.project_star(x, y, z)
-
-            # Add star to frame if it's within bounds
-            if (
-                0 <= screen_x < self.width - size + 1
-                and 0 <= screen_y < self.height - size + 1
-            ):
-                color = self._get_star_color(brightness, color_mode, z)
-                pixels.extend(
-                    self._draw_star(int(screen_x), int(screen_y), int(size), color)
-                )
-
-        self.stars = new_stars
         self._step += 1
-        return pixels
+        return self._ensure_all_pixels_handled(pattern_pixels)

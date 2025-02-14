@@ -435,40 +435,22 @@ class Fire(Pattern):
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Generate a frame of the fire effect"""
+        """Generate a frame of the fire pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
 
-        # Update fire based on variation
-        if variation == "phoenix":
-            self._generate_phoenix(params)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "classic":
+            pattern_pixels = self._generate_classic(params)
+        elif variation == "plasma":
+            pattern_pixels = self._generate_plasma(params)
         elif variation == "ember":
-            self._generate_ember(params)
-        elif variation == "torch":
-            self._generate_torch(params)
-        elif variation == "wildfire":
-            self._generate_wildfire(params)
-        else:  # inferno
-            self._generate_inferno(params)
-
-        # Generate frame with block rendering
-        pixels = []
-        block_size = params["block_size"]
-        for y in range(0, self.height, block_size):
-            for x in range(0, self.width, block_size):
-                # Use maximum heat in block area for bold appearance
-                max_heat = 0
-                for dy in range(block_size):
-                    for dx in range(block_size):
-                        py, px = y + dy, x + dx
-                        if py < self.height and px < self.width:
-                            max_heat = max(max_heat, self.heat[py, px])
-
-                if max_heat > 0:
-                    color = self.get_fire_color(
-                        max_heat, params["color_mode"], params["intensity"]
-                    )
-                    pixels.extend(self._draw_block(x, y, block_size, color))
+            pattern_pixels = self._generate_ember(params)
+        elif variation == "inferno":
+            pattern_pixels = self._generate_inferno(params)
+        else:  # spark
+            pattern_pixels = self._generate_spark(params)
 
         self._step += 1
-        return pixels
+        return self._ensure_all_pixels_handled(pattern_pixels)

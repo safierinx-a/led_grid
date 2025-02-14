@@ -300,34 +300,22 @@ class SwarmSystem(Pattern):
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Generate next frame of the swarm system"""
-        # Initialize parameters
+        """Generate a frame of the swarm pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
-        num_agents = params["num_agents"]
-        speed = params["speed"]
-        cohesion = params["cohesion"]
-        color_mode = params["color_mode"]
-        trail_length = params["trail_length"]
-        size = params["size"]
 
-        # Initialize agents if needed
-        if not self.agents:
-            self._init_agents(num_agents, variation)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "flock":
+            pattern_pixels = self._generate_flock(params)
+        elif variation == "predator":
+            pattern_pixels = self._generate_predator(params)
+        elif variation == "colony":
+            pattern_pixels = self._generate_colony(params)
+        elif variation == "hive":
+            pattern_pixels = self._generate_hive(params)
+        else:  # swarm
+            pattern_pixels = self._generate_swarm(params)
 
-        # Clear color buffer
-        self._color_buffer.clear()
-
-        # Update time
-        self._time += 0.05 * speed
-
-        # We'll implement the update logic in the next step...
-        # For now, just draw the agents
-        pixels = []
-        for agent in self.agents:
-            color = self._get_agent_color(agent, color_mode)
-            pixels.extend(
-                self._draw_agent(agent["pos"][0], agent["pos"][1], size, color)
-            )
-
-        return pixels
+        self._step += 1
+        return self._ensure_all_pixels_handled(pattern_pixels)

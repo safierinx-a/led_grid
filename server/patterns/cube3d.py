@@ -419,44 +419,22 @@ class Polyhedra3D(Pattern):
         return (int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255))
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
+        """Generate a frame of the 3D cube pattern"""
         params = self.validate_params(params)
-        shape = params["variation"]
-        rotation_speed = params["rotation_speed"]
-        size = params["size"]
-        color_mode = params["color_mode"]
-        glow = params["glow"]
-        transform = params["transform"]
+        variation = params["variation"]
 
-        self._time += 0.05 * rotation_speed
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "cube":
+            pattern_pixels = self._generate_cube(params)
+        elif variation == "sphere":
+            pattern_pixels = self._generate_sphere(params)
+        elif variation == "pyramid":
+            pattern_pixels = self._generate_pyramid(params)
+        elif variation == "helix":
+            pattern_pixels = self._generate_helix(params)
+        else:  # torus
+            pattern_pixels = self._generate_torus(params)
 
-        # Get shape vertices and edges
-        vertices, edges = self._shape_buffers[shape]
-        if self._current_vertices is None:
-            self._current_vertices = vertices.copy()
-            self._prev_shape = vertices.copy()
-
-        # Apply transformations
-        transformed_points = self._apply_transform(
-            vertices * size, transform, self._time
-        )
-        projected_points = [self.project_point(p) for p in transformed_points]
-
-        # Draw edges with enhanced effects
-        pixels = []
-        for i, (v1, v2) in enumerate(edges):
-            x1, y1 = projected_points[v1]
-            x2, y2 = projected_points[v2]
-
-            # Get base color with enhanced effects
-            base_color = self._get_color(i / len(edges), color_mode, self._time)
-
-            # Apply glow effect
-            if glow > 0:
-                color = self._get_glow_color(base_color, glow, self._time * 4 + i)
-            else:
-                color = base_color
-
-            # Draw enhanced line
-            pixels.extend(self.draw_line(x1, y1, x2, y2, color))
-
-        return pixels
+        self._step += 1
+        return self._ensure_all_pixels_handled(pattern_pixels)

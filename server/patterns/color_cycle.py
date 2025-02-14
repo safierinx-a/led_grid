@@ -483,29 +483,22 @@ class ColorCycle(Pattern):
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Generate a frame of the pattern"""
+        """Generate a frame of the color cycle pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
 
-        # Generate frame based on variation
-        if variation == "vortex":
-            frame = self._generate_vortex(params)
-        elif variation == "pulse":
-            frame = self._generate_pulse(params)
-        elif variation == "mosaic":
-            frame = self._generate_mosaic(params)
-        elif variation == "spiral":
-            frame = self._generate_spiral(params)
-        elif variation == "blocks":
-            frame = self._generate_blocks(params)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "rainbow":
+            pattern_pixels = self._generate_rainbow(params)
         elif variation == "gradient":
-            frame = self._generate_gradient(params)
-        elif variation == "ripple":
-            frame = self._generate_ripple(params)
+            pattern_pixels = self._generate_gradient(params)
+        elif variation == "pulse":
+            pattern_pixels = self._generate_pulse(params)
         elif variation == "wave":
-            frame = self._generate_wave(params)
-        else:  # radial
-            frame = self._generate_radial(params)
+            pattern_pixels = self._generate_wave(params)
+        else:  # spectrum
+            pattern_pixels = self._generate_spectrum(params)
 
         self._step += 1
-        return frame
+        return self._ensure_all_pixels_handled(pattern_pixels)

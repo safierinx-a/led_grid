@@ -388,19 +388,22 @@ class MatrixRain(Pattern):
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Generate a single frame of the pattern"""
+        """Generate a frame of the Matrix rain pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
 
-        self._step += 1
-
-        if variation == "bold":
-            return self._generate_bold(params)
-        elif variation == "data":
-            return self._generate_data(params)
-        elif variation == "cascade":
-            return self._generate_cascade(params)
+        # Generate pattern based on variation
+        pattern_pixels = []
+        if variation == "classic":
+            pattern_pixels = self._generate_classic(params)
         elif variation == "binary":
-            return self._generate_binary(params)
-        else:  # corner
-            return self._generate_corner(params)
+            pattern_pixels = self._generate_binary(params)
+        elif variation == "hex":
+            pattern_pixels = self._generate_hex(params)
+        elif variation == "kanji":
+            pattern_pixels = self._generate_kanji(params)
+        else:  # code
+            pattern_pixels = self._generate_code(params)
+
+        self._step += 1
+        return self._ensure_all_pixels_handled(pattern_pixels)
