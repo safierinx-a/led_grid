@@ -268,7 +268,7 @@ class GenerativeArt(Pattern):
             x, y = particle["x"], particle["y"]
             if 0 <= x < self.width and 0 <= y < self.height:
                 # Get flow direction
-                angle = self.get_flow_field_value(x, y, self._time, complexity)
+                angle = self.get_flow_field_value(x, y, self.step, complexity)
 
                 # Update position
                 dx = math.cos(angle) * speed
@@ -278,7 +278,7 @@ class GenerativeArt(Pattern):
 
                 # Update age and add pixel
                 age = particle["age"]
-                hue = (age + self._time * 0.1 + color_shift) % 1.0
+                hue = (age + self.step * 0.1 + color_shift) % 1.0
                 r, g, b = self.hsv_to_rgb(hue, 1.0, age)
 
                 pixels.append(
@@ -317,7 +317,7 @@ class GenerativeArt(Pattern):
         pixels = []
         # Move points in circular patterns
         for point in self._voronoi_points:
-            angle = self._time * speed
+            angle = self.step * speed
             point["x"] = (point["x"] + math.cos(angle) * 0.1) % self.width
             point["y"] = (point["y"] + math.sin(angle) * 0.1) % self.height
 
@@ -336,7 +336,7 @@ class GenerativeArt(Pattern):
                         closest_hue = point["hue"]
 
                 # Calculate color
-                hue = (closest_hue + self._time * 0.1 + color_shift) % 1.0
+                hue = (closest_hue + self.step * 0.1 + color_shift) % 1.0
                 r, g, b = self.hsv_to_rgb(hue, 1.0, 1.0)
                 pixels.append(
                     {
@@ -364,7 +364,7 @@ class GenerativeArt(Pattern):
                     dist = math.sqrt(
                         (x - self.width / 2) ** 2 + (y - self.height / 2) ** 2
                     )
-                    hue = (dist * 0.1 + self._time * speed + color_shift) % 1.0
+                    hue = (dist * 0.1 + self.step * speed + color_shift) % 1.0
                     r, g, b = self.hsv_to_rgb(hue, 1.0, 1.0)
                     pixels.append(
                         {
@@ -398,21 +398,21 @@ class GenerativeArt(Pattern):
                 # Generate fractal value using multiple sine waves
                 nx = x * scale
                 ny = y * scale
-                value = math.sin(nx + self._time) * math.cos(ny - self._time * 0.5)
+                value = math.sin(nx + self.step) * math.cos(ny - self.step * 0.5)
                 value += (
-                    math.sin(nx * 2 + self._time * 0.7)
-                    * math.cos(ny * 2 - self._time * 0.3)
+                    math.sin(nx * 2 + self.step * 0.7)
+                    * math.cos(ny * 2 - self.step * 0.3)
                     * 0.5
                 )
                 value += (
-                    math.sin(nx * 4 + self._time * 0.3)
-                    * math.cos(ny * 4 - self._time * 0.7)
+                    math.sin(nx * 4 + self.step * 0.3)
+                    * math.cos(ny * 4 - self.step * 0.7)
                     * 0.25
                 )
 
                 # Normalize and convert to color
                 value = (value + 2) / 4
-                hue = (value + self._time * speed * 0.1 + color_shift) % 1.0
+                hue = (value + self.step * speed * 0.1 + color_shift) % 1.0
                 r, g, b = self.hsv_to_rgb(hue, 1.0, value)
 
                 pixels.append(
