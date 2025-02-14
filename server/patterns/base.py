@@ -5,6 +5,14 @@ from server.config.grid_config import GridConfig
 
 
 @dataclass
+class Point:
+    """Represents a point in the LED grid"""
+
+    x: int
+    y: int
+
+
+@dataclass
 class Parameter:
     """Definition of a pattern parameter"""
 
