@@ -83,7 +83,7 @@ class Plasma(Pattern):
         return func(bx, by)
 
     def _generate_block(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
-        """Block plasma with 2x2 or 3x3 color areas"""
+        """Generate plasma effect using block-based approach"""
         speed = params["speed"]
         scale = params["scale"]
         palette = params["palette"]
@@ -94,40 +94,25 @@ class Plasma(Pattern):
         pixels = []
         for by in range(0, self.height, block_size):
             for bx in range(0, self.width, block_size):
-                # Calculate normalized coordinates for block center
-                nx = (bx + block_size / 2) / self.width - 0.5
-                ny = (by + block_size / 2) / self.height - 0.5
-
-                # Generate bold plasma value
-                v1 = math.sin(nx * 6 * scale + time_factor)  # Reduced frequency
-                v2 = math.sin(
-                    6
-                    * scale
-                    * (nx * math.sin(time_factor / 2) + ny * math.cos(time_factor / 3))
-                    + time_factor
+                value = math.sin(bx * scale * 0.1 + time_factor) * math.cos(
+                    by * scale * 0.1 + time_factor
                 )
-                v3 = math.sin(
-                    math.sqrt((nx * nx * 64 + ny * ny * 64) * scale) + time_factor
-                )
+                value = (value + 1) / 2  # Normalize to [0,1]
 
-                # Combine waves with enhanced contrast
-                value = (v1 + v2 + v3) / 3.0
-                value = math.pow((value + 1) / 2, 1.2)  # Enhanced contrast
-
-                # Apply color to entire block
+                # Apply color to block
                 color = self._get_palette_color(value, palette, intensity)
                 for dy in range(block_size):
                     for dx in range(block_size):
                         px, py = bx + dx, by + dy
                         if px < self.width and py < self.height:
-                pixels.append(
-                    {
+                            pixels.append(
+                                {
                                     "index": self.grid_config.xy_to_index(px, py),
                                     "r": color[0],
                                     "g": color[1],
                                     "b": color[2],
-                    }
-                )
+                                }
+                            )
         return pixels
 
     def _generate_grid(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
@@ -213,14 +198,14 @@ class Plasma(Pattern):
                     for dx in range(block_size):
                         px, py = bx + dx, by + dy
                         if px < self.width and py < self.height:
-                pixels.append(
-                    {
+                            pixels.append(
+                                {
                                     "index": self.grid_config.xy_to_index(px, py),
                                     "r": color[0],
                                     "g": color[1],
                                     "b": color[2],
-                    }
-                )
+                                }
+                            )
         return pixels
 
     def _generate_quad(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
@@ -257,19 +242,17 @@ class Plasma(Pattern):
                         (local_x + local_y) * 8 * scale + time_factor * 1.1
                     )
                 elif quadrant == 2:
-                value = math.sin(
+                    value = math.sin(
                         math.sqrt((local_x**2 + local_y**2) * 64) * scale
                         + time_factor * 0.9
                     )
                 else:
                     value = math.sin(local_x * 8 * scale) * math.sin(
-                        local_y * 8 * scale + time_factor
+                        local_y * 8 * scale + time_factor * 1.2
                     )
 
+                # Normalize to [0,1]
                 value = (value + 1) / 2
-
-                # Add quadrant-specific color shift
-                value = (value + quadrant * 0.25) % 1.0
 
                 # Apply color to block
                 color = self._get_palette_color(value, palette, intensity)
@@ -277,14 +260,14 @@ class Plasma(Pattern):
                     for dx in range(block_size):
                         px, py = bx + dx, by + dy
                         if px < self.width and py < self.height:
-                pixels.append(
-                    {
+                            pixels.append(
+                                {
                                     "index": self.grid_config.xy_to_index(px, py),
                                     "r": color[0],
                                     "g": color[1],
                                     "b": color[2],
-                    }
-                )
+                                }
+                            )
         return pixels
 
     def _generate_digital(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
@@ -318,14 +301,14 @@ class Plasma(Pattern):
                     for dx in range(block_size):
                         px, py = bx + dx, by + dy
                         if px < self.width and py < self.height:
-                pixels.append(
-                    {
+                            pixels.append(
+                                {
                                     "index": self.grid_config.xy_to_index(px, py),
                                     "r": color[0],
                                     "g": color[1],
                                     "b": color[2],
-                    }
-                )
+                                }
+                            )
         return pixels
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:

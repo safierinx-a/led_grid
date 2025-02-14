@@ -146,8 +146,11 @@ class GenerativeArt(Pattern):
 
         return points
 
-    def _draw_block(self, x: int, y: int, color: tuple, block_size: int, blend: float):
+    def _draw_block(
+        self, x: int, y: int, color: tuple[int, int, int], block_size: int, blend: float
+    ) -> List[Dict[str, int]]:
         """Draw a block of pixels with blending."""
+        pixels = []
         for dx in range(block_size):
             for dy in range(block_size):
                 px = x + dx
@@ -162,7 +165,15 @@ class GenerativeArt(Pattern):
                     else:
                         new_color = color
                     self.color_buffer[(px, py)] = new_color
-                    self.set_pixel(px, py, new_color)
+                    pixels.append(
+                        {
+                            "index": self.grid_config.xy_to_index(px, py),
+                            "r": new_color[0],
+                            "g": new_color[1],
+                            "b": new_color[2],
+                        }
+                    )
+        return pixels
 
     def init_particles(self, num_particles: int):
         """Initialize particles for flow field"""
@@ -415,12 +426,8 @@ class GenerativeArt(Pattern):
 
         return pixels
 
-    def generate_frame(self, params: Dict[str, Any]) -> None:
+    def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate a frame of the pattern."""
-        # Clear previous frame
-        self.clear_frame()
-        self.color_buffer.clear()
-
         # Get current time
         current_time = time.time()
         dt = current_time - self.last_update
@@ -432,33 +439,51 @@ class GenerativeArt(Pattern):
         # Generate pattern based on selected variation
         variation = params["variation"]
         if variation == "flow_field":
-            self._generate_flow_field(params)
+            return self.generate_flow_field(
+                params["speed"], params["complexity"], params["color_shift"]
+            )
         elif variation == "voronoi":
-            self._generate_voronoi(params)
+            return self.generate_voronoi(
+                params["speed"], params["complexity"], params["color_shift"]
+            )
         elif variation == "maze":
-            self._generate_maze(params)
+            return self.generate_maze(
+                params["speed"], params["complexity"], params["color_shift"]
+            )
         elif variation == "fractal":
-            self._generate_fractal(params)
+            return self.generate_fractal(
+                params["speed"], params["complexity"], params["color_shift"]
+            )
         elif variation == "cellular":
-            self._generate_cellular(params)
+            return self._generate_cellular(params)
         elif variation == "swarm":
-            self._generate_swarm(params)
+            return self._generate_swarm(params)
         elif variation == "crystal":
-            self._generate_crystal(params)
-        elif variation == "circuit":
-            self._generate_circuit(params)
+            return self._generate_crystal(params)
+        else:  # circuit
+            return self._generate_circuit(params)
 
-    def clear_frame(self) -> None:
+    def clear_frame(self) -> List[Dict[str, int]]:
         """Clear the current frame."""
+        pixels = []
         for y in range(self.height):
             for x in range(self.width):
-                self.set_pixel(x, y, (0, 0, 0))
+                pixels.append(
+                    {
+                        "index": self.grid_config.xy_to_index(x, y),
+                        "r": 0,
+                        "g": 0,
+                        "b": 0,
+                    }
+                )
+        return pixels
 
-    def _generate_flow_field(self, params: Dict[str, Any]) -> None:
+    def _generate_flow_field(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate flow field pattern with enhanced features."""
         if not self.particles:
             self.init_particles(int(20 * params["complexity"]))
 
+        pixels = []
         t = self.step * params["speed"] * 0.1
         block_size = params["block_size"]
         symmetry = params["symmetry"]
@@ -479,9 +504,19 @@ class GenerativeArt(Pattern):
             )
             points = self._apply_symmetry(int(new_x), int(new_y), symmetry)
             for px, py in points:
-                self._draw_block(px, py, color, block_size, blend)
+                if 0 <= px < self.width and 0 <= py < self.height:
+                    pixels.append(
+                        {
+                            "index": self.grid_config.xy_to_index(px, py),
+                            "r": color[0],
+                            "g": color[1],
+                            "b": color[2],
+                        }
+                    )
 
-    def _generate_cellular(self, params: Dict[str, Any]) -> None:
+        return pixels
+
+    def _generate_cellular(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate cellular automaton pattern."""
         if self.cellular_buffer is None:
             self.cellular_buffer = np.random.choice(
@@ -493,6 +528,7 @@ class GenerativeArt(Pattern):
         blend = params["blend"]
 
         new_buffer = np.copy(self.cellular_buffer)
+        pixels = []
         for y in range(self.height):
             for x in range(self.width):
                 neighbors = sum(
@@ -510,11 +546,12 @@ class GenerativeArt(Pattern):
                     color = self._get_color(
                         x / self.width, y / self.height, t, params["color_mode"]
                     )
-                    self._draw_block(x, y, color, block_size, blend)
+                    pixels.extend(self._draw_block(x, y, color, block_size, blend))
 
         self.cellular_buffer = new_buffer
+        return pixels
 
-    def _generate_swarm(self, params: Dict[str, Any]) -> None:
+    def _generate_swarm(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate swarm behavior pattern."""
         if not self.swarm_agents:
             num_agents = int(15 * params["complexity"])
@@ -534,6 +571,7 @@ class GenerativeArt(Pattern):
         symmetry = params["symmetry"]
         blend = params["blend"]
 
+        pixels = []
         for agent in self.swarm_agents:
             # Update velocity based on neighbors
             cx, cy = 0, 0
@@ -570,9 +608,11 @@ class GenerativeArt(Pattern):
                 int(agent["pos"][0]), int(agent["pos"][1]), symmetry
             )
             for px, py in points:
-                self._draw_block(px, py, color, block_size, blend)
+                pixels.extend(self._draw_block(px, py, color, block_size, blend))
 
-    def _generate_crystal(self, params: Dict[str, Any]) -> None:
+        return pixels
+
+    def _generate_crystal(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate crystalline growth pattern."""
         if not self.crystal_points:
             num_seeds = int(3 * params["complexity"])
@@ -600,6 +640,7 @@ class GenerativeArt(Pattern):
                 if min_dist < 3 and random.random() < 0.1 * params["complexity"]:
                     growth_points.append((x, y))
 
+        pixels = []
         for x, y in growth_points:
             self.crystal_points.append((x, y))
             color = self._get_color(
@@ -607,9 +648,11 @@ class GenerativeArt(Pattern):
             )
             points = self._apply_symmetry(x, y, symmetry)
             for px, py in points:
-                self._draw_block(px, py, color, block_size, blend)
+                pixels.extend(self._draw_block(px, py, color, block_size, blend))
 
-    def _generate_circuit(self, params: Dict[str, Any]) -> None:
+        return pixels
+
+    def _generate_circuit(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate circuit-like pattern."""
         if not self.circuit_paths:
             num_paths = int(5 * params["complexity"])
@@ -628,7 +671,7 @@ class GenerativeArt(Pattern):
         symmetry = params["symmetry"]
         blend = params["blend"]
 
-        new_paths = []
+        pixels = []
         for path in self.circuit_paths:
             x, y = path["pos"]
             dx, dy = path["dir"]
@@ -639,7 +682,7 @@ class GenerativeArt(Pattern):
             if random.random() < 0.1:
                 path["dir"] = random.choice([(0, 1), (1, 0), (0, -1), (-1, 0)])
                 if random.random() < 0.3 * params["complexity"]:
-                    new_paths.append(
+                    self.circuit_paths.append(
                         {
                             "pos": (new_x, new_y),
                             "dir": random.choice([(0, 1), (1, 0), (0, -1), (-1, 0)]),
@@ -651,15 +694,16 @@ class GenerativeArt(Pattern):
             )
             points = self._apply_symmetry(int(new_x), int(new_y), symmetry)
             for px, py in points:
-                self._draw_block(px, py, color, block_size, blend)
+                pixels.extend(self._draw_block(px, py, color, block_size, blend))
 
             path["pos"] = (new_x, new_y)
 
-        self.circuit_paths.extend(new_paths)
         if len(self.circuit_paths) > 20 * params["complexity"]:
             self.circuit_paths = self.circuit_paths[: int(20 * params["complexity"])]
 
-    def _generate_voronoi(self, params: Dict[str, Any]) -> None:
+        return pixels
+
+    def _generate_voronoi(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate Voronoi pattern with enhanced features."""
         if not self.voronoi_points:
             num_points = int(5 * params["complexity"])
@@ -688,6 +732,7 @@ class GenerativeArt(Pattern):
             point["pos"] = (new_x, new_y)
 
         # Draw Voronoi regions
+        pixels = []
         for y in range(0, self.height, block_size):
             for x in range(0, self.width, block_size):
                 min_dist = float("inf")
@@ -707,9 +752,13 @@ class GenerativeArt(Pattern):
                     )
                     points = self._apply_symmetry(x, y, symmetry)
                     for sx, sy in points:
-                        self._draw_block(sx, sy, color, block_size, blend)
+                        pixels.extend(
+                            self._draw_block(sx, sy, color, block_size, blend)
+                        )
 
-    def _generate_maze(self, params: Dict[str, Any]) -> None:
+        return pixels
+
+    def _generate_maze(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate maze pattern with enhanced features."""
         if self.maze_buffer is None:
             size = max(self.width, self.height) // 2
@@ -744,6 +793,7 @@ class GenerativeArt(Pattern):
         scale_x = self.width / (size * 2)
         scale_y = self.height / (size * 2)
 
+        pixels = []
         for y in range(size):
             for x in range(size):
                 if self.maze_buffer[y, x]:
@@ -753,9 +803,13 @@ class GenerativeArt(Pattern):
                     color = self._get_color(phase, 0.5, t, params["color_mode"])
                     points = self._apply_symmetry(px, py, symmetry)
                     for sx, sy in points:
-                        self._draw_block(sx, sy, color, block_size, blend)
+                        pixels.extend(
+                            self._draw_block(sx, sy, color, block_size, blend)
+                        )
 
-    def _generate_fractal(self, params: Dict[str, Any]) -> None:
+        return pixels
+
+    def _generate_fractal(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate fractal pattern with enhanced features."""
         if self.fractal_buffer is None:
             size = max(self.width, self.height)
@@ -772,6 +826,7 @@ class GenerativeArt(Pattern):
         center_x = self.width / 2 + math.cos(t) * self.width * 0.1
         center_y = self.height / 2 + math.sin(t) * self.height * 0.1
 
+        pixels = []
         for y in range(0, self.height, block_size):
             for x in range(0, self.width, block_size):
                 fx = (x - center_x) * zoom + self.width / 2
@@ -783,7 +838,11 @@ class GenerativeArt(Pattern):
                     color = self._get_color(phase, value, t, params["color_mode"])
                     points = self._apply_symmetry(x, y, symmetry)
                     for sx, sy in points:
-                        self._draw_block(sx, sy, color, block_size, blend)
+                        pixels.extend(
+                            self._draw_block(sx, sy, color, block_size, blend)
+                        )
+
+        return pixels
 
     def _generate_mandelbrot(self, buffer: np.ndarray) -> None:
         """Generate Mandelbrot set."""
