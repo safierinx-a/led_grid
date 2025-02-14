@@ -301,21 +301,79 @@ class SwarmSystem(Pattern):
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate a frame of the swarm pattern"""
+        # Validate parameters
         params = self.validate_params(params)
         variation = params["variation"]
+        num_agents = params["num_agents"]
+        speed = params["speed"]
+        color_mode = params["color_mode"]
+        trail_length = params.get("trail_length", 0)
 
-        # Generate pattern based on variation
-        pattern_pixels = []
-        if variation == "flock":
-            pattern_pixels = self._generate_flock(params)
-        elif variation == "predator":
-            pattern_pixels = self._generate_predator(params)
-        elif variation == "colony":
-            pattern_pixels = self._generate_colony(params)
-        elif variation == "hive":
-            pattern_pixels = self._generate_hive(params)
-        else:  # swarm
-            pattern_pixels = self._generate_swarm(params)
+        # Create new particles if needed
+        while len(self.particles) < num_agents:
+            if variation == "grid":
+                self.particles.append(self._create_grid_particle(speed))
+            elif variation == "edge":
+                self.particles.append(self._create_edge_particle(speed))
+            elif variation == "constellation":
+                self.particles.append(self._create_constellation_particle(speed))
+            elif variation == "quad":
+                self.particles.append(self._create_quad_particle(speed))
+            else:  # bold
+                self.particles.append(self._create_bold_particle(speed))
 
+        # Update particles
+        new_particles = []
+        pixels = []
+
+        # Draw constellation connections first
+        if variation == "constellation":
+            for i, p1 in enumerate(self.particles):
+                for p2 in self.particles[i + 1 :]:
+                    dist = math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
+                    if dist < 6:  # Connection distance
+                        # Draw connection line
+                        steps = int(dist * 2)
+                        for t in range(steps):
+                            progress = t / steps
+                            x = p1[0] + (p2[0] - p1[0]) * progress
+                            y = p1[1] + (p2[1] - p1[1]) * progress
+                            connection_color = self._get_color(
+                                0.3, color_mode
+                            )  # Dimmer connections
+                            pixels.extend(
+                                self._draw_particle(x, y, 1, connection_color)
+                            )
+
+        # Update and draw particles
+        for particle in self.particles:
+            if particle[4] > 0.1:  # Check lifetime
+                if variation == "grid":
+                    new_particle = self._update_grid_particle(particle, speed)
+                elif variation == "edge":
+                    new_particle = self._update_edge_particle(particle, speed)
+                elif variation == "constellation":
+                    new_particle = self._update_constellation_particle(particle, speed)
+                elif variation == "quad":
+                    new_particle = self._update_quad_particle(particle, speed)
+                else:  # bold
+                    new_particle = self._update_bold_particle(
+                        particle, speed, trail_length
+                    )
+
+                new_particles.append(new_particle)
+                color = self._get_color(new_particle[4], color_mode)
+                pixels.extend(
+                    self._draw_particle(
+                        new_particle[0],
+                        new_particle[1],
+                        new_particle[5],
+                        color,
+                        new_particle[6] if variation == "bold" else None,
+                    )
+                )
+
+        self.particles = new_particles
         self._step += 1
-        return self._ensure_all_pixels_handled(pattern_pixels)
+
+        return self._ensure_all_pixels_handled(pixels)

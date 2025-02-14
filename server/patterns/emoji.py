@@ -277,20 +277,228 @@ class Emoji(Pattern):
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate a frame of the emoji pattern"""
         params = self.validate_params(params)
-        variation = params["variation"]
+        expression = params["expression"]
+        animation_speed = params["animation_speed"]
+        color_style = params["color_style"]
+        size = params["size"]
+        tilt = params["tilt"]
+        bounce = params["bounce"]
+        glow = params["glow"]
 
-        # Generate pattern based on variation
-        pattern_pixels = []
-        if variation == "smile":
-            pattern_pixels = self._generate_smile(params)
-        elif variation == "wink":
-            pattern_pixels = self._generate_wink(params)
-        elif variation == "heart":
-            pattern_pixels = self._generate_heart(params)
-        elif variation == "star":
-            pattern_pixels = self._generate_star(params)
-        else:  # custom
-            pattern_pixels = self._generate_custom(params)
+        self._time += 0.05 * animation_speed
+        pixels = []
 
-        self._step += 1
-        return self._ensure_all_pixels_handled(pattern_pixels)
+        # Calculate scaled radius
+        base_radius = min(self.width, self.height) * 0.4
+        radius = base_radius * size
+
+        # Draw face with glow effect if enabled
+        face_color = self.get_face_color(color_style, glow)
+        if glow > 0:
+            pixels.extend(
+                self.draw_glow(
+                    self._center_x, self._center_y, radius, face_color, glow * 0.5
+                )
+            )
+        pixels.extend(
+            self.draw_circle(
+                self._center_x,
+                self._center_y,
+                radius,
+                face_color,
+                tilt,
+                bounce,
+                2,  # Use block size 2 for bolder appearance
+            )
+        )
+
+        # Common positions
+        eye_y = self._center_y - radius * 0.2
+        left_eye_x = self._center_x - radius * 0.3
+        right_eye_x = self._center_x + radius * 0.3
+        mouth_y = self._center_y + radius * 0.2
+
+        # Draw features based on expression
+        if expression == "happy":
+            # Eyes with occasional blinks
+            blink = math.sin(self._time * 0.5) > 0.95
+            for side in [-1, 1]:
+                eye_x = self._center_x + side * radius * 0.3
+                if not blink:
+                    pixels.extend(
+                        self.draw_circle(
+                            eye_x, eye_y, radius * 0.1, (0, 0, 0), tilt, bounce, 2
+                        )
+                    )
+                else:
+                    pixels.extend(
+                        self.draw_arc(
+                            eye_x,
+                            eye_y,
+                            radius * 0.1,
+                            math.pi * 0.2,
+                            math.pi * 0.8,
+                            (0, 0, 0),
+                            2,
+                            tilt,
+                            bounce,
+                            2,
+                        )
+                    )
+
+            # Animated smile
+            smile_phase = math.sin(self._time * 2) * 0.2 + 0.8
+            pixels.extend(
+                self.draw_arc(
+                    self._center_x,
+                    mouth_y,
+                    radius * 0.3 * smile_phase,
+                    math.pi * 0.2,
+                    math.pi * 0.8,
+                    (0, 0, 0),
+                    2,
+                    tilt,
+                    bounce,
+                    2,
+                )
+            )
+
+        elif expression == "wink":
+            # Left eye
+            pixels.extend(
+                self.draw_circle(
+                    self._center_x - radius * 0.3,
+                    eye_y,
+                    radius * 0.1,
+                    (0, 0, 0),
+                    tilt,
+                    bounce,
+                    2,
+                )
+            )
+
+            # Right eye (winking)
+            wink_phase = (math.sin(self._time * 4) + 1) / 2
+            if wink_phase < 0.5:
+                pixels.extend(
+                    self.draw_circle(
+                        self._center_x + radius * 0.3,
+                        eye_y,
+                        radius * 0.1,
+                        (0, 0, 0),
+                        tilt,
+                        bounce,
+                        2,
+                    )
+                )
+            else:
+                pixels.extend(
+                    self.draw_arc(
+                        self._center_x + radius * 0.3,
+                        eye_y,
+                        radius * 0.1,
+                        math.pi * 0.2,
+                        math.pi * 0.8,
+                        (0, 0, 0),
+                        2,
+                        tilt,
+                        bounce,
+                        2,
+                    )
+                )
+
+            # Smirk with slight movement
+            smirk_offset = math.sin(self._time * 2) * radius * 0.05
+            pixels.extend(
+                self.draw_arc(
+                    self._center_x + smirk_offset,
+                    mouth_y,
+                    radius * 0.3,
+                    math.pi * 0.1,
+                    math.pi * 0.9,
+                    (0, 0, 0),
+                    2,
+                    tilt,
+                    bounce,
+                    2,
+                )
+            )
+
+        elif expression == "sad":
+            # Droopy eyes
+            tear_phase = (math.sin(self._time * 2) + 1) / 2
+            for side in [-1, 1]:
+                # Eye
+                eye_x = self._center_x + side * radius * 0.3
+                pixels.extend(
+                    self.draw_arc(
+                        eye_x,
+                        eye_y,
+                        3,
+                        math.pi * 1.2,
+                        math.pi * 1.8,
+                        (0, 0, 0),
+                        2,
+                        tilt,
+                        bounce,
+                        2,
+                    )
+                )
+                # Tear drop
+                if side == -1:  # Only on one side
+                    tear_y = eye_y + 4 + tear_phase * 4
+                    pixels.extend(
+                        self.draw_circle(
+                            eye_x,
+                            tear_y,
+                            2,
+                            (100, 149, 237),  # Cornflower blue
+                            tilt,
+                            bounce,
+                            1,
+                        )
+                    )
+
+            # Sad mouth
+            pixels.extend(
+                self.draw_arc(
+                    self._center_x,
+                    mouth_y + radius * 0.1,
+                    radius * 0.3,
+                    math.pi * 1.2,
+                    math.pi * 1.8,
+                    (0, 0, 0),
+                    2,
+                    tilt,
+                    bounce,
+                    2,
+                )
+            )
+
+        else:  # neutral
+            # Simple eyes
+            for side in [-1, 1]:
+                eye_x = self._center_x + side * radius * 0.3
+                pixels.extend(
+                    self.draw_circle(
+                        eye_x, eye_y, radius * 0.1, (0, 0, 0), tilt, bounce, 2
+                    )
+                )
+
+            # Simple mouth
+            pixels.extend(
+                self.draw_arc(
+                    self._center_x,
+                    mouth_y,
+                    radius * 0.3,
+                    math.pi * 0.3,
+                    math.pi * 0.7,
+                    (0, 0, 0),
+                    2,
+                    tilt,
+                    bounce,
+                    2,
+                )
+            )
+
+        return self._ensure_all_pixels_handled(pixels)

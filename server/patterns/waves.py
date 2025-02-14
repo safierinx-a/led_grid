@@ -240,6 +240,7 @@ class Waves(Pattern):
         return value / len(self._wave_sources)
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
+        """Generate a frame of the wave pattern"""
         params = self.validate_params(params)
         variation = params["variation"]
         color_mode = params["color_mode"]
