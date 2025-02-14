@@ -428,6 +428,9 @@ class GenerativeArt(Pattern):
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate a frame of the pattern."""
+        # Validate parameters
+        params = self.validate_params(params)
+
         # Get current time
         current_time = time.time()
         dt = current_time - self.last_update
