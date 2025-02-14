@@ -4,6 +4,7 @@ import time
 import json
 import paho.mqtt.client as mqtt
 from rpi_ws281x import PixelStrip, Color
+import argparse
 
 # LED strip configuration
 LED_COUNT = 600  # Total number of LEDs (24 strips * 25 LEDs)
@@ -16,7 +17,7 @@ LED_CHANNEL = 0  # PWM channel to use
 
 
 class LEDController:
-    def __init__(self):
+    def __init__(self, mqtt_host="localhost"):
         # Create NeoPixel object with appropriate configuration
         self.strip = PixelStrip(
             LED_COUNT,
@@ -30,6 +31,7 @@ class LEDController:
         self.strip.begin()
 
         # MQTT setup
+        self.mqtt_host = mqtt_host
         self.mqtt_client = mqtt.Client()
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
@@ -77,7 +79,7 @@ class LEDController:
     def run(self):
         """Main run loop"""
         # Connect to MQTT broker
-        self.mqtt_client.connect("localhost", 1883, 60)
+        self.mqtt_client.connect(self.mqtt_host, 1883, 60)
 
         # Start MQTT loop in background thread
         self.mqtt_client.loop_start()
@@ -97,5 +99,11 @@ class LEDController:
 
 
 if __name__ == "__main__":
-    controller = LEDController()
+    parser = argparse.ArgumentParser(description="LED Controller")
+    parser.add_argument(
+        "--mqtt-host", default="localhost", help="MQTT broker hostname or IP"
+    )
+    args = parser.parse_args()
+
+    controller = LEDController(mqtt_host=args.mqtt_host)
     controller.run()
