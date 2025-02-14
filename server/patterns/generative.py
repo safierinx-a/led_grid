@@ -226,7 +226,7 @@ class GenerativeArt(Pattern):
         )
         return angle
 
-    def hsv_to_rgb(self, h: float, s: float, v: float) -> tuple[int, int, int]:
+    def _hsv_to_rgb(self, h: float, s: float, v: float) -> tuple[int, int, int]:
         """Convert HSV color to RGB."""
         h = h % 1.0
         if s == 0.0:

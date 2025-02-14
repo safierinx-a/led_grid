@@ -308,72 +308,401 @@ class SwarmSystem(Pattern):
         speed = params["speed"]
         color_mode = params["color_mode"]
         trail_length = params.get("trail_length", 0)
+        cohesion = params["cohesion"]
 
-        # Create new particles if needed
-        while len(self.particles) < num_agents:
-            if variation == "grid":
-                self.particles.append(self._create_grid_particle(speed))
-            elif variation == "edge":
-                self.particles.append(self._create_edge_particle(speed))
-            elif variation == "constellation":
-                self.particles.append(self._create_constellation_particle(speed))
-            elif variation == "quad":
-                self.particles.append(self._create_quad_particle(speed))
-            else:  # bold
-                self.particles.append(self._create_bold_particle(speed))
+        # Initialize agents if needed
+        if len(self.agents) < num_agents:
+            self._init_agents(num_agents, variation)
 
-        # Update particles
-        new_particles = []
+        # Update agents
         pixels = []
+        new_agents = []
 
-        # Draw constellation connections first
-        if variation == "constellation":
-            for i, p1 in enumerate(self.particles):
-                for p2 in self.particles[i + 1 :]:
-                    dist = math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
-                    if dist < 6:  # Connection distance
-                        # Draw connection line
-                        steps = int(dist * 2)
-                        for t in range(steps):
-                            progress = t / steps
-                            x = p1[0] + (p2[0] - p1[0]) * progress
-                            y = p1[1] + (p2[1] - p1[1]) * progress
-                            connection_color = self._get_color(
-                                0.3, color_mode
-                            )  # Dimmer connections
-                            pixels.extend(
-                                self._draw_particle(x, y, 1, connection_color)
-                            )
+        # Update predator position for predator variation
+        if variation == "predator":
+            if self._predator_pos is None:
+                self._predator_pos = (self._center_x, self._center_y)
+            angle = self._time * speed * 0.1
+            radius = 5 * math.sin(self._time * 0.05) + 7
+            self._predator_pos = (
+                self._center_x + math.cos(angle) * radius,
+                self._center_y + math.sin(angle) * radius,
+            )
 
-        # Update and draw particles
-        for particle in self.particles:
-            if particle[4] > 0.1:  # Check lifetime
-                if variation == "grid":
-                    new_particle = self._update_grid_particle(particle, speed)
-                elif variation == "edge":
-                    new_particle = self._update_edge_particle(particle, speed)
-                elif variation == "constellation":
-                    new_particle = self._update_constellation_particle(particle, speed)
-                elif variation == "quad":
-                    new_particle = self._update_quad_particle(particle, speed)
-                else:  # bold
-                    new_particle = self._update_bold_particle(
-                        particle, speed, trail_length
-                    )
-
-                new_particles.append(new_particle)
-                color = self._get_color(new_particle[4], color_mode)
-                pixels.extend(
-                    self._draw_particle(
-                        new_particle[0],
-                        new_particle[1],
-                        new_particle[5],
-                        color,
-                        new_particle[6] if variation == "bold" else None,
+        # Update attractor points for orbit variation
+        if variation == "orbit" and not self._attractor_points:
+            num_attractors = 3
+            for i in range(num_attractors):
+                angle = (i / num_attractors) * 2 * math.pi
+                radius = 8
+                self._attractor_points.append(
+                    (
+                        self._center_x + math.cos(angle) * radius,
+                        self._center_y + math.sin(angle) * radius,
                     )
                 )
 
-        self.particles = new_particles
-        self._step += 1
+        # Update and draw agents
+        for agent in self.agents:
+            # Calculate new position and velocity based on variation
+            if variation == "flock":
+                new_agent = self._update_flock_agent(
+                    agent, self.agents, speed, cohesion
+                )
+            elif variation == "predator":
+                new_agent = self._update_predator_agent(
+                    agent, self.agents, self._predator_pos, speed
+                )
+            elif variation == "school":
+                new_agent = self._update_school_agent(
+                    agent, self.agents, speed, cohesion
+                )
+            elif variation == "spiral":
+                new_agent = self._update_spiral_agent(agent, speed)
+            elif variation == "scatter":
+                new_agent = self._update_scatter_agent(agent, speed)
+            else:  # orbit
+                new_agent = self._update_orbit_agent(
+                    agent, self._attractor_points, speed
+                )
+
+            # Add trail if enabled
+            if trail_length > 0:
+                self.trails.append(
+                    {
+                        "pos": agent["pos"],
+                        "age": 1.0,
+                        "color": self._get_color(agent["energy"], color_mode),
+                    }
+                )
+
+            # Add agent to new list and draw
+            new_agents.append(new_agent)
+            color = self._get_color(new_agent["energy"], color_mode)
+            x, y = new_agent["pos"]
+            pixels.extend(self._draw_agent(x, y, params["size"], color))
+
+        # Update and draw trails
+        if trail_length > 0:
+            new_trails = []
+            for trail in self.trails:
+                if trail["age"] > 0.1:
+                    trail["age"] *= 0.9
+                    color = tuple(int(c * trail["age"]) for c in trail["color"])
+                    x, y = trail["pos"]
+                    pixels.extend(self._draw_agent(x, y, 1, color))
+                    new_trails.append(trail)
+            self.trails = new_trails[: trail_length * len(self.agents)]
+
+        # Draw predator if active
+        if variation == "predator" and self._predator_pos:
+            predator_color = (255, 50, 50)  # Red color for predator
+            x, y = self._predator_pos
+            pixels.extend(self._draw_agent(x, y, params["size"] + 1, predator_color))
+
+        self.agents = new_agents
+        self._time += 1
 
         return self._ensure_all_pixels_handled(pixels)
+
+    def _update_flock_agent(
+        self, agent: Dict, agents: List[Dict], speed: float, cohesion: float
+    ) -> Dict:
+        """Update agent position and velocity for flocking behavior"""
+        # Calculate center of mass and average velocity
+        com_x, com_y = 0, 0
+        avg_dx, avg_dy = 0, 0
+        count = 0
+
+        for other in agents:
+            if other != agent and other["group"] == agent["group"]:
+                dx = other["pos"][0] - agent["pos"][0]
+                dy = other["pos"][1] - agent["pos"][1]
+                dist = math.sqrt(dx * dx + dy * dy)
+
+                if dist < 8:  # Neighbor radius
+                    com_x += other["pos"][0]
+                    com_y += other["pos"][1]
+                    avg_dx += other["vel"][0]
+                    avg_dy += other["vel"][1]
+                    count += 1
+
+        if count > 0:
+            # Cohesion - move toward center of mass
+            com_x /= count
+            com_y /= count
+            cohesion_dx = (com_x - agent["pos"][0]) * cohesion
+            cohesion_dy = (com_y - agent["pos"][1]) * cohesion
+
+            # Alignment - match average velocity
+            avg_dx /= count
+            avg_dy /= count
+
+            # Update velocity
+            new_dx = agent["vel"][0] * 0.9 + (cohesion_dx + avg_dx) * 0.1
+            new_dy = agent["vel"][1] * 0.9 + (cohesion_dy + avg_dy) * 0.1
+        else:
+            new_dx = agent["vel"][0]
+            new_dy = agent["vel"][1]
+
+        # Normalize velocity
+        vel_mag = math.sqrt(new_dx * new_dx + new_dy * new_dy)
+        if vel_mag > 0:
+            new_dx = (new_dx / vel_mag) * speed
+            new_dy = (new_dy / vel_mag) * speed
+
+        # Update position
+        new_x = (agent["pos"][0] + new_dx) % self.width
+        new_y = (agent["pos"][1] + new_dy) % self.height
+
+        return {
+            "pos": (new_x, new_y),
+            "vel": (new_dx, new_dy),
+            "energy": agent["energy"],
+            "group": agent["group"],
+        }
+
+    def _update_predator_agent(
+        self,
+        agent: Dict,
+        agents: List[Dict],
+        predator_pos: Tuple[float, float],
+        speed: float,
+    ) -> Dict:
+        """Update agent position and velocity for predator avoidance behavior"""
+        # Calculate distance to predator
+        dx = predator_pos[0] - agent["pos"][0]
+        dy = predator_pos[1] - agent["pos"][1]
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        if dist < 10:  # Flee radius
+            # Flee from predator
+            flee_dx = -dx / dist * speed * 2
+            flee_dy = -dy / dist * speed * 2
+            agent["energy"] = min(
+                1.0, agent["energy"] + 0.1
+            )  # Increase energy when fleeing
+        else:
+            # Normal movement
+            flee_dx = agent["vel"][0]
+            flee_dy = agent["vel"][1]
+            agent["energy"] = max(
+                0.3, agent["energy"] - 0.01
+            )  # Decrease energy when calm
+
+        # Add some random movement
+        flee_dx += random.uniform(-0.5, 0.5)
+        flee_dy += random.uniform(-0.5, 0.5)
+
+        # Normalize velocity
+        vel_mag = math.sqrt(flee_dx * flee_dx + flee_dy * flee_dy)
+        if vel_mag > 0:
+            flee_dx = (flee_dx / vel_mag) * speed
+            flee_dy = (flee_dy / vel_mag) * speed
+
+        # Update position
+        new_x = (agent["pos"][0] + flee_dx) % self.width
+        new_y = (agent["pos"][1] + flee_dy) % self.height
+
+        return {
+            "pos": (new_x, new_y),
+            "vel": (flee_dx, flee_dy),
+            "energy": agent["energy"],
+            "group": agent["group"],
+        }
+
+    def _update_school_agent(
+        self, agent: Dict, agents: List[Dict], speed: float, cohesion: float
+    ) -> Dict:
+        """Update agent position and velocity for schooling behavior"""
+        # Similar to flocking but with tighter grouping and smoother movement
+        com_x, com_y = 0, 0
+        avg_dx, avg_dy = 0, 0
+        separation_x, separation_y = 0, 0
+        count = 0
+
+        for other in agents:
+            if other != agent:
+                dx = other["pos"][0] - agent["pos"][0]
+                dy = other["pos"][1] - agent["pos"][1]
+                dist = math.sqrt(dx * dx + dy * dy)
+
+                if dist < 6:  # Closer neighbor radius for schools
+                    # Separation - avoid getting too close
+                    if dist < 2:
+                        separation_x -= dx / dist
+                        separation_y -= dy / dist
+
+                    com_x += other["pos"][0]
+                    com_y += other["pos"][1]
+                    avg_dx += other["vel"][0]
+                    avg_dy += other["vel"][1]
+                    count += 1
+
+        if count > 0:
+            com_x /= count
+            com_y /= count
+            avg_dx /= count
+            avg_dy /= count
+
+            # Combine behaviors
+            new_dx = (
+                agent["vel"][0] * 0.7  # Momentum
+                + (com_x - agent["pos"][0]) * cohesion * 0.1  # Cohesion
+                + avg_dx * 0.1  # Alignment
+                + separation_x * 0.1  # Separation
+            )
+            new_dy = (
+                agent["vel"][1] * 0.7
+                + (com_y - agent["pos"][1]) * cohesion * 0.1
+                + avg_dy * 0.1
+                + separation_y * 0.1
+            )
+        else:
+            new_dx = agent["vel"][0]
+            new_dy = agent["vel"][1]
+
+        # Normalize velocity
+        vel_mag = math.sqrt(new_dx * new_dx + new_dy * new_dy)
+        if vel_mag > 0:
+            new_dx = (new_dx / vel_mag) * speed
+            new_dy = (new_dy / vel_mag) * speed
+
+        # Update position
+        new_x = (agent["pos"][0] + new_dx) % self.width
+        new_y = (agent["pos"][1] + new_dy) % self.height
+
+        # Update energy based on alignment with group
+        if count > 0:
+            alignment = abs(new_dx - avg_dx) + abs(new_dy - avg_dy)
+            agent["energy"] = max(0.3, min(1.0, 1.0 - alignment * 0.2))
+
+        return {
+            "pos": (new_x, new_y),
+            "vel": (new_dx, new_dy),
+            "energy": agent["energy"],
+            "group": agent["group"],
+        }
+
+    def _update_spiral_agent(self, agent: Dict, speed: float) -> Dict:
+        """Update agent position and velocity for spiral movement"""
+        # Calculate angle and radius from center
+        dx = agent["pos"][0] - self._center_x
+        dy = agent["pos"][1] - self._center_y
+        radius = math.sqrt(dx * dx + dy * dy)
+        angle = math.atan2(dy, dx)
+
+        # Spiral movement
+        new_angle = angle + speed * (0.1 + 0.05 * radius)
+        new_radius = max(1, radius + math.sin(new_angle * 2) * 0.1)
+
+        # Update position
+        new_x = self._center_x + math.cos(new_angle) * new_radius
+        new_y = self._center_y + math.sin(new_angle) * new_radius
+
+        # Wrap around screen edges
+        new_x = new_x % self.width
+        new_y = new_y % self.height
+
+        # Calculate velocity from position change
+        new_dx = new_x - agent["pos"][0]
+        new_dy = new_y - agent["pos"][1]
+
+        # Update energy based on radius
+        agent["energy"] = 0.3 + (new_radius / (self.width * 0.5)) * 0.7
+
+        return {
+            "pos": (new_x, new_y),
+            "vel": (new_dx, new_dy),
+            "energy": agent["energy"],
+            "group": agent["group"],
+        }
+
+    def _update_scatter_agent(self, agent: Dict, speed: float) -> Dict:
+        """Update agent position and velocity for scatter movement"""
+        # Add random acceleration
+        new_dx = agent["vel"][0] + random.uniform(-0.5, 0.5) * speed
+        new_dy = agent["vel"][1] + random.uniform(-0.5, 0.5) * speed
+
+        # Normalize velocity
+        vel_mag = math.sqrt(new_dx * new_dx + new_dy * new_dy)
+        if vel_mag > 0:
+            new_dx = (new_dx / vel_mag) * speed
+            new_dy = (new_dy / vel_mag) * speed
+
+        # Update position
+        new_x = (agent["pos"][0] + new_dx) % self.width
+        new_y = (agent["pos"][1] + new_dy) % self.height
+
+        # Update energy based on velocity
+        agent["energy"] = 0.3 + (vel_mag / speed) * 0.7
+
+        return {
+            "pos": (new_x, new_y),
+            "vel": (new_dx, new_dy),
+            "energy": agent["energy"],
+            "group": agent["group"],
+        }
+
+    def _update_orbit_agent(
+        self, agent: Dict, attractor_points: List[Tuple[float, float]], speed: float
+    ) -> Dict:
+        """Update agent position and velocity for orbital movement around attractor points"""
+        # Find closest attractor
+        min_dist = float("inf")
+        closest_attractor = None
+
+        for attractor in attractor_points:
+            dx = attractor[0] - agent["pos"][0]
+            dy = attractor[1] - agent["pos"][1]
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < min_dist:
+                min_dist = dist
+                closest_attractor = attractor
+
+        if closest_attractor:
+            # Calculate orbital velocity
+            dx = closest_attractor[0] - agent["pos"][0]
+            dy = closest_attractor[1] - agent["pos"][1]
+            dist = math.sqrt(dx * dx + dy * dy)
+
+            if dist > 0:
+                # Orbital velocity (perpendicular to radius)
+                orbit_dx = -dy / dist * speed
+                orbit_dy = dx / dist * speed
+
+                # Add some attraction/repulsion based on distance
+                ideal_dist = 5.0
+                radial_factor = (dist - ideal_dist) * 0.1
+                orbit_dx += dx / dist * radial_factor
+                orbit_dy += dy / dist * radial_factor
+
+                # Update velocity with some inertia
+                new_dx = agent["vel"][0] * 0.9 + orbit_dx * 0.1
+                new_dy = agent["vel"][1] * 0.9 + orbit_dy * 0.1
+            else:
+                new_dx = agent["vel"][0]
+                new_dy = agent["vel"][1]
+
+            # Normalize velocity
+            vel_mag = math.sqrt(new_dx * new_dx + new_dy * new_dy)
+            if vel_mag > 0:
+                new_dx = (new_dx / vel_mag) * speed
+                new_dy = (new_dy / vel_mag) * speed
+
+            # Update position
+            new_x = (agent["pos"][0] + new_dx) % self.width
+            new_y = (agent["pos"][1] + new_dy) % self.height
+
+            # Update energy based on how close to ideal orbit it is
+            orbit_quality = 1.0 - abs(dist - ideal_dist) / ideal_dist
+            agent["energy"] = 0.3 + orbit_quality * 0.7
+
+            return {
+                "pos": (new_x, new_y),
+                "vel": (new_dx, new_dy),
+                "energy": agent["energy"],
+                "group": agent["group"],
+            }
+        else:
+            return agent

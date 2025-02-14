@@ -368,7 +368,7 @@ class ParticleSystem(Pattern):
                         particle, speed, trail_length
                     )
 
-                new_particles.append(new_particle)
+                    new_particles.append(new_particle)
                 color = self._get_color(new_particle[4], color_mode)
                 pixels.extend(
                     self._draw_particle(
