@@ -6,16 +6,19 @@ import paho.mqtt.client as mqtt
 import time
 
 
-def send_command(topic: str, payload: dict):
+def send_command(topic: str, payload: dict, mqtt_host="localhost"):
     """Send a command to the pattern server"""
     client = mqtt.Client()
-    client.connect("localhost", 1883, 60)
+    client.connect(mqtt_host, 1883, 60)
     client.publish(topic, json.dumps(payload))
     client.disconnect()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Control LED Pattern Server")
+    parser.add_argument(
+        "--mqtt-host", default="localhost", help="MQTT broker hostname or IP"
+    )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # Pattern command
@@ -66,25 +69,35 @@ def main():
     args = parser.parse_args()
 
     if args.command == "pattern":
-        send_command("led/command/pattern", {"name": args.name, "params": args.params})
+        send_command(
+            "led/command/pattern",
+            {"name": args.name, "params": args.params},
+            args.mqtt_host,
+        )
 
     elif args.command == "params":
-        send_command("led/command/params", {"params": args.params})
+        send_command("led/command/params", {"params": args.params}, args.mqtt_host)
 
     elif args.command == "add-modifier":
         send_command(
-            "led/command/modifier/add", {"name": args.name, "params": args.params}
+            "led/command/modifier/add",
+            {"name": args.name, "params": args.params},
+            args.mqtt_host,
         )
 
     elif args.command == "remove-modifier":
-        send_command("led/command/modifier/remove", {"index": args.index})
+        send_command(
+            "led/command/modifier/remove", {"index": args.index}, args.mqtt_host
+        )
 
     elif args.command == "clear-modifiers":
-        send_command("led/command/modifier/clear", {})
+        send_command("led/command/modifier/clear", {}, args.mqtt_host)
 
     elif args.command == "update-modifier":
         send_command(
-            "led/command/modifier/params", {"index": args.index, "params": args.params}
+            "led/command/modifier/params",
+            {"index": args.index, "params": args.params},
+            args.mqtt_host,
         )
 
     elif args.command == "list":
@@ -119,7 +132,7 @@ def main():
 
         client = mqtt.Client()
         client.on_message = on_message
-        client.connect("localhost", 1883, 60)
+        client.connect(args.mqtt_host, 1883, 60)
         client.subscribe("led/status/list")
         client.publish("led/command/list", "{}")
         client.loop_start()
@@ -127,10 +140,10 @@ def main():
         client.loop_stop()
 
     elif args.command == "stop":
-        send_command("led/command/stop", {})
+        send_command("led/command/stop", {}, args.mqtt_host)
 
     elif args.command == "clear":
-        send_command("led/command/clear", {})
+        send_command("led/command/clear", {}, args.mqtt_host)
 
     else:
         parser.print_help()
