@@ -2,6 +2,7 @@ import random
 import numpy as np
 from typing import Dict, Any, List
 from server.patterns.base import Pattern, PatternDefinition, Parameter, PatternRegistry
+import math
 
 
 @PatternRegistry.register
@@ -10,8 +11,14 @@ class GameOfLife(Pattern):
     def definition(cls) -> PatternDefinition:
         return PatternDefinition(
             name="game_of_life",
-            description="Conway's Game of Life with colorful cells",
+            description="Enhanced Game of Life with bold visuals optimized for 24x25 LED grid",
             parameters=[
+                Parameter(
+                    name="variation",
+                    type=str,
+                    default="classic",
+                    description="Rule variation (classic, bloom, maze, coral, chaos)",
+                ),
                 Parameter(
                     name="density",
                     type=float,
@@ -23,16 +30,24 @@ class GameOfLife(Pattern):
                 Parameter(
                     name="color_mode",
                     type=str,
-                    default="age",
-                    description="Color mode (age/inheritance/rainbow)",
+                    default="energy",
+                    description="Color mode (energy, heat, neon, crystal, flow)",
                 ),
                 Parameter(
-                    name="update_rate",
+                    name="speed",
                     type=float,
                     default=1.0,
                     min_value=0.1,
-                    max_value=5.0,
-                    description="Generation update rate",
+                    max_value=3.0,
+                    description="Generation update speed",
+                ),
+                Parameter(
+                    name="size",
+                    type=int,
+                    default=1,
+                    min_value=1,
+                    max_value=2,
+                    description="Cell size (1-2 pixels)",
                 ),
             ],
             category="cellular",
@@ -42,53 +57,185 @@ class GameOfLife(Pattern):
     def __init__(self, grid_config):
         super().__init__(grid_config)
         self.grid = None
+        self.energy = None  # Cell energy levels
         self.colors = None  # RGB colors for each cell
-        self.ages = None  # Cell ages for age-based coloring
-        self._steps = 0
+        self.ages = None  # Cell ages for patterns
+        self._step = 0
         self._update_counter = 0
+        self._center_x = self.width / 2
+        self._center_y = self.height / 2
 
-    def init_grid(self, density: float):
-        """Initialize random grid and colors"""
-        self.grid = np.random.choice(
-            [0, 1], size=(self.height, self.width), p=[1 - density, density]
-        )
-        self.colors = np.random.randint(0, 255, size=(self.height, self.width, 3))
+    def _init_grid(self, density: float, variation: str):
+        """Initialize grid with pattern based on variation"""
+        self.grid = np.zeros((self.height, self.width), dtype=int)
+        self.energy = np.zeros((self.height, self.width), dtype=float)
+        self.colors = np.zeros((self.height, self.width, 3), dtype=int)
         self.ages = np.zeros((self.height, self.width), dtype=int)
 
-    def count_neighbors(self, y: int, x: int) -> int:
-        """Count live neighbors of a cell"""
-        total = 0
+        if variation == "bloom":
+            # Create circular pattern
+            for y in range(self.height):
+                for x in range(self.width):
+                    dx = x - self._center_x
+                    dy = y - self._center_y
+                    dist = math.sqrt(dx * dx + dy * dy)
+                    if dist < min(self.width, self.height) / 4:
+                        if random.random() < density * 1.5:
+                            self.grid[y, x] = 1
+                            self.energy[y, x] = 1.0
+
+        elif variation == "maze":
+            # Create maze-like initial pattern
+            for y in range(0, self.height, 2):
+                for x in range(0, self.width, 2):
+                    if random.random() < density * 1.2:
+                        self.grid[y, x] = 1
+                        if y + 1 < self.height and random.random() < 0.7:
+                            self.grid[y + 1, x] = 1
+                        if x + 1 < self.width and random.random() < 0.7:
+                            self.grid[y, x + 1] = 1
+                        self.energy[y, x] = 1.0
+
+        elif variation == "coral":
+            # Start from edges
+            for y in range(self.height):
+                for x in range(self.width):
+                    if x == 0 or x == self.width - 1 or y == 0 or y == self.height - 1:
+                        if random.random() < density * 2:
+                            self.grid[y, x] = 1
+                            self.energy[y, x] = 1.0
+
+        elif variation == "chaos":
+            # Create high-energy random pattern
+            self.grid = np.random.choice(
+                [0, 1],
+                size=(self.height, self.width),
+                p=[1 - density * 1.5, density * 1.5],
+            )
+            self.energy = np.random.uniform(0.5, 1.0, size=(self.height, self.width))
+            self.energy *= self.grid
+
+        else:  # classic
+            # Random distribution
+            self.grid = np.random.choice(
+                [0, 1], size=(self.height, self.width), p=[1 - density, density]
+            )
+            self.energy = self.grid.astype(float)
+
+    def _count_neighbors(self, y: int, x: int) -> tuple[int, float]:
+        """Count live neighbors and their average energy"""
+        count = 0
+        total_energy = 0.0
         for dy in [-1, 0, 1]:
             for dx in [-1, 0, 1]:
                 if dx == 0 and dy == 0:
                     continue
                 ny = (y + dy) % self.height
                 nx = (x + dx) % self.width
-                total += self.grid[ny, nx]
-        return total
+                if self.grid[ny, nx]:
+                    count += 1
+                    total_energy += self.energy[ny, nx]
+        return count, (total_energy / count if count > 0 else 0)
 
-    def get_cell_color(self, y: int, x: int, color_mode: str) -> tuple[int, int, int]:
-        """Get cell color based on mode"""
+    def _apply_rules(
+        self, y: int, x: int, neighbors: int, avg_energy: float, variation: str
+    ) -> tuple[int, float]:
+        """Apply rules based on variation"""
+        current = self.grid[y, x]
+        current_energy = self.energy[y, x]
+
+        if variation == "bloom":
+            # Favor growth patterns
+            if current and neighbors in [2, 3, 4]:
+                return 1, min(1.0, current_energy * 1.1)
+            elif not current and neighbors in [3, 4]:
+                return 1, avg_energy * 0.9
+            return 0, 0.0
+
+        elif variation == "maze":
+            # Rules that tend to create maze-like patterns
+            if current and neighbors in [1, 2, 3, 4]:
+                return 1, min(1.0, current_energy * 1.05)
+            elif not current and neighbors == 3:
+                return 1, avg_energy * 0.95
+            return 0, 0.0
+
+        elif variation == "coral":
+            # Rules for coral-like growth
+            if current and neighbors in [2, 3, 4, 5]:
+                return 1, min(1.0, current_energy * 1.02)
+            elif not current and neighbors in [3]:
+                return 1, avg_energy * 0.98
+            return 0, 0.0
+
+        elif variation == "chaos":
+            # More dynamic rules
+            if current and neighbors in [2, 3]:
+                return 1, min(1.0, current_energy * 1.15)
+            elif not current and neighbors in [2, 3, 4]:
+                return 1, avg_energy * 0.85
+            return 0, 0.0
+
+        else:  # classic
+            # Standard Game of Life rules
+            if current and neighbors in [2, 3]:
+                return 1, min(1.0, current_energy * 1.05)
+            elif not current and neighbors == 3:
+                return 1, avg_energy * 0.95
+            return 0, 0.0
+
+    def _get_cell_color(
+        self, y: int, x: int, color_mode: str, cell_size: int
+    ) -> tuple[int, int, int]:
+        """Get enhanced cell color based on mode and energy"""
         if not self.grid[y, x]:
             return (0, 0, 0)
 
-        if color_mode == "age":
-            # Color based on cell age
-            age = self.ages[y, x]
-            hue = (age * 10) % 255
-            return self.hsv_to_rgb(hue / 255, 1.0, 1.0)
+        energy = self.energy[y, x]
+        age = self.ages[y, x]
 
-        elif color_mode == "inheritance":
-            # Use inherited color
-            return tuple(self.colors[y, x])
+        if color_mode == "energy":
+            # Dynamic energy-based colors
+            if energy > 0.8:
+                # High energy: white to yellow
+                v = (energy - 0.8) * 5  # Scale 0.8-1.0 to 0-1
+                return (255, 255, int(255 * (1 - v)))
+            else:
+                # Lower energy: blue to white
+                v = energy * 1.25  # Scale 0-0.8 to 0-1
+                return (int(v * 255), int(v * 255), 255)
 
-        else:  # rainbow
-            # Color based on position and time
-            hue = (x + y + self._steps * 5) % 255
-            return self.hsv_to_rgb(hue / 255, 1.0, 1.0)
+        elif color_mode == "heat":
+            # Temperature-like colors
+            if energy > 0.5:
+                # Hot: red to yellow
+                v = (energy - 0.5) * 2
+                return (255, int(255 * v), 0)
+            else:
+                # Cool: blue to red
+                v = energy * 2
+                return (int(255 * v), 0, int(255 * (1 - v)))
 
-    def hsv_to_rgb(self, h: float, s: float, v: float) -> tuple[int, int, int]:
-        """Convert HSV color to RGB."""
+        elif color_mode == "neon":
+            # Bright neon colors
+            hue = (energy + self._step * 0.01) % 1.0
+            return self._hsv_to_rgb(hue, 1.0, energy * 0.5 + 0.5)
+
+        elif color_mode == "crystal":
+            # Crystalline effect
+            base_hue = (x + y) / (self.width + self.height)
+            hue = (base_hue + energy * 0.2) % 1.0
+            return self._hsv_to_rgb(hue, energy, 1.0)
+
+        else:  # flow
+            # Flowing colors based on position and time
+            dx = x - self._center_x
+            dy = y - self._center_y
+            angle = (math.atan2(dy, dx) / (2 * math.pi) + 0.5 + self._step * 0.01) % 1.0
+            return self._hsv_to_rgb(angle, energy, 1.0)
+
+    def _hsv_to_rgb(self, h: float, s: float, v: float) -> tuple[int, int, int]:
+        """Convert HSV color to RGB"""
         h = h % 1.0
         if s == 0.0:
             return (int(v * 255), int(v * 255), int(v * 255))
@@ -115,73 +262,79 @@ class GameOfLife(Pattern):
 
         return (int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255))
 
+    def _draw_cell(
+        self, x: int, y: int, size: int, color: tuple[int, int, int]
+    ) -> List[Dict[str, int]]:
+        """Draw a cell with given size"""
+        pixels = []
+        for dy in range(size):
+            for dx in range(size):
+                px, py = x + dx, y + dy
+                if px < self.width and py < self.height:
+                    pixels.append(
+                        {
+                            "index": self.grid_config.xy_to_index(px, py),
+                            "r": color[0],
+                            "g": color[1],
+                            "b": color[2],
+                        }
+                    )
+        return pixels
+
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         params = self.validate_params(params)
+        variation = params["variation"]
         density = params["density"]
         color_mode = params["color_mode"]
-        update_rate = params["update_rate"]
+        speed = params["speed"]
+        cell_size = params["size"]
 
         # Initialize if needed
         if self.grid is None:
-            self.init_grid(density)
+            self._init_grid(density, variation)
 
         # Update counter
-        self._update_counter += update_rate * 0.05
+        self._update_counter += speed * 0.1
 
         # Update grid state when counter reaches 1
         if self._update_counter >= 1:
             self._update_counter = 0
-            self._steps += 1
+            self._step += 1
 
             # Calculate next generation
             new_grid = np.zeros_like(self.grid)
-            new_colors = np.copy(self.colors)
+            new_energy = np.zeros_like(self.energy)
             new_ages = np.copy(self.ages)
 
-            for y in range(self.height):
-                for x in range(self.width):
-                    neighbors = self.count_neighbors(y, x)
-                    current = self.grid[y, x]
+            for y in range(0, self.height, cell_size):
+                for x in range(0, self.width, cell_size):
+                    neighbors, avg_energy = self._count_neighbors(y, x)
+                    state, energy = self._apply_rules(
+                        y, x, neighbors, avg_energy, variation
+                    )
 
-                    # Apply Game of Life rules
-                    if current and neighbors in [2, 3]:
-                        new_grid[y, x] = 1
-                        new_ages[y, x] += 1
-                    elif not current and neighbors == 3:
-                        new_grid[y, x] = 1
-                        # Inherit average color from neighbors
-                        neighbor_colors = []
-                        for dy in [-1, 0, 1]:
-                            for dx in [-1, 0, 1]:
-                                if dx == 0 and dy == 0:
-                                    continue
-                                ny = (y + dy) % self.height
-                                nx = (x + dx) % self.width
-                                if self.grid[ny, nx]:
-                                    neighbor_colors.append(self.colors[ny, nx])
-                        if neighbor_colors:
-                            new_colors[y, x] = np.mean(neighbor_colors, axis=0)
+                    # Apply state to all pixels in the cell
+                    for dy in range(cell_size):
+                        for dx in range(cell_size):
+                            py, px = y + dy, x + dx
+                            if px < self.width and py < self.height:
+                                new_grid[py, px] = state
+                                new_energy[py, px] = energy
+                                if state:
+                                    new_ages[py, px] += 1
                     else:
-                        new_grid[y, x] = 0
-                        new_ages[y, x] = 0
+                        new_ages[py, px] = 0
 
             self.grid = new_grid
-            self.colors = new_colors
+            self.energy = new_energy
             self.ages = new_ages
 
         # Generate frame
         pixels = []
-        for y in range(self.height):
-            for x in range(self.width):
+        for y in range(0, self.height, cell_size):
+            for x in range(0, self.width, cell_size):
                 if self.grid[y, x]:
-                    r, g, b = self.get_cell_color(y, x, color_mode)
-                    pixels.append(
-                        {
-                            "index": self.grid_config.xy_to_index(x, y),
-                            "r": r,
-                            "g": g,
-                            "b": b,
-                        }
-                    )
+                    color = self._get_cell_color(y, x, color_mode, cell_size)
+                    pixels.extend(self._draw_cell(x, y, cell_size, color))
 
         return pixels

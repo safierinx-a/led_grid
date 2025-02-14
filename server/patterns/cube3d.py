@@ -5,13 +5,19 @@ from server.patterns.base import Pattern, PatternDefinition, Parameter, PatternR
 
 
 @PatternRegistry.register
-class Cube3D(Pattern):
+class Polyhedra3D(Pattern):
     @classmethod
     def definition(cls) -> PatternDefinition:
         return PatternDefinition(
-            name="cube3d",
-            description="3D rotating wireframe cube",
+            name="polyhedra3d",
+            description="Bold 3D geometric shapes optimized for 24x25 LED grid with dynamic transformations",
             parameters=[
+                Parameter(
+                    name="variation",
+                    type=str,
+                    default="cube",
+                    description="Pattern variation (cube, tetra, octa, star, prism, diamond)",
+                ),
                 Parameter(
                     name="rotation_speed",
                     type=float,
@@ -26,24 +32,54 @@ class Cube3D(Pattern):
                     default=0.8,
                     min_value=0.1,
                     max_value=2.0,
-                    description="Cube size",
+                    description="Shape size",
                 ),
                 Parameter(
                     name="color_mode",
                     type=str,
-                    default="edges",
-                    description="Color mode (edges/vertices/rainbow)",
+                    default="neon",
+                    description="Color mode (neon, pulse, cyber, rainbow, energy)",
+                ),
+                Parameter(
+                    name="glow",
+                    type=float,
+                    default=0.5,
+                    min_value=0.0,
+                    max_value=1.0,
+                    description="Edge glow intensity",
+                ),
+                Parameter(
+                    name="transform",
+                    type=str,
+                    default="spin",
+                    description="Transform mode (spin, morph, pulse, wave, bounce)",
                 ),
             ],
             category="3d",
-            tags=["3d", "cube", "wireframe"],
+            tags=["3d", "geometric", "wireframe", "bold"],
         )
 
     def __init__(self, grid_config):
         super().__init__(grid_config)
         self._time = 0
-        # Define cube vertices
-        self.vertices = np.array(
+        self._center_x = self.width / 2
+        self._center_y = self.height / 2
+        self._shape_buffers = {
+            "cube": self._init_cube(),
+            "tetra": self._init_tetrahedron(),
+            "octa": self._init_octahedron(),
+            "star": self._init_star(),
+            "prism": self._init_prism(),
+            "diamond": self._init_diamond(),
+        }
+        self._current_vertices = None
+        self._current_edges = None
+        self._prev_shape = None
+        self._morph_progress = 0.0
+
+    def _init_cube(self) -> tuple[np.ndarray, List[tuple[int, int]]]:
+        """Initialize cube with bold proportions"""
+        vertices = np.array(
             [
                 [-1, -1, -1],
                 [1, -1, -1],
@@ -56,8 +92,7 @@ class Cube3D(Pattern):
             ],
             dtype=float,
         )
-        # Define edges as pairs of vertex indices
-        self.edges = [
+        edges = [
             (0, 1),
             (1, 2),
             (2, 3),
@@ -71,8 +106,201 @@ class Cube3D(Pattern):
             (2, 6),
             (3, 7),  # Vertical edges
         ]
-        self._center_x = self.width / 2
-        self._center_y = self.height / 2
+        return vertices, edges
+
+    def _init_tetrahedron(self) -> tuple[np.ndarray, List[tuple[int, int]]]:
+        """Initialize tetrahedron with bold proportions"""
+        vertices = np.array(
+            [
+                [0, -1, -1 / math.sqrt(2)],
+                [-1, 1, -1 / math.sqrt(2)],
+                [1, 1, -1 / math.sqrt(2)],
+                [0, 0, math.sqrt(2)],
+            ],
+            dtype=float,
+        )
+        edges = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)]
+        return vertices * 1.5, edges  # Scale up for better visibility
+
+    def _init_octahedron(self) -> tuple[np.ndarray, List[tuple[int, int]]]:
+        """Initialize octahedron with bold proportions"""
+        vertices = np.array(
+            [
+                [0, 0, 1.5],
+                [1.5, 0, 0],
+                [0, 1.5, 0],
+                [-1.5, 0, 0],
+                [0, -1.5, 0],
+                [0, 0, -1.5],
+            ],
+            dtype=float,
+        )
+        edges = [
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (0, 4),  # Top vertex connections
+            (5, 1),
+            (5, 2),
+            (5, 3),
+            (5, 4),  # Bottom vertex connections
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 1),  # Middle square
+        ]
+        return vertices, edges
+
+    def _init_star(self) -> tuple[np.ndarray, List[tuple[int, int]]]:
+        """Initialize star-shaped polyhedron"""
+        vertices = []
+        phi = (1 + math.sqrt(5)) / 2  # Golden ratio
+        scale = 1.2  # Increased scale for visibility
+
+        # Create star points
+        for i in range(12):
+            angle = i * math.pi / 6
+            vertices.append(
+                [
+                    math.cos(angle) * scale,
+                    math.sin(angle) * scale,
+                    phi * scale if i % 2 == 0 else -phi * scale,
+                ]
+            )
+
+        vertices = np.array(vertices, dtype=float)
+        edges = []
+        # Connect star points
+        for i in range(12):
+            edges.append((i, (i + 1) % 12))
+            edges.append((i, (i + 2) % 12))
+
+        return vertices, edges
+
+    def _init_prism(self) -> tuple[np.ndarray, List[tuple[int, int]]]:
+        """Initialize triangular prism with bold proportions"""
+        vertices = np.array(
+            [
+                [-1, -1, -1],
+                [1, -1, -1],
+                [0, 1.5, -1],  # Bottom triangle
+                [-1, -1, 1],
+                [1, -1, 1],
+                [0, 1.5, 1],  # Top triangle
+            ],
+            dtype=float,
+        )
+        edges = [
+            (0, 1),
+            (1, 2),
+            (2, 0),  # Bottom face
+            (3, 4),
+            (4, 5),
+            (5, 3),  # Top face
+            (0, 3),
+            (1, 4),
+            (2, 5),  # Vertical edges
+        ]
+        return vertices * 1.2, edges  # Scale up for better visibility
+
+    def _init_diamond(self) -> tuple[np.ndarray, List[tuple[int, int]]]:
+        """Initialize diamond shape with bold proportions"""
+        vertices = np.array(
+            [
+                [0, 0, 2],  # Top point
+                [1, 1, 0],
+                [-1, 1, 0],
+                [-1, -1, 0],
+                [1, -1, 0],  # Middle points
+                [0, 0, -2],  # Bottom point
+            ],
+            dtype=float,
+        )
+        edges = [
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (0, 4),  # Top to middle
+            (5, 1),
+            (5, 2),
+            (5, 3),
+            (5, 4),  # Bottom to middle
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 1),  # Middle square
+        ]
+        return vertices, edges
+
+    def _get_glow_color(
+        self, base_color: tuple[int, int, int], intensity: float, phase: float
+    ) -> tuple[int, int, int]:
+        """Get glowing color effect"""
+        glow = (math.sin(phase) * 0.5 + 0.5) * intensity
+        return tuple(min(255, int(c * (1 + glow))) for c in base_color)
+
+    def _get_color(self, index: float, mode: str, time: float) -> tuple[int, int, int]:
+        """Get enhanced color based on mode"""
+        if mode == "neon":
+            # Bright neon colors
+            hue = (index * 0.2 + time * 0.1) % 1.0
+            return self.hsv_to_rgb(hue, 1.0, 1.0)
+        elif mode == "pulse":
+            # Pulsing color effect
+            pulse = math.sin(time * 2 + index * math.pi) * 0.3 + 0.7
+            hue = (index * 0.1 + time * 0.05) % 1.0
+            return self.hsv_to_rgb(hue, 1.0, pulse)
+        elif mode == "cyber":
+            # Cyberpunk-inspired colors
+            hue = 0.6 + math.sin(time + index) * 0.1
+            sat = 0.8 + math.sin(time * 2 + index) * 0.2
+            return self.hsv_to_rgb(hue, sat, 1.0)
+        elif mode == "rainbow":
+            # Smooth rainbow transitions
+            hue = (time * 0.1 + index / 8) % 1.0
+            return self.hsv_to_rgb(hue, 1.0, 1.0)
+        else:  # energy
+            # Energy level visualization
+            energy = math.sin(time * 3 + index * math.pi) * 0.5 + 0.5
+            return self.hsv_to_rgb(energy * 0.3, 1.0, 1.0)
+
+    def _apply_transform(
+        self, points: np.ndarray, transform: str, time: float
+    ) -> np.ndarray:
+        """Apply dynamic transformations"""
+        transformed = points.copy()
+
+        if transform == "spin":
+            # Enhanced spinning effect
+            angle = time * 2
+            transformed = self.rotate_points(
+                transformed,
+                time * 0.5,  # X rotation
+                time * 0.7,  # Y rotation
+                time * 0.3,  # Z rotation
+            )
+        elif transform == "morph":
+            # Morphing between shapes
+            if self._prev_shape and self._prev_shape != self._current_vertices:
+                transformed = (
+                    transformed * (1 - self._morph_progress)
+                    + self._prev_shape * self._morph_progress
+                )
+                self._morph_progress = min(1.0, self._morph_progress + 0.05)
+        elif transform == "pulse":
+            # Pulsing size effect
+            scale = math.sin(time * 2) * 0.2 + 1.0
+            transformed *= scale
+        elif transform == "wave":
+            # Wave deformation
+            for i in range(len(transformed)):
+                transformed[i, 2] += math.sin(time * 2 + transformed[i, 0]) * 0.3
+        elif transform == "bounce":
+            # Bouncing effect
+            bounce = abs(math.sin(time * 1.5)) * 0.5
+            transformed[:, 1] += bounce
+
+        return transformed
 
     def rotate_points(
         self, points: np.ndarray, rx: float, ry: float, rz: float
@@ -192,42 +420,43 @@ class Cube3D(Pattern):
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         params = self.validate_params(params)
+        shape = params["variation"]
         rotation_speed = params["rotation_speed"]
         size = params["size"]
         color_mode = params["color_mode"]
+        glow = params["glow"]
+        transform = params["transform"]
 
         self._time += 0.05 * rotation_speed
 
-        # Scale and rotate vertices
-        scaled_vertices = self.vertices * size
-        rotated_points = self.rotate_points(
-            scaled_vertices,
-            self._time * 0.5,  # X rotation
-            self._time * 0.7,  # Y rotation
-            self._time * 0.3,  # Z rotation
+        # Get shape vertices and edges
+        vertices, edges = self._shape_buffers[shape]
+        if self._current_vertices is None:
+            self._current_vertices = vertices.copy()
+            self._prev_shape = vertices.copy()
+
+        # Apply transformations
+        transformed_points = self._apply_transform(
+            vertices * size, transform, self._time
         )
+        projected_points = [self.project_point(p) for p in transformed_points]
 
-        # Project points to 2D
-        projected_points = [self.project_point(p) for p in rotated_points]
-
-        # Draw edges
+        # Draw edges with enhanced effects
         pixels = []
-        for i, (v1, v2) in enumerate(self.edges):
+        for i, (v1, v2) in enumerate(edges):
             x1, y1 = projected_points[v1]
             x2, y2 = projected_points[v2]
 
-            if color_mode == "edges":
-                # Different color for each edge
-                color = self.hsv_to_rgb(i / len(self.edges), 1.0, 1.0)
-            elif color_mode == "vertices":
-                # Color based on vertex positions
-                color = self.hsv_to_rgb((v1 + v2) / 16, 1.0, 1.0)
-            else:  # rainbow
-                # Color changes over time
-                color = self.hsv_to_rgb(
-                    self._time * 0.1 + i / len(self.edges), 1.0, 1.0
-                )
+            # Get base color with enhanced effects
+            base_color = self._get_color(i / len(edges), color_mode, self._time)
 
+            # Apply glow effect
+            if glow > 0:
+                color = self._get_glow_color(base_color, glow, self._time * 4 + i)
+            else:
+                color = base_color
+
+            # Draw enhanced line
             pixels.extend(self.draw_line(x1, y1, x2, y2, color))
 
         return pixels
