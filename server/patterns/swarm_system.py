@@ -310,9 +310,15 @@ class SwarmSystem(Pattern):
         trail_length = params.get("trail_length", 0)
         cohesion = params["cohesion"]
 
+        # Clear color buffer at start of frame
+        self._color_buffer.clear()
+
         # Initialize agents if needed
         if len(self.agents) < num_agents:
             self._init_agents(num_agents, variation)
+        elif len(self.agents) > num_agents:
+            # Remove excess agents if number was reduced
+            self.agents = self.agents[:num_agents]
 
         # Update agents
         pixels = []
@@ -342,6 +348,9 @@ class SwarmSystem(Pattern):
                     )
                 )
 
+        # Limit trail length based on number of agents to prevent memory issues
+        max_trail_length = min(trail_length, max(1, 50 // num_agents))
+
         # Update and draw agents
         for agent in self.agents:
             # Calculate new position and velocity based on variation
@@ -367,32 +376,36 @@ class SwarmSystem(Pattern):
                 )
 
             # Add trail if enabled
-            if trail_length > 0:
+            if max_trail_length > 0:
                 self.trails.append(
                     {
                         "pos": agent["pos"],
                         "age": 1.0,
-                        "color": self._get_color(agent["energy"], color_mode),
+                        "color": self._get_agent_color(agent, color_mode),
                     }
                 )
 
             # Add agent to new list and draw
             new_agents.append(new_agent)
-            color = self._get_color(new_agent["energy"], color_mode)
+            color = self._get_agent_color(new_agent, color_mode)
             x, y = new_agent["pos"]
             pixels.extend(self._draw_agent(x, y, params["size"], color))
 
-        # Update and draw trails
-        if trail_length > 0:
+        # Update and draw trails with fixed maximum
+        if max_trail_length > 0:
             new_trails = []
-            for trail in self.trails:
+            for trail in self.trails[
+                -max_trail_length * len(self.agents) :
+            ]:  # Only process recent trails
                 if trail["age"] > 0.1:
                     trail["age"] *= 0.9
                     color = tuple(int(c * trail["age"]) for c in trail["color"])
                     x, y = trail["pos"]
                     pixels.extend(self._draw_agent(x, y, 1, color))
                     new_trails.append(trail)
-            self.trails = new_trails[: trail_length * len(self.agents)]
+            self.trails = new_trails[
+                : max_trail_length * len(self.agents)
+            ]  # Enforce maximum trail length
 
         # Draw predator if active
         if variation == "predator" and self._predator_pos:

@@ -19,16 +19,7 @@ LED_CHANNEL = 0  # PWM channel to use
 class LEDController:
     def __init__(self, mqtt_host="localhost"):
         # Create NeoPixel object with appropriate configuration
-        self.strip = PixelStrip(
-            LED_COUNT,
-            LED_PIN,
-            LED_FREQ_HZ,
-            LED_DMA,
-            LED_INVERT,
-            LED_BRIGHTNESS,
-            LED_CHANNEL,
-        )
-        self.strip.begin()
+        self.init_strip()
 
         # MQTT setup
         self.mqtt_host = mqtt_host
@@ -39,63 +30,112 @@ class LEDController:
         # Frame buffer to store current state
         self.frame_buffer = [(0, 0, 0)] * LED_COUNT
         self.needs_update = False
+        self.last_update_time = time.time()
+        self.consecutive_errors = 0
+        self.max_consecutive_errors = 3
+        self.error_reset_interval = 60  # Reset error count after 60 seconds
+
+    def init_strip(self):
+        """Initialize the LED strip with error handling"""
+        try:
+            self.strip = PixelStrip(
+                LED_COUNT,
+                LED_PIN,
+                LED_FREQ_HZ,
+                LED_DMA,
+                LED_INVERT,
+                LED_BRIGHTNESS,
+                LED_CHANNEL,
+            )
+            self.strip.begin()
+        except Exception as e:
+            print(f"Error initializing LED strip: {e}")
+            # Wait and retry
+            time.sleep(1)
+            self.init_strip()
 
     def on_connect(self, client, userdata, flags, rc):
-        print(f"Connected with result code {rc}")
-        # Subscribe to pixel commands
-        client.subscribe("led/pixels")
+        """Handle MQTT connection with error checking"""
+        if rc == 0:
+            print("Connected to MQTT broker successfully")
+            client.subscribe("led/pixels")
+        else:
+            print(f"Failed to connect to MQTT broker with code {rc}")
+            # Try to reconnect
+            time.sleep(1)
+            self.connect_mqtt()
+
+    def connect_mqtt(self):
+        """Attempt to connect to MQTT broker with retry logic"""
+        try:
+            self.mqtt_client.connect(self.mqtt_host, 1883, 60)
+        except Exception as e:
+            print(f"Error connecting to MQTT: {e}")
+            time.sleep(5)
+            self.connect_mqtt()
 
     def on_message(self, client, userdata, msg):
+        """Handle incoming MQTT messages with error checking"""
         try:
             data = json.loads(msg.payload.decode())
-            command = data.get("command")
-
-            if command == "set_pixels":
-                pixels = data.get("pixels", [])
-                for pixel in pixels:
-                    index = pixel.get("index")
-                    r = pixel.get("r", 0)
-                    g = pixel.get("g", 0)
-                    b = pixel.get("b", 0)
-                    if 0 <= index < LED_COUNT:
-                        self.frame_buffer[index] = (r, g, b)
-                self.needs_update = True
-
-            elif command == "clear":
-                self.frame_buffer = [(0, 0, 0)] * LED_COUNT
-                self.needs_update = True
-
-        except json.JSONDecodeError:
-            print("Error decoding message")
+            for pixel in data:
+                index = pixel.get("index", 0)
+                if 0 <= index < LED_COUNT:
+                    r = max(0, min(255, pixel.get("r", 0)))
+                    g = max(0, min(255, pixel.get("g", 0)))
+                    b = max(0, min(255, pixel.get("b", 0)))
+                    self.frame_buffer[index] = (r, g, b)
+            self.needs_update = True
+        except json.JSONDecodeError as e:
+            print(f"Error decoding message: {e}")
+        except Exception as e:
+            print(f"Error processing message: {e}")
 
     def update_strip(self):
-        """Update the LED strip with current frame buffer"""
-        if self.needs_update:
+        """Update LED strip with error handling and recovery"""
+        if not self.needs_update:
+            return
+
+        try:
             for i, (r, g, b) in enumerate(self.frame_buffer):
                 self.strip.setPixelColor(i, Color(r, g, b))
             self.strip.show()
             self.needs_update = False
+            self.consecutive_errors = 0
+            self.last_update_time = time.time()
+        except Exception as e:
+            print(f"Error updating LED strip: {e}")
+            self.consecutive_errors += 1
+
+            # If too many errors, try to reinitialize
+            if self.consecutive_errors >= self.max_consecutive_errors:
+                print("Too many consecutive errors, reinitializing strip...")
+                self.init_strip()
+                self.consecutive_errors = 0
+
+            # If it's been a while since the last error, reset the count
+            if time.time() - self.last_update_time > self.error_reset_interval:
+                self.consecutive_errors = 0
 
     def run(self):
-        """Main run loop"""
-        # Connect to MQTT broker
-        self.mqtt_client.connect(self.mqtt_host, 1883, 60)
-
-        # Start MQTT loop in background thread
-        self.mqtt_client.loop_start()
-
-        try:
-            while True:
-                self.update_strip()
-                time.sleep(0.05)  # Small delay to prevent overwhelming the strip
-
-        except KeyboardInterrupt:
-            print("Shutting down...")
-            # Clear on shutdown
-            for i in range(self.strip.numPixels()):
-                self.strip.setPixelColor(i, Color(0, 0, 0))
-            self.strip.show()
-            self.mqtt_client.loop_stop()
+        """Main run loop with error recovery"""
+        while True:
+            try:
+                self.mqtt_client.loop_start()
+                while True:
+                    self.update_strip()
+                    time.sleep(0.001)  # Small delay to prevent CPU overload
+            except Exception as e:
+                print(f"Error in main loop: {e}")
+                self.mqtt_client.loop_stop()
+                time.sleep(1)
+                print("Attempting to recover...")
+                try:
+                    self.init_strip()
+                    self.connect_mqtt()
+                except Exception as recovery_error:
+                    print(f"Recovery failed: {recovery_error}")
+                    time.sleep(5)  # Wait before retrying
 
 
 if __name__ == "__main__":
