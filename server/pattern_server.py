@@ -31,9 +31,18 @@ class PatternServer:
         self.is_running = False
         self.update_thread = None
 
+        # Memory management
+        self.frame_count = 0
+        self.last_cleanup = time.time()
+        self.cleanup_interval = 60  # Cleanup every 60 seconds
+
         # Load all patterns and modifiers
         self._load_patterns()
         self._load_modifiers()
+
+        # Set up signal handlers
+        signal.signal(signal.SIGTERM, self.signal_handler)
+        signal.signal(signal.SIGINT, self.signal_handler)
 
     def _load_patterns(self):
         """Dynamically load all pattern modules"""
@@ -61,11 +70,15 @@ class PatternServer:
         self.mqtt_client.loop_start()
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
-        """Set the current pattern"""
-        # Clear the current pattern by sending a clear command
-        self.mqtt_client.publish("led/pixels", json.dumps({"command": "clear"}))
+        """Set current pattern with cleanup of old pattern"""
+        # Clean up old pattern
+        if self.current_pattern:
+            if hasattr(self.current_pattern, "_color_buffer"):
+                self.current_pattern._color_buffer.clear()
+            if hasattr(self.current_pattern, "trails"):
+                self.current_pattern.trails.clear()
 
-        # Set the new pattern
+        # Create new pattern
         pattern_class = PatternRegistry.get_pattern(pattern_name)
         if pattern_class:
             self.current_pattern = pattern_class(self.grid_config)
@@ -112,26 +125,75 @@ class PatternServer:
         message = {"command": "set_pixels", "pixels": pixels}
         self.mqtt_client.publish("led/pixels", json.dumps(message))
 
+    def cleanup(self):
+        """Perform periodic cleanup of resources"""
+        try:
+            # Clear any accumulated buffers
+            if self.current_pattern:
+                if hasattr(self.current_pattern, "_color_buffer"):
+                    self.current_pattern._color_buffer.clear()
+                if hasattr(self.current_pattern, "trails"):
+                    self.current_pattern.trails.clear()
+
+            # Clear modifier buffers
+            for modifier, _ in self.modifiers:
+                if hasattr(modifier, "_buffer"):
+                    modifier._buffer.clear()
+
+            # Force garbage collection
+            import gc
+
+            gc.collect()
+
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+
     def _update_loop(self):
-        """Main update loop running in background thread"""
+        """Main update loop with memory management"""
+        last_frame_time = time.time()
+        frame_times = []  # Track frame times for performance monitoring
+
         while self.is_running:
             try:
+                current_time = time.time()
+                frame_delta = current_time - last_frame_time
+
+                # Generate frame
                 if self.current_pattern:
-                    # Generate base frame
-                    frame = self.current_pattern.generate_frame(self.current_params)
+                    pixels = self.current_pattern.generate_frame(self.current_params)
 
-                    # Apply modifier chain
+                    # Apply modifiers
                     for modifier, params in self.modifiers:
-                        frame = modifier.apply(frame, params)
+                        pixels = modifier.apply(pixels, params)
 
-                    # Send final frame
-                    self.send_frame(frame)
+                    # Send frame
+                    self.send_frame(pixels)
 
-                time.sleep(0.05)  # 20fps
+                # Update performance metrics
+                frame_times.append(frame_delta)
+                if len(frame_times) > 100:
+                    frame_times.pop(0)
+                avg_frame_time = sum(frame_times) / len(frame_times)
+
+                # Periodic cleanup
+                self.frame_count += 1
+                if current_time - self.last_cleanup > self.cleanup_interval:
+                    print(f"Average frame time: {avg_frame_time * 1000:.2f}ms")
+                    self.cleanup()
+                    self.last_cleanup = current_time
+                    self.frame_count = 0
+
+                # Maintain target frame rate
+                target_frame_time = 1.0 / 30  # 30 FPS
+                sleep_time = max(0, target_frame_time - frame_delta)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+                last_frame_time = current_time
 
             except Exception as e:
                 print(f"Error in update loop: {e}")
-                time.sleep(0.1)  # Brief pause on error
+                time.sleep(0.1)  # Prevent tight error loop
 
     def start(self):
         """Start the pattern server"""
@@ -142,13 +204,24 @@ class PatternServer:
             self.update_thread.start()
 
     def stop(self):
-        """Stop the pattern server"""
+        """Stop the pattern server and clean up resources"""
         self.is_running = False
         if self.update_thread:
-            self.update_thread.join(timeout=1.0)
-        self.clear_modifiers()
-        self.mqtt_client.publish("led/pixels", json.dumps({"command": "clear"}))
+            self.update_thread.join()
+
+        # Clear all pixels
+        black_frame = [
+            {"index": i, "r": 0, "g": 0, "b": 0}
+            for i in range(self.grid_config.num_pixels)
+        ]
+        self.send_frame(black_frame)
+
+        # Clean up MQTT
         self.mqtt_client.loop_stop()
+        self.mqtt_client.disconnect()
+
+        # Final cleanup
+        self.cleanup()
 
     def list_patterns(self):
         """List all available patterns"""
@@ -157,6 +230,11 @@ class PatternServer:
     def list_modifiers(self):
         """List all available modifiers"""
         return ModifierRegistry.list_modifiers()
+
+    def signal_handler(self, signum, frame):
+        """Handle shutdown signals"""
+        print(f"\nReceived signal {signum}, shutting down...")
+        self.stop()
 
 
 if __name__ == "__main__":
@@ -219,15 +297,6 @@ if __name__ == "__main__":
     # Subscribe to command topics
     server.mqtt_client.on_message = on_message
     server.mqtt_client.subscribe("led/command/#")
-
-    # Handle graceful shutdown
-    def signal_handler(signum, frame):
-        print("\nShutting down...")
-        server.stop()
-        exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
 
     # Keep the main thread alive
     try:

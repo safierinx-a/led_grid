@@ -100,33 +100,34 @@ class GenerativeArt(Pattern):
         self.last_update = time.time()
         self._particles = []  # Initialize particles list
 
-    def _get_color(self, x: float, y: float, t: float, mode: str) -> tuple:
-        """Get color based on position, time and color mode."""
-        if mode == "rainbow":
+    def _get_color(
+        self, x: float, y: float, t: float, color_mode: str
+    ) -> tuple[int, int, int]:
+        """Get color based on position, time and color mode"""
+        if color_mode == "rainbow":
             hue = (x + y + t) % 1.0
-            sat = 1.0
-            val = 1.0
-        elif mode == "neon":
+            return self._hsv_to_rgb(hue, 1.0, 1.0)
+        elif color_mode == "neon":
             hue = (x + t * 2) % 1.0
             sat = 0.8 + math.sin(y * math.pi) * 0.2
             val = 0.9 + math.sin((x + y) * math.pi) * 0.1
-        elif mode == "mono":
-            hue = t % 1.0
-            sat = 0.1
+            return self._hsv_to_rgb(hue, sat, val)
+        elif color_mode == "mono":
             val = 0.5 + (math.sin(x * math.pi) + math.cos(y * math.pi)) * 0.25
-        elif mode == "heat":
+            return self._hsv_to_rgb(0.0, 0.0, val)
+        elif color_mode == "heat":
             hue = 0.05 + (math.sin(x * math.pi) + math.cos(y * math.pi)) * 0.1
             sat = 0.8 + math.sin(t * math.pi) * 0.2
             val = 0.7 + math.cos((x + y) * math.pi) * 0.3
+            return self._hsv_to_rgb(hue, sat, val)
         else:  # cyber
             hue = (0.6 + math.sin(t * math.pi) * 0.1) % 1.0
             sat = 0.9
             val = 0.7 + math.sin((x - y) * math.pi) * 0.3
+            return self._hsv_to_rgb(hue, sat, val)
 
-        return self._hsv_to_rgb(hue, sat, val)
-
-    def _apply_symmetry(self, x: int, y: int, symmetry: int) -> list:
-        """Generate symmetric points based on input coordinates."""
+    def _apply_symmetry(self, x: int, y: int, symmetry: int) -> List[Tuple[int, int]]:
+        """Generate symmetric points based on input coordinates"""
         points = [(x, y)]
         if symmetry > 1:
             center_x = self.width // 2
@@ -177,13 +178,16 @@ class GenerativeArt(Pattern):
 
     def init_particles(self, num_particles: int):
         """Initialize particles for flow field"""
-        self._particles = []
+        self.particles = []
         for _ in range(num_particles):
-            self._particles.append(
+            self.particles.append(
                 {
-                    "x": random.uniform(0, self.width),
-                    "y": random.uniform(0, self.height),
+                    "pos": (
+                        random.uniform(0, self.width),
+                        random.uniform(0, self.height),
+                    ),
                     "age": random.uniform(0, 1),
+                    "hue": random.random(),
                 }
             )
 
@@ -328,6 +332,7 @@ class GenerativeArt(Pattern):
 
     def _generate_flow_field(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate flow field pattern with enhanced features."""
+        # Initialize particles if needed
         if not self.particles:
             self.init_particles(int(20 * params["complexity"]))
 
@@ -335,33 +340,58 @@ class GenerativeArt(Pattern):
         t = self.step * params["speed"] * 0.1
         block_size = params["block_size"]
         symmetry = params["symmetry"]
-        blend = params["blend"]
+        complexity = params["complexity"]
 
+        # Update and draw particles
+        new_particles = []
         for particle in self.particles:
             x, y = particle["pos"]
-            angle = (math.sin(x * 0.1 + t) + math.cos(y * 0.1 + t)) * math.pi
+
+            # Calculate flow field angle at this position
+            angle = self.get_flow_field_value(x, y, t, complexity)
+
+            # Update position based on flow field
             dx = math.cos(angle) * params["speed"]
             dy = math.sin(angle) * params["speed"]
-
             new_x = (x + dx) % self.width
             new_y = (y + dy) % self.height
-            particle["pos"] = (new_x, new_y)
 
+            # Update particle
+            particle["pos"] = (new_x, new_y)
+            particle["age"] = min(1.0, particle["age"] + 0.01)
+            new_particles.append(particle)
+
+            # Draw particle with symmetry
             color = self._get_color(
                 new_x / self.width, new_y / self.height, t, params["color_mode"]
             )
             points = self._apply_symmetry(int(new_x), int(new_y), symmetry)
+
             for px, py in points:
                 if 0 <= px < self.width and 0 <= py < self.height:
-                    pixels.append(
-                        {
-                            "index": self.grid_config.xy_to_index(px, py),
-                            "r": color[0],
-                            "g": color[1],
-                            "b": color[2],
-                        }
-                    )
+                    # Draw block for each point
+                    for dy in range(block_size):
+                        for dx in range(block_size):
+                            bx, by = px + dx, py + dy
+                            if bx < self.width and by < self.height:
+                                pixels.append(
+                                    {
+                                        "index": self.grid_config.xy_to_index(bx, by),
+                                        "r": color[0],
+                                        "g": color[1],
+                                        "b": color[2],
+                                    }
+                                )
 
+            # Randomly reset some particles
+            if random.random() < 0.01:
+                particle["pos"] = (
+                    random.uniform(0, self.width),
+                    random.uniform(0, self.height),
+                )
+                particle["age"] = 0.0
+
+        self.particles = new_particles
         return pixels
 
     def _generate_cellular(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
