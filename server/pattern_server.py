@@ -354,16 +354,19 @@ class PatternServer:
         last_fps_print = time.time()
         frame_count = 0
         frame_times = []
+        target_frame_time = 1.0 / 60  # Target 60 FPS
 
         while self.is_running:
             try:
+                frame_start = time.time()
+
                 # Use poll with timeout to allow for graceful shutdown
-                if self.zmq_socket.poll(timeout=1000) == 0:  # 1 second timeout
+                if self.zmq_socket.poll(timeout=100) == 0:  # Reduced timeout to 100ms
                     continue
 
                 try:
                     # Get the request - ROUTER socket receives [identity, empty, msg]
-                    message = self.zmq_socket.recv_multipart()
+                    message = self.zmq_socket.recv_multipart(flags=zmq.NOBLOCK)
                     if len(message) != 3:
                         print(
                             f"Invalid message format, expected 3 parts but got {len(message)}"
@@ -375,14 +378,12 @@ class PatternServer:
                         print(f"Invalid request: {request}")
                         continue
 
-                    frame_start = time.time()
-
-                    try:
-                        # Generate frame if we have a pattern
-                        frame_data = None
-                        with self.pattern_lock:  # Lock while accessing pattern
-                            if self.current_pattern:
-                                # Generate frame
+                    # Generate frame if we have a pattern
+                    frame_data = None
+                    with self.pattern_lock:  # Lock while accessing pattern
+                        if self.current_pattern:
+                            try:
+                                # Generate frame with timeout protection
                                 pixels = self.current_pattern.generate_frame(
                                     self.current_params
                                 )
@@ -400,55 +401,51 @@ class PatternServer:
                                     frame_data.extend(
                                         [pixel["r"], pixel["g"], pixel["b"]]
                                     )
+                            except Exception as e:
+                                print(f"Error generating frame: {e}")
+                                frame_data = None
 
-                        if frame_data is None:
-                            # Send empty frame if no pattern
-                            frame_data = bytearray(
-                                [0] * (self.grid_config.num_pixels * 3)
-                            )
+                    if frame_data is None:
+                        # Send empty frame if no pattern or error
+                        frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
 
-                        # Send response with identity for ROUTER socket
-                        self.zmq_socket.send_multipart([identity, empty, frame_data])
+                    # Send response with identity for ROUTER socket
+                    self.zmq_socket.send_multipart(
+                        [identity, empty, frame_data], flags=zmq.NOBLOCK
+                    )
 
-                        # Track performance
-                        frame_time = time.time() - frame_start
-                        frame_times.append(frame_time)
-                        if len(frame_times) > 100:
-                            frame_times.pop(0)
-                        frame_count += 1
+                    # Track performance
+                    frame_time = time.time() - frame_start
+                    frame_times.append(frame_time)
+                    if len(frame_times) > 100:
+                        frame_times.pop(0)
+                    frame_count += 1
 
-                        # Update FPS in Home Assistant
-                        current_time = time.time()
-                        if current_time - last_fps_print >= 1.0:
-                            fps = frame_count / (current_time - last_fps_print)
-                            self.ha_manager.update_fps(fps)
-                            frame_count = 0
-                            last_fps_print = current_time
-
-                    except Exception as e:
-                        print(f"Error generating frame: {e}")
-                        # Send empty frame on error
-                        self.zmq_socket.send_multipart(
-                            [
-                                identity,
-                                empty,
-                                bytearray([0] * (self.grid_config.num_pixels * 3)),
-                            ]
+                    # Print FPS every second
+                    current_time = time.time()
+                    if current_time - last_fps_print >= 1.0:
+                        avg_frame_time = sum(frame_times) / len(frame_times)
+                        fps = frame_count / (current_time - last_fps_print)
+                        print(
+                            f"Server FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
                         )
+                        frame_count = 0
+                        last_fps_print = current_time
+
+                    # Pace the frames
+                    elapsed = time.time() - frame_start
+                    if elapsed < target_frame_time:
+                        time.sleep(target_frame_time - elapsed)
 
                 except zmq.Again:
-                    continue  # No message available
-
-                # Periodic cleanup if needed
-                current_time = time.time()
-                if current_time - self.last_cleanup > self.cleanup_interval:
-                    self.cleanup()
-                    self.last_cleanup = current_time
+                    # No message available, just continue
+                    time.sleep(0.001)
+                    continue
 
             except Exception as e:
                 if self.is_running:  # Only log errors if we're supposed to be running
                     print(f"Error in update loop: {e}")
-                time.sleep(0.01)
+                time.sleep(0.001)
 
     def start(self):
         """Start the pattern server"""

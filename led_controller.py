@@ -305,6 +305,9 @@ class LEDController:
             last_fps_print = time.time()
             frame_count = 0
             frame_times = []
+            target_frame_time = 1.0 / 60  # Target 60 FPS
+            last_frame_request = 0
+            min_frame_interval = 1.0 / 120  # Maximum 120 FPS
 
             # Main loop
             while True:
@@ -318,55 +321,69 @@ class LEDController:
                             break
                         continue
 
-                    # Request new frame - send as bytes
-                    self.zmq_socket.send_multipart([b"", b"READY"])
+                    # Pace frame requests
+                    current_time = time.time()
+                    time_since_last_request = current_time - last_frame_request
+                    if time_since_last_request < min_frame_interval:
+                        time.sleep(min_frame_interval - time_since_last_request)
+                        continue
+
+                    # Request new frame
+                    self.zmq_socket.send_multipart([b"", b"READY"], flags=zmq.NOBLOCK)
+                    last_frame_request = time.time()
 
                     # Receive frame data with timeout
-                    if self.zmq_socket.poll(timeout=1000):  # 1 second timeout
+                    if self.zmq_socket.poll(timeout=100):  # 100ms timeout
                         # DEALER socket receives [empty, msg]
-                        message = self.zmq_socket.recv_multipart()
-                        if len(message) != 2:
-                            print(
-                                f"Invalid message format, expected 2 parts but got {len(message)}"
-                            )
-                            continue
+                        try:
+                            message = self.zmq_socket.recv_multipart(flags=zmq.NOBLOCK)
+                            if len(message) != 2:
+                                print(
+                                    f"Invalid message format, expected 2 parts but got {len(message)}"
+                                )
+                                continue
 
-                        empty, frame_data = message
-                        self.last_frame_time = time.time()
+                            empty, frame_data = message
+                            self.last_frame_time = time.time()
+
+                            # Update LED strip
+                            for i in range(LED_COUNT):
+                                idx = i * 3
+                                if idx + 2 < len(frame_data):
+                                    r = frame_data[idx]
+                                    g = frame_data[idx + 1]
+                                    b = frame_data[idx + 2]
+                                    self.strip.setPixelColor(i, Color(r, g, b))
+
+                            self.strip.show()
+
+                            # Track performance
+                            frame_time = time.time() - frame_start
+                            frame_times.append(frame_time)
+                            if len(frame_times) > 100:
+                                frame_times.pop(0)
+                            frame_count += 1
+
+                            # Print FPS every second
+                            current_time = time.time()
+                            if current_time - last_fps_print >= 1.0:
+                                avg_frame_time = sum(frame_times) / len(frame_times)
+                                fps = frame_count / (current_time - last_fps_print)
+                                print(
+                                    f"LED FPS: {fps:.1f}, Update time: {avg_frame_time * 1000:.1f}ms"
+                                )
+                                frame_count = 0
+                                last_fps_print = current_time
+
+                            # Reset reconnection counter on successful frame
+                            self.reconnect_attempt = 0
+
+                        except zmq.Again:
+                            print("Frame skip - ZMQ would block")
+                            time.sleep(0.001)
                     else:
-                        raise zmq.Again("Frame receive timeout")
-
-                    # Update LED strip
-                    for i in range(LED_COUNT):
-                        idx = i * 3
-                        if idx + 2 < len(frame_data):
-                            r = frame_data[idx]
-                            g = frame_data[idx + 1]
-                            b = frame_data[idx + 2]
-                            self.strip.setPixelColor(i, Color(r, g, b))
-
-                    self.strip.show()
-
-                    # Track performance
-                    frame_time = time.time() - frame_start
-                    frame_times.append(frame_time)
-                    if len(frame_times) > 100:
-                        frame_times.pop(0)
-                    frame_count += 1
-
-                    # Print FPS every second
-                    current_time = time.time()
-                    if current_time - last_fps_print >= 1.0:
-                        avg_frame_time = sum(frame_times) / len(frame_times)
-                        fps = frame_count / (current_time - last_fps_print)
-                        print(
-                            f"LED FPS: {fps:.1f}, Update time: {avg_frame_time * 1000:.1f}ms"
-                        )
-                        frame_count = 0
-                        last_fps_print = current_time
-
-                    # Reset reconnection counter on successful frame
-                    self.reconnect_attempt = 0
+                        print("Frame receive timeout")
+                        time.sleep(0.001)
 
                 except zmq.Again:
                     print("Frame skip - ZMQ would block")
@@ -376,6 +393,11 @@ class LEDController:
                     if not self.handle_connection_error():
                         break
                     continue
+
+                # Pace the frames
+                elapsed = time.time() - frame_start
+                if elapsed < target_frame_time:
+                    time.sleep(target_frame_time - elapsed)
 
         except KeyboardInterrupt:
             print("\nShutting down gracefully...")
