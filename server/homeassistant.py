@@ -180,38 +180,89 @@ class HomeAssistantManager:
 
             # Publish with retry
             max_retries = 3
+            retry_delay = 1.0  # seconds
             for attempt in range(max_retries):
                 try:
+                    # Check if client is connected
+                    if not self.mqtt_client.is_connected():
+                        print(
+                            f"MQTT client not connected, waiting... (attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(retry_delay)
+                        continue
+
+                    # Publish with QoS 1 and wait for confirmation
                     result = self.mqtt_client.publish(
                         topic, payload, retain=True, qos=1
                     )
-                    result.wait_for_publish()
-                    if result.is_published():
-                        print(f"Successfully published discovery message to {topic}")
-                        return True
-                    else:
+                    if result.rc != mqtt.MQTT_ERR_SUCCESS:
                         print(
-                            f"Failed to publish discovery message to {topic} (attempt {attempt + 1}/{max_retries})"
+                            f"Publish returned error code {result.rc} (attempt {attempt + 1}/{max_retries})"
                         )
-                        time.sleep(0.5)  # Wait before retry
+                        time.sleep(retry_delay)
+                        continue
+
+                    # Wait for the message to be published
+                    result.wait_for_publish()
+                    print(f"Successfully published discovery message to {topic}")
+                    return True
+
                 except Exception as e:
                     print(f"Error publishing to {topic}: {str(e)}")
                     if attempt < max_retries - 1:
-                        time.sleep(0.5)  # Wait before retry
+                        time.sleep(retry_delay)
                     else:
                         raise
 
+            print(
+                f"Failed to publish discovery message to {topic} after {max_retries} attempts"
+            )
             return False
 
         except Exception as e:
             print(f"Error in _publish_config: {str(e)}")
             return False
 
+    def _publish_with_retry(
+        self, topic: str, payload: str, retain: bool = False
+    ) -> bool:
+        """Helper method to publish messages with retry logic"""
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                if not self.mqtt_client.is_connected():
+                    print(
+                        f"MQTT client not connected, waiting... (attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(retry_delay)
+                    continue
+
+                result = self.mqtt_client.publish(topic, payload, retain=retain, qos=1)
+                if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                    print(
+                        f"Publish returned error code {result.rc} (attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(retry_delay)
+                    continue
+
+                result.wait_for_publish()
+                return True
+
+            except Exception as e:
+                print(f"Error publishing to {topic}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+
+        print(f"Failed to publish message to {topic} after {max_retries} attempts")
+        return False
+
     def update_pattern_state(self, pattern_name: str, params: Dict[str, Any]):
         """Update pattern and parameter states"""
-        self.mqtt_client.publish("led/status/pattern", pattern_name)
+        self._publish_with_retry("led/status/pattern", pattern_name)
         for param_name, value in params.items():
-            self.mqtt_client.publish(f"led/status/params/{param_name}", str(value))
+            self._publish_with_retry(f"led/status/params/{param_name}", str(value))
 
     def update_modifier_state(
         self,
@@ -222,19 +273,19 @@ class HomeAssistantManager:
     ):
         """Update modifier states"""
         if modifier_name:
-            self.mqtt_client.publish(f"led/status/modifier/{index}/type", modifier_name)
-        self.mqtt_client.publish(
+            self._publish_with_retry(f"led/status/modifier/{index}/type", modifier_name)
+        self._publish_with_retry(
             f"led/status/modifier/{index}/enable", "ON" if enabled else "OFF"
         )
         for param_name, value in params.items():
-            self.mqtt_client.publish(
+            self._publish_with_retry(
                 f"led/status/modifier/{index}/params/{param_name}", str(value)
             )
 
     def update_fps(self, fps: float):
         """Update FPS state"""
-        self.mqtt_client.publish("led/status/fps", f"{fps:.1f}")
+        self._publish_with_retry("led/status/fps", f"{fps:.1f}")
 
     def update_component_status(self, component: str, status: str):
         """Update component status"""
-        self.mqtt_client.publish(f"led/status/{component}", status)
+        self._publish_with_retry(f"led/status/{component}", status, retain=True)

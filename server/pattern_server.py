@@ -95,6 +95,9 @@ class PatternServer:
             print(f"Creating MQTT client with ID: {client_id}")
             self.mqtt_client = mqtt.Client(client_id=client_id)  # Remove MQTTv5 for now
 
+            # Update HomeAssistantManager's MQTT client reference
+            self.ha_manager.mqtt_client = self.mqtt_client
+
             # Set up callbacks
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
