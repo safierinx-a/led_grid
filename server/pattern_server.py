@@ -43,9 +43,11 @@ class PatternServer:
         # Current pattern state
         self.current_pattern: Optional[Pattern] = None
         self.current_params: Dict[str, Any] = {}
+        self.pattern_lock = threading.Lock()  # Add lock for pattern state
 
         # Modifier chain
         self.modifiers: List[Tuple[Modifier, Dict[str, Any]]] = []
+        self.modifier_lock = threading.Lock()  # Add lock for modifier chain
 
         # Thread control
         self.is_running = False
@@ -259,54 +261,60 @@ class PatternServer:
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
         """Set current pattern with cleanup of old pattern"""
-        # Clean up old pattern
-        if self.current_pattern:
-            if hasattr(self.current_pattern, "_color_buffer"):
-                self.current_pattern._color_buffer.clear()
-            if hasattr(self.current_pattern, "trails"):
-                self.current_pattern.trails.clear()
+        with self.pattern_lock:  # Protect pattern state changes
+            # Clean up old pattern
+            if self.current_pattern:
+                if hasattr(self.current_pattern, "_color_buffer"):
+                    self.current_pattern._color_buffer.clear()
+                if hasattr(self.current_pattern, "trails"):
+                    self.current_pattern.trails.clear()
 
-        # Create new pattern
-        pattern_class = PatternRegistry.get_pattern(pattern_name)
-        if pattern_class:
-            self.current_pattern = pattern_class(self.grid_config)
-            self.current_params = params or {}
-            print(f"Set pattern to {pattern_name} with params {params}")
-        else:
-            print(f"Pattern {pattern_name} not found")
+            # Create new pattern
+            pattern_class = PatternRegistry.get_pattern(pattern_name)
+            if pattern_class:
+                self.current_pattern = pattern_class(self.grid_config)
+                self.current_params = params or {}
+                print(f"Set pattern to {pattern_name} with params {params}")
+            else:
+                print(f"Pattern {pattern_name} not found")
 
     def add_modifier(self, modifier_name: str, params: Dict[str, Any] = None):
         """Add a modifier to the chain"""
-        modifier_class = ModifierRegistry.get_modifier(modifier_name)
-        if modifier_class:
-            modifier = modifier_class(self.grid_config)
-            self.modifiers.append((modifier, params or {}))
-            print(f"Added modifier {modifier_name} with params {params}")
-        else:
-            print(f"Modifier {modifier_name} not found")
+        with self.modifier_lock:  # Protect modifier chain changes
+            modifier_class = ModifierRegistry.get_modifier(modifier_name)
+            if modifier_class:
+                modifier = modifier_class(self.grid_config)
+                self.modifiers.append((modifier, params or {}))
+                print(f"Added modifier {modifier_name} with params {params}")
+            else:
+                print(f"Modifier {modifier_name} not found")
 
     def remove_modifier(self, index: int):
         """Remove a modifier from the chain"""
-        if 0 <= index < len(self.modifiers):
-            modifier, params = self.modifiers.pop(index)
-            print(f"Removed modifier at index {index}")
+        with self.modifier_lock:  # Protect modifier chain changes
+            if 0 <= index < len(self.modifiers):
+                modifier, params = self.modifiers.pop(index)
+                print(f"Removed modifier at index {index}")
 
     def clear_modifiers(self):
         """Clear all modifiers"""
-        self.modifiers = []
-        print("Cleared all modifiers")
+        with self.modifier_lock:  # Protect modifier chain changes
+            self.modifiers = []
+            print("Cleared all modifiers")
 
     def update_pattern_params(self, params: Dict[str, Any]):
         """Update current pattern parameters"""
-        if self.current_pattern:
-            self.current_params.update(params)
+        with self.pattern_lock:  # Protect parameter updates
+            if self.current_pattern:
+                self.current_params.update(params)
 
     def update_modifier_params(self, index: int, params: Dict[str, Any]):
         """Update modifier parameters"""
-        if 0 <= index < len(self.modifiers):
-            modifier, current_params = self.modifiers[index]
-            current_params.update(params)
-            self.modifiers[index] = (modifier, current_params)
+        with self.modifier_lock:  # Protect modifier parameter updates
+            if 0 <= index < len(self.modifiers):
+                modifier, current_params = self.modifiers[index]
+                current_params.update(params)
+                self.modifiers[index] = (modifier, current_params)
 
     def send_frame(self, pixels: list):
         """Send frame data to LED controller using optimized format"""
@@ -361,22 +369,29 @@ class PatternServer:
 
                     try:
                         # Generate frame if we have a pattern
-                        if self.current_pattern:
-                            # Generate frame
-                            pixels = self.current_pattern.generate_frame(
-                                self.current_params
-                            )
+                        frame_data = None
+                        with self.pattern_lock:  # Lock while accessing pattern
+                            if self.current_pattern:
+                                # Generate frame
+                                pixels = self.current_pattern.generate_frame(
+                                    self.current_params
+                                )
 
-                            # Apply modifiers
-                            for modifier, params in self.modifiers:
-                                pixels = modifier.apply(pixels, params)
+                                with (
+                                    self.modifier_lock
+                                ):  # Lock while applying modifiers
+                                    # Apply modifiers
+                                    for modifier, params in self.modifiers:
+                                        pixels = modifier.apply(pixels, params)
 
-                            # Convert to bytes for efficient transmission
-                            frame_data = bytearray()
-                            for pixel in pixels:
-                                frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
+                                # Convert to bytes for efficient transmission
+                                frame_data = bytearray()
+                                for pixel in pixels:
+                                    frame_data.extend(
+                                        [pixel["r"], pixel["g"], pixel["b"]]
+                                    )
 
-                        else:
+                        if frame_data is None:
                             # Send empty frame if no pattern
                             frame_data = bytearray(
                                 [0] * (self.grid_config.num_pixels * 3)
