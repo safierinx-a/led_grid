@@ -19,19 +19,25 @@ class HomeAssistantManager:
 
     def publish_discovery(self, patterns: List[Dict], modifiers: List[Dict]):
         """Publish all discovery messages"""
+        print(f"\nPublishing Home Assistant MQTT discovery messages...")
+        print(f"Found {len(patterns)} patterns and {len(modifiers)} modifiers")
+
         # Pattern selection
         self._publish_pattern_select(patterns)
 
         # Pattern parameters
         for pattern in patterns:
+            print(f"\nPublishing config for pattern: {pattern.name}")
             self._publish_pattern_params(pattern)
 
         # Modifier slots
-        for i in range(4):  # Support up to 4 modifier slots
+        for i in range(4):
+            print(f"\nPublishing config for modifier slot {i + 1}")
             self._publish_modifier_select(i, modifiers)
             self._publish_modifier_enable(i)
 
         # System sensors
+        print("\nPublishing system sensor configs")
         self._publish_fps_sensor()
         self._publish_status_sensors()
 
@@ -128,7 +134,10 @@ class HomeAssistantManager:
     def _publish_config(self, discovery_topic: str, config: Dict):
         """Publish a discovery config message"""
         topic = f"{self.base_topic}/{discovery_topic}"
-        self.mqtt_client.publish(topic, json.dumps(config), retain=True)
+        payload = json.dumps(config)
+        print(f"Publishing discovery config to {topic}:")
+        print(json.dumps(config, indent=2))
+        self.mqtt_client.publish(topic, payload, retain=True)
 
     def update_pattern_state(self, pattern_name: str, params: Dict[str, Any]):
         """Update pattern and parameter states"""
