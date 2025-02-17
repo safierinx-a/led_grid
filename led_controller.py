@@ -222,14 +222,40 @@ class LEDController:
                 return
 
             # Main loop
+            last_fps_print = time.time()
+            frame_count = 0
+            frame_times = []
+
             while True:
                 if not self.is_connected:
                     print("MQTT connection lost, attempting to reconnect...")
                     if not self.connect_mqtt():
                         continue
 
-                self.update_strip()
-                time.sleep(0.001)  # Small delay to prevent CPU overload
+                # Update LEDs if needed
+                if self.needs_update:
+                    frame_start = time.time()
+                    self.update_strip()
+
+                    # Track performance
+                    frame_time = time.time() - frame_start
+                    frame_times.append(frame_time)
+                    if len(frame_times) > 100:
+                        frame_times.pop(0)
+                    frame_count += 1
+
+                    # Print FPS every second
+                    current_time = time.time()
+                    if current_time - last_fps_print >= 1.0:
+                        avg_frame_time = sum(frame_times) / len(frame_times)
+                        fps = frame_count / (current_time - last_fps_print)
+                        print(
+                            f"LED FPS: {fps:.1f}, Update time: {avg_frame_time * 1000:.1f}ms"
+                        )
+                        frame_count = 0
+                        last_fps_print = current_time
+
+                # No delay - process updates as fast as possible
 
         except KeyboardInterrupt:
             print("\nShutting down gracefully...")
