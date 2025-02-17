@@ -39,16 +39,14 @@ class LEDController:
 
         # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
-        self.frame_sub_socket = self.zmq_context.socket(zmq.SUB)
+        self.frame_socket = self.zmq_context.socket(zmq.DEALER)  # Change to DEALER
         self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", self.mqtt_host)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         # Set ZMQ socket options
-        self.frame_sub_socket.setsockopt(zmq.LINGER, 0)
-        self.frame_sub_socket.setsockopt(zmq.RCVHWM, 1)  # Only keep latest frame
-        self.frame_sub_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest message
-        self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1 second timeout
-        self.frame_sub_socket.setsockopt(zmq.SUBSCRIBE, b"frame")  # Use bytes for topic
+        self.frame_socket.setsockopt(zmq.LINGER, 0)
+        self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms receive timeout
+        self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms send timeout
 
         print(f"MQTT Configuration:")
         print(f"Host: {self.mqtt_host}")
@@ -180,58 +178,10 @@ class LEDController:
     def connect_zmq(self):
         """Connect to ZMQ server for frame data"""
         try:
-            # Close any existing connection
-            if hasattr(self, "frame_sub_socket"):
-                self.frame_sub_socket.close(linger=0)
-                time.sleep(0.1)  # Allow socket to close
-
-            # Create new socket
-            self.frame_sub_socket = self.zmq_context.socket(zmq.SUB)
-
-            # Set socket options
-            self.frame_sub_socket.setsockopt(zmq.LINGER, 0)
-            self.frame_sub_socket.setsockopt(zmq.RCVHWM, 1)  # Only keep latest frame
-            self.frame_sub_socket.setsockopt(
-                zmq.CONFLATE, 1
-            )  # Only keep latest message
-            self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1 second timeout
-            self.frame_sub_socket.setsockopt(
-                zmq.SUBSCRIBE, b"frame"
-            )  # Use bytes for topic
-
-            # Connect to server
             zmq_address = f"tcp://{self.zmq_host}:{self.zmq_port}"
             print(f"Connecting to ZMQ server at {zmq_address}")
-            self.frame_sub_socket.connect(zmq_address)
-
-            # Allow time for connection to establish and subscription to take effect
-            time.sleep(0.5)
-
-            print("Verifying ZMQ connection...")
-            # Try to receive a frame to verify connection
-            start_time = time.time()
-            while time.time() - start_time < 5.0:  # Wait up to 5 seconds
-                try:
-                    if self.frame_sub_socket.poll(timeout=100):
-                        topic, metadata_bytes, frame_data = (
-                            self.frame_sub_socket.recv_multipart(zmq.NOBLOCK)
-                        )
-                        print(
-                            f"Connection verified - received frame of size {len(frame_data)}"
-                        )
-                        return True
-                except zmq.Again:
-                    continue
-                except Exception as e:
-                    print(f"Error during connection verification: {e}")
-                    break
-                time.sleep(0.1)
-
-            print(
-                "Warning: Could not verify frame reception, but connection established"
-            )
+            self.frame_socket.connect(zmq_address)
             return True
-
         except Exception as e:
             print(f"Error connecting to ZMQ server: {e}")
             return False
@@ -317,22 +267,20 @@ class LEDController:
             self.clear_strip()
 
             # Close existing socket
-            self.frame_sub_socket.close(linger=0)
+            self.frame_socket.close(linger=0)
             time.sleep(0.1)  # Give socket time to close
 
             # Create new socket
-            self.frame_sub_socket = self.zmq_context.socket(zmq.SUB)
-            self.frame_sub_socket.setsockopt(zmq.LINGER, 0)
-            self.frame_sub_socket.setsockopt(zmq.RCVHWM, 1)
-            self.frame_sub_socket.setsockopt(zmq.CONFLATE, 1)
-            self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, 1000)
-            self.frame_sub_socket.setsockopt(zmq.SUBSCRIBE, b"frame")
+            self.frame_socket = self.zmq_context.socket(zmq.DEALER)
+            self.frame_socket.setsockopt(zmq.LINGER, 0)
+            self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)
+            self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)
 
             # Try to reconnect
             try:
                 zmq_address = f"tcp://{self.zmq_host}:{self.zmq_port}"
                 print(f"Attempting to reconnect to {zmq_address}")
-                self.frame_sub_socket.connect(zmq_address)
+                self.frame_socket.connect(zmq_address)
                 self.consecutive_errors = 0  # Reset on successful connection
                 time.sleep(0.1)  # Give connection time to establish
                 return True
@@ -367,91 +315,91 @@ class LEDController:
             # Main loop
             while True:
                 try:
-                    # Check for new frame
+                    # Request new frame
                     try:
-                        print("Polling for frame...")  # Debug log
-                        if self.frame_sub_socket.poll(timeout=100):  # 100ms timeout
-                            print("Frame available, receiving...")  # Debug log
-                            # Receive frame parts
-                            topic, metadata_bytes, frame_data = (
-                                self.frame_sub_socket.recv_multipart(flags=zmq.NOBLOCK)
+                        print("Requesting frame...")
+                        self.frame_socket.send(b"READY")
+
+                        # Receive frame
+                        topic, metadata_bytes, frame_data = (
+                            self.frame_socket.recv_multipart()
+                        )
+                        print(
+                            f"Received frame: topic={topic}, metadata size={len(metadata_bytes)}, frame size={len(frame_data)}"
+                        )
+
+                        # Parse metadata
+                        metadata = json.loads(metadata_bytes.decode())
+                        frame_seq = metadata["seq"]
+                        pattern_id = metadata["pattern_id"]
+                        frame_size = metadata["frame_size"]
+                        print(
+                            f"Frame metadata: seq={frame_seq}, pattern_id={pattern_id}, size={frame_size}"
+                        )
+
+                        # Check if this is a new pattern
+                        if pattern_id != self.current_pattern_id:
+                            print(f"New pattern detected (ID: {pattern_id})")
+                            self.current_pattern_id = pattern_id
+                            self.last_frame_seq = frame_seq - 1  # Expect next frame
+
+                        # Check frame sequence
+                        if frame_seq <= self.last_frame_seq:
+                            print(
+                                f"Skipping old frame (seq: {frame_seq}, last: {self.last_frame_seq})"
                             )
+                            continue
+
+                        # Verify frame size
+                        if len(frame_data) != frame_size:
                             print(
-                                f"Received frame: topic={topic}, metadata size={len(metadata_bytes)}, frame size={len(frame_data)}"
-                            )  # Debug log
+                                f"Frame size mismatch (expected: {frame_size}, got: {len(frame_data)})"
+                            )
+                            continue
 
-                            # Parse metadata
-                            metadata = json.loads(metadata_bytes.decode())
-                            frame_seq = metadata["seq"]
-                            pattern_id = metadata["pattern_id"]
-                            frame_size = metadata["frame_size"]
-                            print(
-                                f"Frame metadata: seq={frame_seq}, pattern_id={pattern_id}, size={frame_size}"
-                            )  # Debug log
+                        print("Updating LED strip...")
+                        # Update LED strip
+                        frame_start = time.time()
+                        for i in range(LED_COUNT):
+                            idx = i * 3
+                            if idx + 2 < len(frame_data):
+                                r = frame_data[idx]
+                                g = frame_data[idx + 1]
+                                b = frame_data[idx + 2]
+                                self.strip.setPixelColor(i, Color(r, g, b))
 
-                            # Check if this is a new pattern
-                            if pattern_id != self.current_pattern_id:
-                                print(f"New pattern detected (ID: {pattern_id})")
-                                self.current_pattern_id = pattern_id
-                                self.last_frame_seq = frame_seq - 1  # Expect next frame
+                        self.strip.show()
+                        self.last_frame_time = time.time()
+                        self.last_frame_seq = frame_seq
+                        print("LED strip updated successfully")
 
-                            # Check frame sequence
-                            if frame_seq <= self.last_frame_seq:
+                        # Performance tracking
+                        frame_time = self.last_frame_time - frame_start
+                        frame_times.append(frame_time)
+                        if len(frame_times) > 100:
+                            frame_times.pop(0)
+                        frame_count += 1
+
+                        # Print FPS every second
+                        current_time = time.time()
+                        if current_time - last_fps_print >= 1.0:
+                            if frame_count > 0 and len(frame_times) > 0:
+                                avg_frame_time = sum(frame_times) / len(frame_times)
+                                fps = frame_count / (current_time - last_fps_print)
                                 print(
-                                    f"Skipping old frame (seq: {frame_seq}, last: {self.last_frame_seq})"
+                                    f"LED FPS: {fps:.1f}, Update time: {avg_frame_time * 1000:.1f}ms"
                                 )
-                                continue
+                            frame_count = 0
+                            last_fps_print = current_time
 
-                            # Verify frame size
-                            if len(frame_data) != frame_size:
-                                print(
-                                    f"Frame size mismatch (expected: {frame_size}, got: {len(frame_data)})"
-                                )
-                                continue
-
-                            print("Updating LED strip...")  # Debug log
-                            # Update LED strip
-                            frame_start = time.time()
-                            for i in range(LED_COUNT):
-                                idx = i * 3
-                                if idx + 2 < len(frame_data):
-                                    r = frame_data[idx]
-                                    g = frame_data[idx + 1]
-                                    b = frame_data[idx + 2]
-                                    self.strip.setPixelColor(i, Color(r, g, b))
-
-                            self.strip.show()
-                            self.last_frame_time = time.time()
-                            self.last_frame_seq = frame_seq
-                            print("LED strip updated successfully")  # Debug log
-
-                            # Performance tracking
-                            frame_time = self.last_frame_time - frame_start
-                            frame_times.append(frame_time)
-                            if len(frame_times) > 100:
-                                frame_times.pop(0)
-                            frame_count += 1
-
-                            # Print FPS every second
-                            current_time = time.time()
-                            if current_time - last_fps_print >= 1.0:
-                                if frame_count > 0 and len(frame_times) > 0:
-                                    avg_frame_time = sum(frame_times) / len(frame_times)
-                                    fps = frame_count / (current_time - last_fps_print)
-                                    print(
-                                        f"LED FPS: {fps:.1f}, Update time: {avg_frame_time * 1000:.1f}ms"
-                                    )
-                                frame_count = 0
-                                last_fps_print = current_time
-
-                            # Reset error counter on successful frame
-                            self.consecutive_errors = 0
+                        # Reset error counter on successful frame
+                        self.consecutive_errors = 0
 
                     except zmq.Again:
-                        print("No frame available (zmq.Again)")  # Debug log
+                        print("No response from server")
                         continue
                     except Exception as e:
-                        print(f"Error receiving frame: {e}")  # Debug log
+                        print(f"Error receiving frame: {e}")
                         raise
 
                     # Check for timeout
@@ -488,7 +436,7 @@ class LEDController:
 
             # Clean up ZMQ
             try:
-                self.frame_sub_socket.close(linger=0)
+                self.frame_socket.close(linger=0)
                 self.zmq_context.term()
             except:
                 pass
