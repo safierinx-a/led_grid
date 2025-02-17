@@ -318,14 +318,20 @@ class LEDController:
                             break
                         continue
 
-                    # Request new frame
-                    self.zmq_socket.send_string("READY")
+                    # Request new frame - send as bytes
+                    self.zmq_socket.send_multipart([b"", b"READY"])
 
                     # Receive frame data with timeout
                     if self.zmq_socket.poll(timeout=1000):  # 1 second timeout
                         # DEALER socket receives [empty, msg]
-                        empty = self.zmq_socket.recv()
-                        frame_data = self.zmq_socket.recv()
+                        message = self.zmq_socket.recv_multipart()
+                        if len(message) != 2:
+                            print(
+                                f"Invalid message format, expected 2 parts but got {len(message)}"
+                            )
+                            continue
+
+                        empty, frame_data = message
                         self.last_frame_time = time.time()
                     else:
                         raise zmq.Again("Frame receive timeout")
