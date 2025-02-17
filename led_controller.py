@@ -5,6 +5,11 @@ import json
 import paho.mqtt.client as mqtt
 from rpi_ws281x import PixelStrip, Color
 import argparse
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # LED strip configuration
 LED_COUNT = 600  # Total number of LEDs (24 strips * 25 LEDs)
@@ -17,12 +22,16 @@ LED_CHANNEL = 0  # PWM channel to use
 
 
 class LEDController:
-    def __init__(self, mqtt_host="localhost"):
+    def __init__(self, mqtt_host=None):
         # Create NeoPixel object with appropriate configuration
         self.init_strip()
 
         # MQTT setup
-        self.mqtt_host = mqtt_host
+        self.mqtt_host = mqtt_host or os.getenv("MQTT_BROKER", "localhost")
+        self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
+        self.mqtt_user = os.getenv("MQTT_USER")
+        self.mqtt_password = os.getenv("MQTT_PASSWORD")
+
         self.mqtt_client = mqtt.Client()
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
@@ -68,7 +77,9 @@ class LEDController:
     def connect_mqtt(self):
         """Attempt to connect to MQTT broker with retry logic"""
         try:
-            self.mqtt_client.connect(self.mqtt_host, 1883, 60)
+            if self.mqtt_user and self.mqtt_password:
+                self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
+            self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
         except Exception as e:
             print(f"Error connecting to MQTT: {e}")
             time.sleep(5)
@@ -141,7 +152,9 @@ class LEDController:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LED Controller")
     parser.add_argument(
-        "--mqtt-host", default="localhost", help="MQTT broker hostname or IP"
+        "--mqtt-host",
+        default=os.getenv("MQTT_BROKER"),
+        help="MQTT broker hostname or IP",
     )
     args = parser.parse_args()
 

@@ -9,16 +9,27 @@ from typing import Dict, Any, Optional, List, Tuple
 import paho.mqtt.client as mqtt
 import math
 import signal
+import os
+from dotenv import load_dotenv
 
 from server.config.grid_config import GridConfig, DEFAULT_CONFIG
 from server.patterns.base import Pattern, PatternRegistry
 from server.modifiers.base import Modifier, ModifierRegistry
+
+# Load environment variables
+load_dotenv()
 
 
 class PatternServer:
     def __init__(self, grid_config: GridConfig = DEFAULT_CONFIG):
         self.grid_config = grid_config
         self.mqtt_client = mqtt.Client()
+
+        # MQTT settings
+        self.mqtt_host = os.getenv("MQTT_BROKER", "localhost")
+        self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
+        self.mqtt_user = os.getenv("MQTT_USER")
+        self.mqtt_password = os.getenv("MQTT_PASSWORD")
 
         # Current pattern state
         self.current_pattern: Optional[Pattern] = None
@@ -66,7 +77,9 @@ class PatternServer:
 
     def connect(self):
         """Connect to MQTT broker"""
-        self.mqtt_client.connect("localhost", 1883, 60)
+        if self.mqtt_user and self.mqtt_password:
+            self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
+        self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
         self.mqtt_client.loop_start()
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
