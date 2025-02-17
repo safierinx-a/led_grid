@@ -363,73 +363,78 @@ class PatternServer:
 
                 try:
                     # Get the request - ROUTER socket receives [identity, empty, msg]
-                    identity = self.zmq_socket.recv()
-                    empty = self.zmq_socket.recv()
-                    request = self.zmq_socket.recv_string()
+                    message = self.zmq_socket.recv_multipart()
+                    if len(message) != 3:
+                        print(
+                            f"Invalid message format, expected 3 parts but got {len(message)}"
+                        )
+                        continue
 
-                    if request == "READY":
-                        frame_start = time.time()
+                    identity, empty, request = message
+                    if request != b"READY":
+                        print(f"Invalid request: {request}")
+                        continue
 
-                        try:
-                            # Generate frame if we have a pattern
-                            frame_data = None
-                            with self.pattern_lock:  # Lock while accessing pattern
-                                if self.current_pattern:
-                                    # Generate frame
-                                    pixels = self.current_pattern.generate_frame(
-                                        self.current_params
-                                    )
+                    frame_start = time.time()
 
-                                    with (
-                                        self.modifier_lock
-                                    ):  # Lock while applying modifiers
-                                        # Apply modifiers
-                                        for modifier, params in self.modifiers:
-                                            pixels = modifier.apply(pixels, params)
-
-                                    # Convert to bytes for efficient transmission
-                                    frame_data = bytearray()
-                                    for pixel in pixels:
-                                        frame_data.extend(
-                                            [pixel["r"], pixel["g"], pixel["b"]]
-                                        )
-
-                            if frame_data is None:
-                                # Send empty frame if no pattern
-                                frame_data = bytearray(
-                                    [0] * (self.grid_config.num_pixels * 3)
+                    try:
+                        # Generate frame if we have a pattern
+                        frame_data = None
+                        with self.pattern_lock:  # Lock while accessing pattern
+                            if self.current_pattern:
+                                # Generate frame
+                                pixels = self.current_pattern.generate_frame(
+                                    self.current_params
                                 )
 
-                            # Send response with identity for ROUTER socket
-                            self.zmq_socket.send_multipart(
-                                [identity, empty, frame_data]
+                                with (
+                                    self.modifier_lock
+                                ):  # Lock while applying modifiers
+                                    # Apply modifiers
+                                    for modifier, params in self.modifiers:
+                                        pixels = modifier.apply(pixels, params)
+
+                                # Convert to bytes for efficient transmission
+                                frame_data = bytearray()
+                                for pixel in pixels:
+                                    frame_data.extend(
+                                        [pixel["r"], pixel["g"], pixel["b"]]
+                                    )
+
+                        if frame_data is None:
+                            # Send empty frame if no pattern
+                            frame_data = bytearray(
+                                [0] * (self.grid_config.num_pixels * 3)
                             )
 
-                            # Track performance
-                            frame_time = time.time() - frame_start
-                            frame_times.append(frame_time)
-                            if len(frame_times) > 100:
-                                frame_times.pop(0)
-                            frame_count += 1
+                        # Send response with identity for ROUTER socket
+                        self.zmq_socket.send_multipart([identity, empty, frame_data])
 
-                            # Update FPS in Home Assistant
-                            current_time = time.time()
-                            if current_time - last_fps_print >= 1.0:
-                                fps = frame_count / (current_time - last_fps_print)
-                                self.ha_manager.update_fps(fps)
-                                frame_count = 0
-                                last_fps_print = current_time
+                        # Track performance
+                        frame_time = time.time() - frame_start
+                        frame_times.append(frame_time)
+                        if len(frame_times) > 100:
+                            frame_times.pop(0)
+                        frame_count += 1
 
-                        except Exception as e:
-                            print(f"Error generating frame: {e}")
-                            # Send empty frame on error
-                            self.zmq_socket.send_multipart(
-                                [
-                                    identity,
-                                    empty,
-                                    bytearray([0] * (self.grid_config.num_pixels * 3)),
-                                ]
-                            )
+                        # Update FPS in Home Assistant
+                        current_time = time.time()
+                        if current_time - last_fps_print >= 1.0:
+                            fps = frame_count / (current_time - last_fps_print)
+                            self.ha_manager.update_fps(fps)
+                            frame_count = 0
+                            last_fps_print = current_time
+
+                    except Exception as e:
+                        print(f"Error generating frame: {e}")
+                        # Send empty frame on error
+                        self.zmq_socket.send_multipart(
+                            [
+                                identity,
+                                empty,
+                                bytearray([0] * (self.grid_config.num_pixels * 3)),
+                            ]
+                        )
 
                 except zmq.Again:
                     continue  # No message available
