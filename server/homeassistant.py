@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any, List, Optional
 import paho.mqtt.client as mqtt
+import time
 
 
 class HomeAssistantManager:
@@ -159,28 +160,52 @@ class HomeAssistantManager:
 
     def _publish_config(self, component: str, object_id: str, config: Dict):
         """Publish a discovery config message"""
-        # Add availability
-        config["availability"] = [
-            {
-                "topic": "led/status/pattern_server",
-                "payload_available": "online",
-                "payload_not_available": "offline",
-            }
-        ]
+        try:
+            # Add availability
+            config["availability"] = [
+                {
+                    "topic": "led/status/pattern_server",
+                    "payload_available": "online",
+                    "payload_not_available": "offline",
+                }
+            ]
 
-        # Build discovery topic (format: homeassistant/[component]/[node_id]/[object_id]/config)
-        topic = f"{self.base_topic}/{component}/led_grid/{object_id}/config"
-        payload = json.dumps(config)
+            # Build discovery topic (format: homeassistant/[component]/[node_id]/[object_id]/config)
+            topic = f"{self.base_topic}/{component}/led_grid/{object_id}/config"
+            payload = json.dumps(config)
 
-        print(f"\nPublishing discovery message:")
-        print(f"Topic: {topic}")
-        print(f"Payload: {json.dumps(config, indent=2)}")
+            print(f"\nPublishing discovery message:")
+            print(f"Topic: {topic}")
+            print(f"Payload: {json.dumps(config, indent=2)}")
 
-        result = self.mqtt_client.publish(topic, payload, retain=True)
-        if not result.is_published():
-            print(f"Failed to publish discovery message to {topic}")
-        else:
-            print(f"Successfully published discovery message to {topic}")
+            # Publish with retry
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    result = self.mqtt_client.publish(
+                        topic, payload, retain=True, qos=1
+                    )
+                    result.wait_for_publish()
+                    if result.is_published():
+                        print(f"Successfully published discovery message to {topic}")
+                        return True
+                    else:
+                        print(
+                            f"Failed to publish discovery message to {topic} (attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(0.5)  # Wait before retry
+                except Exception as e:
+                    print(f"Error publishing to {topic}: {str(e)}")
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)  # Wait before retry
+                    else:
+                        raise
+
+            return False
+
+        except Exception as e:
+            print(f"Error in _publish_config: {str(e)}")
+            return False
 
     def update_pattern_state(self, pattern_name: str, params: Dict[str, Any]):
         """Update pattern and parameter states"""
