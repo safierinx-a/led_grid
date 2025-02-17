@@ -44,11 +44,20 @@ class LEDController:
         client_id = f"led_controller_{int(time.time())}"
         print(f"Using MQTT client ID: {client_id}")
         self.mqtt_client = mqtt.Client(
-            client_id=client_id, clean_session=True, protocol=mqtt.MQTTv311
+            client_id=client_id,
+            clean_session=True,
+            protocol=mqtt.MQTTv31,  # Changed to v3.1
+            transport="tcp",
         )
 
         # Enable MQTT debug logging
         self.mqtt_client.enable_logger()
+
+        # Add debugging callbacks
+        def on_log(client, userdata, level, buf):
+            print(f"MQTT Log: {buf}")
+
+        self.mqtt_client.on_log = on_log
 
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
@@ -147,7 +156,7 @@ class LEDController:
 
                 if result == 0:
                     # Wait for connection to be established
-                    timeout = 10
+                    timeout = 3  # Reduced timeout to 3 seconds
                     while timeout > 0 and not self.is_connected:
                         print(f"Waiting for connection... (timeout in {timeout:.1f}s)")
                         time.sleep(0.1)
@@ -158,6 +167,10 @@ class LEDController:
                         return True
                     else:
                         print("Connection timeout - no connection callback received")
+                        print("Debug info:")
+                        print(f"Client ID: {self.mqtt_client._client_id}")
+                        print(f"Protocol: {self.mqtt_client._protocol}")
+                        print(f"Transport: {self.mqtt_client._transport}")
                         self.mqtt_client.loop_stop()
                 else:
                     print(f"Connection failed with result code {result}")
