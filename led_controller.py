@@ -39,7 +39,7 @@ class LEDController:
 
         # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
-        self.zmq_socket = self.zmq_context.socket(zmq.REQ)
+        self.zmq_socket = self.zmq_context.socket(zmq.DEALER)  # Change to DEALER
         self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", self.mqtt_host)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
@@ -178,6 +178,8 @@ class LEDController:
             zmq_address = f"tcp://{self.zmq_host}:{self.zmq_port}"
             print(f"Connecting to ZMQ server at {zmq_address}")
             self.zmq_socket.connect(zmq_address)
+            # Set identity for DEALER socket
+            self.zmq_socket.setsockopt_string(zmq.IDENTITY, "led_controller")
             return True
         except Exception as e:
             print(f"Error connecting to ZMQ server: {e}")
@@ -267,7 +269,7 @@ class LEDController:
             self.zmq_socket.close()
 
             # Create new socket
-            self.zmq_socket = self.zmq_context.socket(zmq.REQ)
+            self.zmq_socket = self.zmq_context.socket(zmq.DEALER)
 
             # Try to reconnect
             try:
@@ -321,6 +323,8 @@ class LEDController:
 
                     # Receive frame data with timeout
                     if self.zmq_socket.poll(timeout=1000):  # 1 second timeout
+                        # DEALER socket receives [empty, msg]
+                        empty = self.zmq_socket.recv()
                         frame_data = self.zmq_socket.recv()
                         self.last_frame_time = time.time()
                     else:
