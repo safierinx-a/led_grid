@@ -236,48 +236,51 @@ class PatternServer:
         """Main update loop with memory management"""
         last_frame_time = time.time()
         frame_times = []  # Track frame times for performance monitoring
+        frame_count = 0
+        last_fps_print = time.time()
 
         while self.is_running:
             try:
-                current_time = time.time()
-                frame_delta = current_time - last_frame_time
-
-                # Generate frame
+                # Generate and send frame immediately
                 if self.current_pattern:
+                    frame_start = time.time()
+
+                    # Generate frame
                     pixels = self.current_pattern.generate_frame(self.current_params)
 
                     # Apply modifiers
                     for modifier, params in self.modifiers:
                         pixels = modifier.apply(pixels, params)
 
-                    # Send frame
+                    # Send frame immediately
                     self.send_frame(pixels)
 
-                # Update performance metrics
-                frame_times.append(frame_delta)
-                if len(frame_times) > 100:
-                    frame_times.pop(0)
-                avg_frame_time = sum(frame_times) / len(frame_times)
+                    # Track performance
+                    frame_time = time.time() - frame_start
+                    frame_times.append(frame_time)
+                    if len(frame_times) > 100:
+                        frame_times.pop(0)
+                    frame_count += 1
 
-                # Periodic cleanup
-                self.frame_count += 1
-                if current_time - self.last_cleanup > self.cleanup_interval:
-                    print(f"Average frame time: {avg_frame_time * 1000:.2f}ms")
-                    self.cleanup()
-                    self.last_cleanup = current_time
-                    self.frame_count = 0
+                    # Print FPS every second
+                    current_time = time.time()
+                    if current_time - last_fps_print >= 1.0:
+                        avg_frame_time = sum(frame_times) / len(frame_times)
+                        fps = frame_count / (current_time - last_fps_print)
+                        print(
+                            f"Pattern FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
+                        )
+                        frame_count = 0
+                        last_fps_print = current_time
 
-                # Maintain target frame rate
-                target_frame_time = 1.0 / 30  # 30 FPS
-                sleep_time = max(0, target_frame_time - frame_delta)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-
-                last_frame_time = current_time
+                    # Periodic cleanup if needed
+                    if current_time - self.last_cleanup > self.cleanup_interval:
+                        self.cleanup()
+                        self.last_cleanup = current_time
 
             except Exception as e:
                 print(f"Error in update loop: {e}")
-                time.sleep(0.1)  # Prevent tight error loop
+                time.sleep(0.01)  # Brief delay on error
 
     def start(self):
         """Start the pattern server"""
