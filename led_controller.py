@@ -32,6 +32,14 @@ class LEDController:
         self.mqtt_user = os.getenv("MQTT_USER")
         self.mqtt_password = os.getenv("MQTT_PASSWORD")
 
+        print(f"MQTT Configuration:")
+        print(f"Host: {self.mqtt_host}")
+        print(f"Port: {self.mqtt_port}")
+        print(f"User: {self.mqtt_user}")
+        print(
+            f"Password: {'*' * len(self.mqtt_password) if self.mqtt_password else 'None'}"
+        )
+
         self.mqtt_client = mqtt.Client()
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
@@ -57,6 +65,7 @@ class LEDController:
                 LED_CHANNEL,
             )
             self.strip.begin()
+            print("LED strip initialized successfully")
         except Exception as e:
             print(f"Error initializing LED strip: {e}")
             # Wait and retry
@@ -65,23 +74,40 @@ class LEDController:
 
     def on_connect(self, client, userdata, flags, rc):
         """Handle MQTT connection with error checking"""
+        connection_codes = {
+            0: "Connected successfully",
+            1: "Incorrect protocol version",
+            2: "Invalid client identifier",
+            3: "Server unavailable",
+            4: "Bad username or password",
+            5: "Not authorized",
+        }
+        print(
+            f"MQTT connection result: {connection_codes.get(rc, f'Unknown error ({rc})')}"
+        )
+
         if rc == 0:
-            print("Connected to MQTT broker successfully")
+            print("Subscribing to led/pixels")
             client.subscribe("led/pixels")
         else:
-            print(f"Failed to connect to MQTT broker with code {rc}")
-            # Try to reconnect
-            time.sleep(1)
+            print("Connection failed, retrying...")
+            time.sleep(5)
             self.connect_mqtt()
 
     def connect_mqtt(self):
         """Attempt to connect to MQTT broker with retry logic"""
         try:
+            print(
+                f"Attempting to connect to MQTT broker at {self.mqtt_host}:{self.mqtt_port}"
+            )
             if self.mqtt_user and self.mqtt_password:
+                print(f"Using authentication with username: {self.mqtt_user}")
                 self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
             self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
+            print("MQTT connection successful")
         except Exception as e:
-            print(f"Error connecting to MQTT: {e}")
+            print(f"Error connecting to MQTT: {str(e)}")
+            print("Retrying in 5 seconds...")
             time.sleep(5)
             self.connect_mqtt()
 
