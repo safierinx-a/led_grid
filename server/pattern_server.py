@@ -456,12 +456,16 @@ class PatternServer:
                         frame_times.pop(0)
                     frame_count += 1
 
-                    if current_time := time.time() - last_fps_print >= 1.0:
-                        avg_frame_time = sum(frame_times) / len(frame_times)
-                        fps = frame_count / (current_time - last_fps_print)
-                        print(
-                            f"Server FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
-                        )
+                    # Print FPS every second
+                    current_time = time.time()
+                    time_since_last_print = current_time - last_fps_print
+                    if time_since_last_print >= 1.0:
+                        if frame_count > 0 and len(frame_times) > 0:
+                            avg_frame_time = sum(frame_times) / len(frame_times)
+                            fps = frame_count / time_since_last_print
+                            print(
+                                f"Server FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
+                            )
                         frame_count = 0
                         last_fps_print = current_time
 
