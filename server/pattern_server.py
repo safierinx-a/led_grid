@@ -359,46 +359,56 @@ class PatternServer:
                 if request == "READY":
                     frame_start = time.time()
 
-                    # Generate frame if we have a pattern
-                    if self.current_pattern:
-                        # Generate frame
-                        pixels = self.current_pattern.generate_frame(
-                            self.current_params
-                        )
+                    try:
+                        # Generate frame if we have a pattern
+                        if self.current_pattern:
+                            # Generate frame
+                            pixels = self.current_pattern.generate_frame(
+                                self.current_params
+                            )
 
-                        # Apply modifiers
-                        for modifier, params in self.modifiers:
-                            pixels = modifier.apply(pixels, params)
+                            # Apply modifiers
+                            for modifier, params in self.modifiers:
+                                pixels = modifier.apply(pixels, params)
 
-                        # Convert to bytes for efficient transmission
-                        frame_data = bytearray()
-                        for pixel in pixels:
-                            frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
+                            # Convert to bytes for efficient transmission
+                            frame_data = bytearray()
+                            for pixel in pixels:
+                                frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
 
-                        # Send frame
+                        else:
+                            # Send empty frame if no pattern
+                            frame_data = bytearray(
+                                [0] * (self.grid_config.num_pixels * 3)
+                            )
+
+                        # Always send a response to maintain REQ/REP sequence
                         self.zmq_socket.send(frame_data)
-                    else:
-                        # Send empty frame if no pattern
+
+                        # Track performance
+                        frame_time = time.time() - frame_start
+                        frame_times.append(frame_time)
+                        if len(frame_times) > 100:
+                            frame_times.pop(0)
+                        frame_count += 1
+
+                        # Update FPS in Home Assistant
+                        current_time = time.time()
+                        if current_time - last_fps_print >= 1.0:
+                            fps = frame_count / (current_time - last_fps_print)
+                            self.ha_manager.update_fps(fps)
+                            frame_count = 0
+                            last_fps_print = current_time
+
+                    except Exception as e:
+                        print(f"Error generating frame: {e}")
+                        # Send empty frame on error to maintain REQ/REP sequence
                         self.zmq_socket.send(
                             bytearray([0] * (self.grid_config.num_pixels * 3))
                         )
 
-                    # Track performance
-                    frame_time = time.time() - frame_start
-                    frame_times.append(frame_time)
-                    if len(frame_times) > 100:
-                        frame_times.pop(0)
-                    frame_count += 1
-
-                    # Update FPS in Home Assistant
-                    current_time = time.time()
-                    if current_time - last_fps_print >= 1.0:
-                        fps = frame_count / (current_time - last_fps_print)
-                        self.ha_manager.update_fps(fps)
-                        frame_count = 0
-                        last_fps_print = current_time
-
                     # Periodic cleanup if needed
+                    current_time = time.time()
                     if current_time - self.last_cleanup > self.cleanup_interval:
                         self.cleanup()
                         self.last_cleanup = current_time
