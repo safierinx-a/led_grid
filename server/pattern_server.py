@@ -27,7 +27,7 @@ class PatternServer:
         self.grid_config = grid_config
 
         # MQTT client for control commands
-        self.mqtt_client = mqtt.Client()
+        self.mqtt_client = mqtt.Client(protocol=mqtt.MQTTv5)  # Use MQTT v5 protocol
 
         # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
@@ -93,7 +93,7 @@ class PatternServer:
             # Create MQTT client with unique ID
             client_id = f"pattern_server_{int(time.time())}"
             print(f"Creating MQTT client with ID: {client_id}")
-            self.mqtt_client = mqtt.Client(client_id=client_id)
+            self.mqtt_client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
 
             # Set up message handler
             self.mqtt_client.on_message = self.on_message

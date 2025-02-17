@@ -42,7 +42,7 @@ class HomeAssistantManager:
             "unique_id": "led_grid_pattern",
             "command_topic": "led/command/pattern",
             "state_topic": "led/status/pattern",
-            "options": [p["name"] for p in patterns],
+            "options": [p.name for p in patterns],
             "icon": "mdi:led-strip-variant",
             "device": self.device_info,
         }
@@ -50,29 +50,29 @@ class HomeAssistantManager:
 
     def _publish_pattern_params(self, pattern: Dict):
         """Publish parameter controls for a pattern"""
-        for param in pattern.get("parameters", []):
-            param_id = f"pattern_{pattern['name']}_{param['name']}"
+        for param in pattern.parameters:
+            param_id = f"pattern_{pattern.name}_{param.name}"
             config = {
-                "name": f"{pattern['name']} {param['name']}",
+                "name": f"{pattern.name} {param.name}",
                 "unique_id": param_id,
-                "command_topic": f"led/command/params/{param['name']}",
-                "state_topic": f"led/status/params/{param['name']}",
+                "command_topic": f"led/command/params/{param.name}",
+                "state_topic": f"led/status/params/{param.name}",
                 "device": self.device_info,
             }
 
-            if param["type"] in ["float", "int"]:
+            if param.type in [float, int]:
                 config.update(
                     {
-                        "min": param.get("min_value", 0),
-                        "max": param.get("max_value", 100),
-                        "step": 0.1 if param["type"] == "float" else 1,
+                        "min": param.min_value if param.min_value is not None else 0,
+                        "max": param.max_value if param.max_value is not None else 100,
+                        "step": 0.1 if param.type == float else 1,
                     }
                 )
                 self._publish_config(f"number/led_grid/{param_id}/config", config)
-            elif param["type"] == "bool":
+            elif param.type == bool:
                 self._publish_config(f"switch/led_grid/{param_id}/config", config)
-            elif param["type"] == "str" and "options" in param:
-                config["options"] = param["options"]
+            elif param.type == str and hasattr(param, "options"):
+                config["options"] = param.options
                 self._publish_config(f"select/led_grid/{param_id}/config", config)
 
     def _publish_modifier_select(self, index: int, modifiers: List[Dict]):
@@ -82,7 +82,7 @@ class HomeAssistantManager:
             "unique_id": f"led_grid_modifier_{index}",
             "command_topic": f"led/command/modifier/{index}/type",
             "state_topic": f"led/status/modifier/{index}/type",
-            "options": [m["name"] for m in modifiers],
+            "options": [m.name for m in modifiers],
             "icon": "mdi:blur",
             "device": self.device_info,
         }
