@@ -29,15 +29,16 @@ class PatternServer:
         # MQTT client for control commands
         self.mqtt_client = mqtt.Client()
 
-        # ZMQ setup for frame data
+        # ZMQ setup for frame data - PUB socket for frame distribution
         self.zmq_context = zmq.Context()
-        self.zmq_socket = self.zmq_context.socket(zmq.ROUTER)
+        self.frame_pub_socket = self.zmq_context.socket(zmq.PUB)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
-        # Set ZMQ socket options for better stability
-        self.zmq_socket.setsockopt(zmq.LINGER, 0)
-        self.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)
-        self.zmq_socket.setsockopt(zmq.SNDTIMEO, 100)
+        # Set ZMQ socket options
+        self.frame_pub_socket.setsockopt(zmq.LINGER, 0)  # Don't wait on close
+        self.frame_pub_socket.setsockopt(
+            zmq.SNDHWM, 2
+        )  # Only keep last 2 frames in queue
 
         # MQTT settings
         self.mqtt_host = os.getenv("MQTT_BROKER", "localhost")
@@ -45,7 +46,7 @@ class PatternServer:
         self.mqtt_user = os.getenv("MQTT_USER")
         self.mqtt_password = os.getenv("MQTT_PASSWORD")
 
-        # Pattern state with double buffering
+        # Pattern state
         self.current_pattern: Optional[Pattern] = None
         self.current_params: Dict[str, Any] = {}
         self.next_pattern: Optional[Pattern] = None
@@ -57,16 +58,15 @@ class PatternServer:
         self.modifiers: List[Tuple[Modifier, Dict[str, Any]]] = []
         self.modifier_lock = threading.RLock()
 
-        # Thread control
+        # Frame generation control
         self.is_running = False
-        self.update_thread = None
-
-        # Memory management
+        self.frame_thread = None
+        self.target_frame_time = 1.0 / 60  # Target 60 FPS
+        self.last_frame_time = 0
         self.frame_count = 0
-        self.last_cleanup = time.time()
-        self.cleanup_interval = 60  # Cleanup every 60 seconds
+        self.frame_times = []
 
-        # Load all patterns and modifiers
+        # Load patterns and modifiers
         self._load_patterns()
         self._load_modifiers()
 
@@ -97,6 +97,83 @@ class PatternServer:
             if name != "base":
                 importlib.import_module(f"server.modifiers.{name}")
 
+    def _frame_generation_loop(self):
+        """Main frame generation loop - runs at fixed rate"""
+        last_fps_print = time.time()
+        frame_count = 0
+
+        while self.is_running:
+            loop_start = time.time()
+
+            try:
+                # Check for pattern change at frame boundary
+                if self.pattern_change_pending:
+                    self._swap_patterns()
+
+                # Generate frame
+                frame_data = None
+                try:
+                    with self.pattern_lock:
+                        if self.current_pattern:
+                            # Generate frame
+                            pixels = self.current_pattern.generate_frame(
+                                self.current_params
+                            )
+
+                            # Apply modifiers
+                            with self.modifier_lock:
+                                for modifier, params in self.modifiers:
+                                    pixels = modifier.apply(pixels, params)
+
+                            # Convert to bytes
+                            frame_data = bytearray()
+                            for pixel in pixels:
+                                frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
+                except Exception as e:
+                    print(f"Error generating frame: {e}")
+                    frame_data = None
+
+                # Send empty frame if no pattern or error
+                if frame_data is None:
+                    frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
+
+                # Publish frame with topic "frame"
+                try:
+                    self.frame_pub_socket.send_multipart(
+                        [b"frame", frame_data], flags=zmq.NOBLOCK
+                    )
+                except zmq.Again:
+                    print("Frame publish would block, skipping")
+
+                # Performance tracking
+                frame_time = time.time() - loop_start
+                self.frame_times.append(frame_time)
+                if len(self.frame_times) > 100:
+                    self.frame_times.pop(0)
+                frame_count += 1
+
+                # Print FPS every second
+                current_time = time.time()
+                time_since_last_print = current_time - last_fps_print
+                if time_since_last_print >= 1.0:
+                    if frame_count > 0 and len(self.frame_times) > 0:
+                        avg_frame_time = sum(self.frame_times) / len(self.frame_times)
+                        fps = frame_count / time_since_last_print
+                        print(
+                            f"Server FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
+                        )
+                    frame_count = 0
+                    last_fps_print = current_time
+
+                # Maintain target frame rate
+                elapsed = time.time() - loop_start
+                if elapsed < self.target_frame_time:
+                    time.sleep(self.target_frame_time - elapsed)
+
+            except Exception as e:
+                print(f"Error in frame generation loop: {e}")
+                time.sleep(0.001)  # Prevent tight error loop
+
     def connect(self):
         """Connect to MQTT broker and bind ZMQ socket"""
         try:
@@ -112,7 +189,6 @@ class PatternServer:
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
             self.mqtt_client.on_message = self.on_message
-            self.mqtt_client.on_publish = self.on_mqtt_publish
 
             # Set up authentication if provided
             if self.mqtt_user and self.mqtt_password:
@@ -122,12 +198,12 @@ class PatternServer:
             print(f"Connecting to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
             self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
 
-            # Start the loop
+            # Start MQTT loop
             self.mqtt_client.loop_start()
             print("MQTT loop started")
 
-            # Wait for connection to be established
-            connection_timeout = 10  # seconds
+            # Wait for connection
+            connection_timeout = 10
             start_time = time.time()
             while not hasattr(self, "_mqtt_connected") or not self._mqtt_connected:
                 if time.time() - start_time > connection_timeout:
@@ -140,23 +216,15 @@ class PatternServer:
             print("Subscribing to command topics...")
             self.mqtt_client.subscribe("led/command/#")
 
-            # Bind ZMQ socket for frame data
-            zmq_address = f"tcp://0.0.0.0:{self.zmq_port}"
-            print(f"Binding ZMQ socket at {zmq_address}")
-            self.zmq_socket.bind(zmq_address)
+            # Bind ZMQ PUB socket
+            zmq_address = f"tcp://*:{self.zmq_port}"
+            print(f"Binding ZMQ PUB socket at {zmq_address}")
+            self.frame_pub_socket.bind(zmq_address)
 
-            # Wait a moment for everything to settle
-            time.sleep(0.5)
-
-            # Initial status update
-            print("Publishing initial status...")
+            # Initial setup
+            time.sleep(0.5)  # Allow sockets to settle
             self.ha_manager.update_component_status("pattern_server", "online")
-
-            # Wait another moment for status to propagate
             time.sleep(0.5)
-
-            # Publish Home Assistant discovery
-            print("Publishing Home Assistant discovery messages...")
             self.ha_manager.publish_discovery(
                 self.list_patterns(), self.list_modifiers()
             )
@@ -166,7 +234,7 @@ class PatternServer:
 
         except Exception as e:
             print(f"Error connecting to services: {e}")
-            self.stop()  # Clean up if connection fails
+            self.stop()
             raise
 
     def on_mqtt_connect(self, client, userdata, flags, rc):
@@ -192,10 +260,6 @@ class PatternServer:
         """Handle MQTT disconnection"""
         print(f"Disconnected from MQTT broker with code {rc}")
         self._mqtt_connected = False
-
-    def on_mqtt_publish(self, client, userdata, mid):
-        """Handle MQTT publish confirmation"""
-        print(f"Message {mid} published successfully")
 
     def on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages"""
@@ -378,163 +442,49 @@ class PatternServer:
         except Exception as e:
             print(f"Error during cleanup: {e}")
 
-    def _update_loop(self):
-        """Main update loop with synchronized frame generation"""
-        last_fps_print = time.time()
-        frame_count = 0
-        frame_times = []
-        target_frame_time = 1.0 / 60
-        last_frame_time = time.time()
-        min_frame_interval = 1.0 / 120
-
-        while self.is_running:
-            try:
-                frame_start = time.time()
-
-                # Pace the frames
-                time_since_last_frame = frame_start - last_frame_time
-                if time_since_last_frame < min_frame_interval:
-                    time.sleep(min_frame_interval - time_since_last_frame)
-                    continue
-
-                try:
-                    # Get the request
-                    message = self.zmq_socket.recv_multipart(flags=zmq.NOBLOCK)
-                    if len(message) != 3:
-                        print(
-                            f"Invalid message format, expected 3 parts but got {len(message)}"
-                        )
-                        continue
-
-                    identity, empty, request = message
-                    if request != b"READY":
-                        print(f"Invalid request: {request}")
-                        continue
-
-                    # Check for pattern change at frame boundary
-                    if self.pattern_change_pending:
-                        self._swap_patterns()
-
-                    # Generate frame if we have a pattern
-                    frame_data = None
-                    try:
-                        with self.pattern_lock:
-                            if self.current_pattern:
-                                pixels = self.current_pattern.generate_frame(
-                                    self.current_params
-                                )
-
-                                with self.modifier_lock:
-                                    for modifier, params in self.modifiers:
-                                        pixels = modifier.apply(pixels, params)
-
-                                frame_data = bytearray()
-                                for pixel in pixels:
-                                    frame_data.extend(
-                                        [pixel["r"], pixel["g"], pixel["b"]]
-                                    )
-                    except Exception as e:
-                        print(f"Error generating frame: {e}")
-                        frame_data = None
-
-                    if frame_data is None:
-                        frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
-
-                    try:
-                        self.zmq_socket.send_multipart(
-                            [identity, empty, frame_data], flags=zmq.NOBLOCK
-                        )
-                        last_frame_time = time.time()
-                    except zmq.Again:
-                        print("Send would block, skipping frame")
-                        continue
-
-                    # Performance tracking
-                    frame_time = time.time() - frame_start
-                    frame_times.append(frame_time)
-                    if len(frame_times) > 100:
-                        frame_times.pop(0)
-                    frame_count += 1
-
-                    # Print FPS every second
-                    current_time = time.time()
-                    time_since_last_print = current_time - last_fps_print
-                    if time_since_last_print >= 1.0:
-                        if frame_count > 0 and len(frame_times) > 0:
-                            avg_frame_time = sum(frame_times) / len(frame_times)
-                            fps = frame_count / time_since_last_print
-                            print(
-                                f"Server FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
-                            )
-                        frame_count = 0
-                        last_fps_print = current_time
-
-                except zmq.Again:
-                    time.sleep(0.001)
-                    continue
-
-            except Exception as e:
-                if self.is_running:
-                    print(f"Error in update loop: {e}")
-                time.sleep(0.001)
-
     def start(self):
         """Start the pattern server"""
         if not self.is_running:
             self.is_running = True
-            self.update_thread = threading.Thread(target=self._update_loop)
-            self.update_thread.daemon = True
-            self.update_thread.start()
+            self.frame_thread = threading.Thread(target=self._frame_generation_loop)
+            self.frame_thread.daemon = True
+            self.frame_thread.start()
 
     def stop(self):
-        """Stop the pattern server and clean up resources gracefully"""
-        if not self.is_running:  # Prevent multiple shutdown attempts
+        """Stop the pattern server and clean up"""
+        if not self.is_running:
             return
 
         print("\nInitiating graceful shutdown...")
 
-        # 1. Signal shutdown to Home Assistant
         try:
             self.ha_manager.update_component_status("pattern_server", "shutting_down")
         except:
             pass
 
-        # 2. Set flag to stop update loop
+        # Stop frame generation
         self.is_running = False
+        if self.frame_thread and self.frame_thread.is_alive():
+            self.frame_thread.join(timeout=1.0)
 
-        # 3. Close ZMQ socket first to unblock update thread
-        print("Cleaning up ZMQ...")
+        # Clean up ZMQ
         try:
-            self.zmq_socket.close(linger=0)  # Don't wait for messages
+            self.frame_pub_socket.close(linger=0)
+            self.zmq_context.term()
         except:
             pass
 
-        # 4. Wait for update thread to finish
-        if self.update_thread and self.update_thread.is_alive():
-            print("Waiting for update thread to finish...")
-            self.update_thread.join(timeout=1.0)  # Wait up to 1 second
-
-        # 5. Clean up MQTT
-        print("Cleaning up MQTT...")
+        # Clean up MQTT
         try:
-            # Send offline status
             self.ha_manager.update_component_status("pattern_server", "offline")
-            time.sleep(0.1)  # Allow status to be sent
+            time.sleep(0.1)
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
         except:
             pass
 
-        # 6. Terminate ZMQ context
-        try:
-            self.zmq_context.term()
-        except:
-            pass
-
-        # 7. Final cleanup
-        print("Performing final cleanup...")
+        # Final cleanup
         self.cleanup()
-
         print("Shutdown complete")
 
     def list_patterns(self):
