@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from server.config.grid_config import GridConfig, DEFAULT_CONFIG
 from server.patterns.base import Pattern, PatternRegistry
 from server.modifiers.base import Modifier, ModifierRegistry
+from server.homeassistant import HomeAssistantManager
 
 # Load environment variables
 load_dotenv()
@@ -62,6 +63,9 @@ class PatternServer:
         # Set up signal handlers
         signal.signal(signal.SIGTERM, self.signal_handler)
         signal.signal(signal.SIGINT, self.signal_handler)
+
+        # Home Assistant integration
+        self.ha_manager = HomeAssistantManager(self.mqtt_client)
 
     def _load_patterns(self):
         """Dynamically load all pattern modules"""
@@ -113,6 +117,14 @@ class PatternServer:
             print(f"Binding ZMQ socket at {zmq_address}")
             self.zmq_socket.bind(zmq_address)
 
+            # Publish Home Assistant discovery
+            self.ha_manager.publish_discovery(
+                self.list_patterns(), self.list_modifiers()
+            )
+
+            # Initial status update
+            self.ha_manager.update_component_status("pattern_server", "online")
+
             self.mqtt_client.loop_start()
             print("MQTT client started")
         except Exception as e:
@@ -128,21 +140,42 @@ class PatternServer:
 
             if topic == "led/command/pattern":
                 self.set_pattern(data["name"], data.get("params", {}))
+                self.ha_manager.update_pattern_state(
+                    data["name"], data.get("params", {})
+                )
 
             elif topic == "led/command/params":
                 self.update_pattern_params(data["params"])
+                if self.current_pattern:
+                    self.ha_manager.update_pattern_state(
+                        self.current_pattern.definition().name, self.current_params
+                    )
 
             elif topic == "led/command/modifier/add":
                 self.add_modifier(data["name"], data.get("params", {}))
+                # Update modifier state in HA
+                for i, (modifier, params) in enumerate(self.modifiers):
+                    self.ha_manager.update_modifier_state(
+                        i, modifier.definition().name, True, params
+                    )
 
             elif topic == "led/command/modifier/remove":
-                self.remove_modifier(data["index"])
+                index = data["index"]
+                self.remove_modifier(index)
+                self.ha_manager.update_modifier_state(index, None, False, {})
 
             elif topic == "led/command/modifier/clear":
                 self.clear_modifiers()
+                for i in range(4):
+                    self.ha_manager.update_modifier_state(i, None, False, {})
 
             elif topic == "led/command/modifier/params":
                 self.update_modifier_params(data["index"], data["params"])
+                if 0 <= data["index"] < len(self.modifiers):
+                    modifier, params = self.modifiers[data["index"]]
+                    self.ha_manager.update_modifier_state(
+                        data["index"], modifier.definition().name, True, params
+                    )
 
             elif topic == "led/command/list":
                 # Send back pattern and modifier information
@@ -297,14 +330,11 @@ class PatternServer:
                         frame_times.pop(0)
                     frame_count += 1
 
-                    # Print FPS every second
+                    # Update FPS in Home Assistant
                     current_time = time.time()
                     if current_time - last_fps_print >= 1.0:
-                        avg_frame_time = sum(frame_times) / len(frame_times)
                         fps = frame_count / (current_time - last_fps_print)
-                        print(
-                            f"Pattern FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
-                        )
+                        self.ha_manager.update_fps(fps)
                         frame_count = 0
                         last_fps_print = current_time
 
@@ -327,6 +357,9 @@ class PatternServer:
 
     def stop(self):
         """Stop the pattern server and clean up resources"""
+        # Update status before stopping
+        self.ha_manager.update_component_status("pattern_server", "offline")
+
         self.is_running = False
         if self.update_thread:
             self.update_thread.join()
