@@ -96,8 +96,14 @@ class PatternServer:
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
         """Set pattern with immediate effect"""
         with self.pattern_lock:
+            print(f"\nPattern change requested: {pattern_name}")
+            print(f"Initial params: {params}")
+
             # Clean up old pattern
             if self.current_pattern:
+                print(
+                    f"Cleaning up old pattern: {self.current_pattern.definition().name}"
+                )
                 if hasattr(self.current_pattern, "_color_buffer"):
                     self.current_pattern._color_buffer.clear()
                 if hasattr(self.current_pattern, "trails"):
@@ -106,11 +112,14 @@ class PatternServer:
             # Set new pattern
             pattern_class = PatternRegistry.get_pattern(pattern_name)
             if pattern_class:
+                print(f"Creating new pattern instance: {pattern_name}")
                 self.current_pattern = pattern_class(self.grid_config)
                 self.current_params = params or {}
                 self.pattern_id = time.time_ns()  # New unique ID for pattern
                 print(f"Pattern changed to {pattern_name} with ID {self.pattern_id}")
+                print(f"Final params: {self.current_params}")
             else:
+                print(f"Pattern {pattern_name} not found in registry")
                 self.current_pattern = None
                 self.current_params = {}
                 self.pattern_id = None
@@ -145,6 +154,7 @@ class PatternServer:
         last_fps_print = time.time()
         frame_count = 0
         frame_seq = 0
+        last_pattern_id = None
 
         while self.is_running:
             loop_start = time.time()
@@ -152,8 +162,25 @@ class PatternServer:
             try:
                 # Generate frame with metadata
                 with self.pattern_lock:
+                    # Check for pattern changes
+                    if self.pattern_id != last_pattern_id:
+                        print(f"\nPattern change detected in frame loop:")
+                        print(f"Old pattern ID: {last_pattern_id}")
+                        print(f"New pattern ID: {self.pattern_id}")
+                        if self.current_pattern:
+                            print(
+                                f"Current pattern: {self.current_pattern.definition().name}"
+                            )
+                            print(f"Current params: {self.current_params}")
+                        else:
+                            print("No active pattern")
+                        last_pattern_id = self.pattern_id
+                        frame_seq = 0  # Reset frame sequence on pattern change
+
+                    # Generate frame
                     frame_data = self._generate_frame()
                     if frame_data is None:
+                        print("No frame data generated, using empty frame")
                         frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
 
                     # Create frame metadata
@@ -166,6 +193,10 @@ class PatternServer:
 
                     # Send frame with metadata
                     try:
+                        if frame_seq % 60 == 0:  # Log every 60th frame
+                            print(
+                                f"Sending frame {frame_seq} with size {len(frame_data)}"
+                            )
                         self.frame_pub_socket.send_multipart(
                             [b"frame", json.dumps(metadata).encode(), frame_data],
                             flags=zmq.NOBLOCK,
@@ -173,6 +204,8 @@ class PatternServer:
                         frame_seq += 1
                     except zmq.Again:
                         print("Frame publish would block, skipping")
+                    except Exception as e:
+                        print(f"Error sending frame: {e}")
 
                 # Performance tracking
                 frame_time = time.time() - loop_start
@@ -201,6 +234,9 @@ class PatternServer:
 
             except Exception as e:
                 print(f"Error in frame generation loop: {e}")
+                import traceback
+
+                traceback.print_exc()
                 time.sleep(0.001)
 
     def connect(self):
@@ -245,10 +281,33 @@ class PatternServer:
             print("Subscribing to command topics...")
             self.mqtt_client.subscribe("led/command/#")
 
+            # Close any existing ZMQ socket
+            if hasattr(self, "frame_pub_socket"):
+                self.frame_pub_socket.close(linger=0)
+                time.sleep(0.1)  # Allow socket to close
+
+            # Create new ZMQ PUB socket
+            self.frame_pub_socket = self.zmq_context.socket(zmq.PUB)
+
+            # Set socket options
+            self.frame_pub_socket.setsockopt(zmq.LINGER, 0)
+            self.frame_pub_socket.setsockopt(zmq.SNDHWM, 1)  # Only keep latest frame
+            self.frame_pub_socket.setsockopt(
+                zmq.CONFLATE, 1
+            )  # Only keep latest message
+            self.frame_pub_socket.setsockopt(
+                zmq.SNDTIMEO, 1000
+            )  # 1 second send timeout
+
             # Bind ZMQ PUB socket
-            zmq_address = f"tcp://*:{self.zmq_port}"
+            zmq_address = f"tcp://*:{self.zmq_port}"  # Bind to all interfaces
             print(f"Binding ZMQ PUB socket at {zmq_address}")
             self.frame_pub_socket.bind(zmq_address)
+
+            # Allow time for socket to bind
+            time.sleep(0.5)
+
+            print("ZMQ socket bound successfully")
 
             # Initial setup
             time.sleep(0.5)  # Allow sockets to settle
@@ -293,22 +352,28 @@ class PatternServer:
     def on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages"""
         try:
-            print(f"Received message on topic: {msg.topic}")
+            print(f"\nReceived message on topic: {msg.topic}")
+            print(f"Payload: {msg.payload.decode()}")
+
             data = json.loads(msg.payload.decode())
             topic = msg.topic
 
             if topic == "led/command/pattern":
+                print(f"Processing pattern command: {data}")
                 self.set_pattern(data["name"], data.get("params", {}))
                 self.ha_manager.update_pattern_state(
                     data["name"], data.get("params", {})
                 )
+                print("Pattern state updated in Home Assistant")
 
             elif topic == "led/command/params":
+                print(f"Processing parameter update: {data}")
                 self.update_pattern_params(data["params"])
                 if self.current_pattern:
                     self.ha_manager.update_pattern_state(
                         self.current_pattern.definition().name, self.current_params
                     )
+                    print("Parameter state updated in Home Assistant")
 
             elif topic == "led/command/modifier/add":
                 self.add_modifier(data["name"], data.get("params", {}))
@@ -388,7 +453,15 @@ class PatternServer:
         """Update current pattern parameters"""
         with self.pattern_lock:  # Protect parameter updates
             if self.current_pattern:
+                print(
+                    f"\nUpdating parameters for pattern: {self.current_pattern.definition().name}"
+                )
+                print(f"Current params: {self.current_params}")
+                print(f"New params to merge: {params}")
                 self.current_params.update(params)
+                print(f"Final merged params: {self.current_params}")
+            else:
+                print("No active pattern to update parameters for")
 
     def update_modifier_params(self, index: int, params: Dict[str, Any]):
         """Update modifier parameters"""
