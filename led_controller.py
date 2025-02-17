@@ -3,6 +3,7 @@
 import time
 import json
 import paho.mqtt.client as mqtt
+import zmq  # Add ZMQ import
 from rpi_ws281x import PixelStrip, Color
 import argparse
 import os
@@ -20,17 +21,27 @@ LED_BRIGHTNESS = 255  # Set to 0 for darkest and 255 for brightest
 LED_INVERT = False  # True to invert the signal
 LED_CHANNEL = 0  # PWM channel to use
 
+# Target frame rate
+TARGET_FPS = 60
+FRAME_TIME = 1.0 / TARGET_FPS
+
 
 class LEDController:
-    def __init__(self, mqtt_host=None):
+    def __init__(self, mqtt_host=None, zmq_host=None):
         # Create NeoPixel object with appropriate configuration
         self.init_strip()
 
-        # MQTT setup
+        # MQTT setup for commands
         self.mqtt_host = mqtt_host or os.getenv("MQTT_BROKER", "localhost")
         self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
         self.mqtt_user = os.getenv("MQTT_USER")
         self.mqtt_password = os.getenv("MQTT_PASSWORD")
+
+        # ZMQ setup for frame data
+        self.zmq_context = zmq.Context()
+        self.zmq_socket = self.zmq_context.socket(zmq.REQ)
+        self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", self.mqtt_host)
+        self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         print(f"MQTT Configuration:")
         print(f"Host: {self.mqtt_host}")
@@ -39,6 +50,10 @@ class LEDController:
         print(
             f"Password: {'*' * len(self.mqtt_password) if self.mqtt_password else 'None'}"
         )
+
+        print(f"\nZMQ Configuration:")
+        print(f"Host: {self.zmq_host}")
+        print(f"Port: {self.zmq_port}")
 
         # Initialize MQTT client
         self.mqtt_client = None
@@ -150,6 +165,17 @@ class LEDController:
             time.sleep(5)
         return False
 
+    def connect_zmq(self):
+        """Connect to ZMQ server for frame data"""
+        try:
+            zmq_address = f"tcp://{self.zmq_host}:{self.zmq_port}"
+            print(f"Connecting to ZMQ server at {zmq_address}")
+            self.zmq_socket.connect(zmq_address)
+            return True
+        except Exception as e:
+            print(f"Error connecting to ZMQ server: {e}")
+            return False
+
     def on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages with error checking"""
         try:
@@ -214,28 +240,43 @@ class LEDController:
                 self.consecutive_errors = 0
 
     def run(self):
-        """Main run loop with error recovery"""
+        """Main run loop with synchronized frame updates"""
         try:
-            # Initial connection
+            # Initial connections
             if not self.connect_mqtt():
                 print("Failed to establish initial MQTT connection")
                 return
 
-            # Main loop
+            if not self.connect_zmq():
+                print("Failed to establish ZMQ connection")
+                return
+
+            # Performance tracking
             last_fps_print = time.time()
             frame_count = 0
             frame_times = []
 
+            # Main loop
             while True:
-                if not self.is_connected:
-                    print("MQTT connection lost, attempting to reconnect...")
-                    if not self.connect_mqtt():
-                        continue
+                frame_start = time.time()
 
-                # Update LEDs if needed
-                if self.needs_update:
-                    frame_start = time.time()
-                    self.update_strip()
+                try:
+                    # Request new frame
+                    self.zmq_socket.send_string("READY")
+
+                    # Receive frame data
+                    frame_data = self.zmq_socket.recv()
+
+                    # Update LED strip
+                    for i in range(LED_COUNT):
+                        idx = i * 3
+                        if idx + 2 < len(frame_data):
+                            r = frame_data[idx]
+                            g = frame_data[idx + 1]
+                            b = frame_data[idx + 2]
+                            self.strip.setPixelColor(i, Color(r, g, b))
+
+                    self.strip.show()
 
                     # Track performance
                     frame_time = time.time() - frame_start
@@ -255,27 +296,31 @@ class LEDController:
                         frame_count = 0
                         last_fps_print = current_time
 
-                # No delay - process updates as fast as possible
+                    # Maintain target frame rate
+                    elapsed = time.time() - frame_start
+                    sleep_time = max(0, FRAME_TIME - elapsed)
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+
+                except zmq.Again:
+                    # Socket would block, skip this frame
+                    print("Frame skip - ZMQ would block")
+                    time.sleep(0.001)
+                except Exception as e:
+                    print(f"Error updating frame: {e}")
+                    time.sleep(0.1)  # Longer delay on error
 
         except KeyboardInterrupt:
             print("\nShutting down gracefully...")
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
+            self.zmq_socket.close()
+            self.zmq_context.term()
+
             # Turn off all LEDs
             for i in range(LED_COUNT):
                 self.strip.setPixelColor(i, Color(0, 0, 0))
             self.strip.show()
-        except Exception as e:
-            print(f"Error in main loop: {e}")
-            self.mqtt_client.loop_stop()
-            time.sleep(1)
-            print("Attempting to recover...")
-            try:
-                self.init_strip()
-                self.connect_mqtt()
-            except Exception as recovery_error:
-                print(f"Recovery failed: {recovery_error}")
-                time.sleep(5)  # Wait before retrying
 
 
 if __name__ == "__main__":
@@ -285,7 +330,12 @@ if __name__ == "__main__":
         default=os.getenv("MQTT_BROKER"),
         help="MQTT broker hostname or IP",
     )
+    parser.add_argument(
+        "--zmq-host",
+        default=os.getenv("ZMQ_HOST"),
+        help="ZMQ broker hostname or IP",
+    )
     args = parser.parse_args()
 
-    controller = LEDController(mqtt_host=args.mqtt_host)
+    controller = LEDController(mqtt_host=args.mqtt_host, zmq_host=args.zmq_host)
     controller.run()
