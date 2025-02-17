@@ -77,10 +77,81 @@ class PatternServer:
 
     def connect(self):
         """Connect to MQTT broker"""
-        if self.mqtt_user and self.mqtt_password:
-            self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
-        self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
-        self.mqtt_client.loop_start()
+        try:
+            # Create MQTT client with unique ID
+            client_id = f"pattern_server_{int(time.time())}"
+            print(f"Creating MQTT client with ID: {client_id}")
+            self.mqtt_client = mqtt.Client(client_id=client_id)
+
+            # Set up message handler
+            self.mqtt_client.on_message = self.on_message
+
+            # Set up authentication if provided
+            if self.mqtt_user and self.mqtt_password:
+                print(f"Setting up authentication for user: {self.mqtt_user}")
+                self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
+
+            print(f"Connecting to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
+            self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
+
+            # Subscribe to command topics
+            print("Subscribing to command topics...")
+            self.mqtt_client.subscribe("led/command/#")
+
+            self.mqtt_client.loop_start()
+            print("MQTT client started")
+        except Exception as e:
+            print(f"Error connecting to MQTT broker: {e}")
+            raise
+
+    def on_message(self, client, userdata, msg):
+        """Handle incoming MQTT messages"""
+        try:
+            print(f"Received message on topic: {msg.topic}")
+            data = json.loads(msg.payload.decode())
+            topic = msg.topic
+
+            if topic == "led/command/pattern":
+                self.set_pattern(data["name"], data.get("params", {}))
+
+            elif topic == "led/command/params":
+                self.update_pattern_params(data["params"])
+
+            elif topic == "led/command/modifier/add":
+                self.add_modifier(data["name"], data.get("params", {}))
+
+            elif topic == "led/command/modifier/remove":
+                self.remove_modifier(data["index"])
+
+            elif topic == "led/command/modifier/clear":
+                self.clear_modifiers()
+
+            elif topic == "led/command/modifier/params":
+                self.update_modifier_params(data["index"], data["params"])
+
+            elif topic == "led/command/list":
+                # Send back pattern and modifier information
+                response = {
+                    "patterns": self.list_patterns(),
+                    "modifiers": self.list_modifiers(),
+                    "current_pattern": self.current_pattern.definition().name
+                    if self.current_pattern
+                    else None,
+                    "current_modifiers": [
+                        (m.definition().name, p) for m, p in self.modifiers
+                    ],
+                }
+                self.mqtt_client.publish("led/status/list", json.dumps(response))
+
+            elif topic == "led/command/stop":
+                self.set_pattern(None)
+
+            elif topic == "led/command/clear":
+                self.mqtt_client.publish("led/pixels", json.dumps({"command": "clear"}))
+
+        except Exception as e:
+            print(f"Error handling command: {e}")
+            print(f"Message payload: {msg.payload}")
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
         """Set current pattern with cleanup of old pattern"""
@@ -257,59 +328,6 @@ if __name__ == "__main__":
     server = PatternServer()
     server.connect()
     server.start()
-
-    # Set up MQTT command handlers
-    def on_message(client, userdata, msg):
-        try:
-            data = json.loads(msg.payload.decode())
-            topic = msg.topic
-
-            if topic == "led/command/pattern":
-                server.set_pattern(data["name"], data.get("params", {}))
-
-            elif topic == "led/command/params":
-                server.update_pattern_params(data["params"])
-
-            elif topic == "led/command/modifier/add":
-                server.add_modifier(data["name"], data.get("params", {}))
-
-            elif topic == "led/command/modifier/remove":
-                server.remove_modifier(data["index"])
-
-            elif topic == "led/command/modifier/clear":
-                server.clear_modifiers()
-
-            elif topic == "led/command/modifier/params":
-                server.update_modifier_params(data["index"], data["params"])
-
-            elif topic == "led/command/list":
-                # Send back pattern and modifier information
-                response = {
-                    "patterns": server.list_patterns(),
-                    "modifiers": server.list_modifiers(),
-                    "current_pattern": server.current_pattern.definition().name
-                    if server.current_pattern
-                    else None,
-                    "current_modifiers": [
-                        (m.definition().name, p) for m, p in server.modifiers
-                    ],
-                }
-                server.mqtt_client.publish("led/status/list", json.dumps(response))
-
-            elif topic == "led/command/stop":
-                server.set_pattern(None)
-
-            elif topic == "led/command/clear":
-                server.mqtt_client.publish(
-                    "led/pixels", json.dumps({"command": "clear"})
-                )
-
-        except Exception as e:
-            print(f"Error handling command: {e}")
-
-    # Subscribe to command topics
-    server.mqtt_client.on_message = on_message
-    server.mqtt_client.subscribe("led/command/#")
 
     # Keep the main thread alive
     try:

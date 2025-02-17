@@ -154,18 +154,38 @@ class LEDController:
         """Handle incoming MQTT messages with error checking"""
         try:
             data = json.loads(msg.payload.decode())
-            for pixel in data:
-                index = pixel.get("index", 0)
-                if 0 <= index < LED_COUNT:
-                    r = max(0, min(255, pixel.get("r", 0)))
-                    g = max(0, min(255, pixel.get("g", 0)))
-                    b = max(0, min(255, pixel.get("b", 0)))
-                    self.frame_buffer[index] = (r, g, b)
-            self.needs_update = True
+
+            # Handle command messages
+            if isinstance(data, dict) and "command" in data:
+                if data["command"] == "set_pixels":
+                    pixels = data.get("pixels", [])
+                    for pixel in pixels:
+                        index = pixel.get("index", 0)
+                        if 0 <= index < LED_COUNT:
+                            r = max(0, min(255, pixel.get("r", 0)))
+                            g = max(0, min(255, pixel.get("g", 0)))
+                            b = max(0, min(255, pixel.get("b", 0)))
+                            self.frame_buffer[index] = (r, g, b)
+                    self.needs_update = True
+                elif data["command"] == "clear":
+                    self.frame_buffer = [(0, 0, 0)] * LED_COUNT
+                    self.needs_update = True
+            # Handle direct pixel data (legacy format)
+            elif isinstance(data, list):
+                for pixel in data:
+                    index = pixel.get("index", 0)
+                    if 0 <= index < LED_COUNT:
+                        r = max(0, min(255, pixel.get("r", 0)))
+                        g = max(0, min(255, pixel.get("g", 0)))
+                        b = max(0, min(255, pixel.get("b", 0)))
+                        self.frame_buffer[index] = (r, g, b)
+                self.needs_update = True
+
         except json.JSONDecodeError as e:
             print(f"Error decoding message: {e}")
         except Exception as e:
             print(f"Error processing message: {e}")
+            print(f"Message payload: {msg.payload}")
 
     def update_strip(self):
         """Update LED strip with error handling and recovery"""
