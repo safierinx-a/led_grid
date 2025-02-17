@@ -93,7 +93,7 @@ class PatternServer:
             # Create MQTT client with unique ID
             client_id = f"pattern_server_{int(time.time())}"
             print(f"Creating MQTT client with ID: {client_id}")
-            self.mqtt_client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
+            self.mqtt_client = mqtt.Client(client_id=client_id)  # Remove MQTTv5 for now
 
             # Set up callbacks
             self.mqtt_client.on_connect = self.on_mqtt_connect
@@ -109,29 +109,38 @@ class PatternServer:
             print(f"Connecting to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
             self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
 
-            # Start the loop first
+            # Start the loop
             self.mqtt_client.loop_start()
             print("MQTT loop started")
 
             # Wait for connection to be established
-            timeout = 5
-            while timeout > 0 and not hasattr(self, "_mqtt_connected"):
+            connection_timeout = 10  # seconds
+            start_time = time.time()
+            while not hasattr(self, "_mqtt_connected") or not self._mqtt_connected:
+                if time.time() - start_time > connection_timeout:
+                    raise Exception("MQTT connection timeout")
                 time.sleep(0.1)
-                timeout -= 0.1
 
-            if not hasattr(self, "_mqtt_connected"):
-                raise Exception("MQTT connection timeout")
+            print("MQTT connection confirmed")
 
             # Subscribe to command topics
             print("Subscribing to command topics...")
             self.mqtt_client.subscribe("led/command/#")
 
             # Bind ZMQ socket for frame data
-            zmq_address = (
-                f"tcp://0.0.0.0:{self.zmq_port}"  # Explicitly bind to all interfaces
-            )
+            zmq_address = f"tcp://0.0.0.0:{self.zmq_port}"
             print(f"Binding ZMQ socket at {zmq_address}")
             self.zmq_socket.bind(zmq_address)
+
+            # Wait a moment for everything to settle
+            time.sleep(0.5)
+
+            # Initial status update
+            print("Publishing initial status...")
+            self.ha_manager.update_component_status("pattern_server", "online")
+
+            # Wait another moment for status to propagate
+            time.sleep(0.5)
 
             # Publish Home Assistant discovery
             print("Publishing Home Assistant discovery messages...")
@@ -139,21 +148,31 @@ class PatternServer:
                 self.list_patterns(), self.list_modifiers()
             )
 
-            # Initial status update
-            self.ha_manager.update_component_status("pattern_server", "online")
-
             print("Initialization complete")
+            return True
+
         except Exception as e:
             print(f"Error connecting to services: {e}")
+            self.stop()  # Clean up if connection fails
             raise
 
-    def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
+    def on_mqtt_connect(self, client, userdata, flags, rc):
         """Handle MQTT connection"""
+        rc_codes = {
+            0: "Connection successful",
+            1: "Connection refused - incorrect protocol version",
+            2: "Connection refused - invalid client identifier",
+            3: "Connection refused - server unavailable",
+            4: "Connection refused - bad username or password",
+            5: "Connection refused - not authorised",
+        }
+
         if rc == 0:
-            print("Connected to MQTT broker successfully")
+            print(f"Connected to MQTT broker successfully (rc={rc})")
             self._mqtt_connected = True
         else:
-            print(f"Failed to connect to MQTT broker with code {rc}")
+            error_message = rc_codes.get(rc, f"Unknown error code {rc}")
+            print(f"Failed to connect to MQTT broker: {error_message}")
             self._mqtt_connected = False
 
     def on_mqtt_disconnect(self, client, userdata, rc):
