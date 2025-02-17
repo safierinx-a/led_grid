@@ -95,8 +95,11 @@ class PatternServer:
             print(f"Creating MQTT client with ID: {client_id}")
             self.mqtt_client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
 
-            # Set up message handler
+            # Set up callbacks
+            self.mqtt_client.on_connect = self.on_mqtt_connect
+            self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
             self.mqtt_client.on_message = self.on_message
+            self.mqtt_client.on_publish = self.on_mqtt_publish
 
             # Set up authentication if provided
             if self.mqtt_user and self.mqtt_password:
@@ -105,6 +108,19 @@ class PatternServer:
 
             print(f"Connecting to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
             self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
+
+            # Start the loop first
+            self.mqtt_client.loop_start()
+            print("MQTT loop started")
+
+            # Wait for connection to be established
+            timeout = 5
+            while timeout > 0 and not hasattr(self, "_mqtt_connected"):
+                time.sleep(0.1)
+                timeout -= 0.1
+
+            if not hasattr(self, "_mqtt_connected"):
+                raise Exception("MQTT connection timeout")
 
             # Subscribe to command topics
             print("Subscribing to command topics...")
@@ -118,6 +134,7 @@ class PatternServer:
             self.zmq_socket.bind(zmq_address)
 
             # Publish Home Assistant discovery
+            print("Publishing Home Assistant discovery messages...")
             self.ha_manager.publish_discovery(
                 self.list_patterns(), self.list_modifiers()
             )
@@ -125,11 +142,28 @@ class PatternServer:
             # Initial status update
             self.ha_manager.update_component_status("pattern_server", "online")
 
-            self.mqtt_client.loop_start()
-            print("MQTT client started")
+            print("Initialization complete")
         except Exception as e:
             print(f"Error connecting to services: {e}")
             raise
+
+    def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
+        """Handle MQTT connection"""
+        if rc == 0:
+            print("Connected to MQTT broker successfully")
+            self._mqtt_connected = True
+        else:
+            print(f"Failed to connect to MQTT broker with code {rc}")
+            self._mqtt_connected = False
+
+    def on_mqtt_disconnect(self, client, userdata, rc):
+        """Handle MQTT disconnection"""
+        print(f"Disconnected from MQTT broker with code {rc}")
+        self._mqtt_connected = False
+
+    def on_mqtt_publish(self, client, userdata, mid):
+        """Handle MQTT publish confirmation"""
+        print(f"Message {mid} published successfully")
 
     def on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages"""
