@@ -319,17 +319,25 @@ class LEDController:
                 try:
                     # Check for new frame
                     try:
+                        print("Polling for frame...")  # Debug log
                         if self.frame_sub_socket.poll(timeout=100):  # 100ms timeout
+                            print("Frame available, receiving...")  # Debug log
                             # Receive frame parts
                             topic, metadata_bytes, frame_data = (
                                 self.frame_sub_socket.recv_multipart(flags=zmq.NOBLOCK)
                             )
+                            print(
+                                f"Received frame: topic={topic}, metadata size={len(metadata_bytes)}, frame size={len(frame_data)}"
+                            )  # Debug log
 
                             # Parse metadata
                             metadata = json.loads(metadata_bytes.decode())
                             frame_seq = metadata["seq"]
                             pattern_id = metadata["pattern_id"]
                             frame_size = metadata["frame_size"]
+                            print(
+                                f"Frame metadata: seq={frame_seq}, pattern_id={pattern_id}, size={frame_size}"
+                            )  # Debug log
 
                             # Check if this is a new pattern
                             if pattern_id != self.current_pattern_id:
@@ -351,6 +359,7 @@ class LEDController:
                                 )
                                 continue
 
+                            print("Updating LED strip...")  # Debug log
                             # Update LED strip
                             frame_start = time.time()
                             for i in range(LED_COUNT):
@@ -364,6 +373,7 @@ class LEDController:
                             self.strip.show()
                             self.last_frame_time = time.time()
                             self.last_frame_seq = frame_seq
+                            print("LED strip updated successfully")  # Debug log
 
                             # Performance tracking
                             frame_time = self.last_frame_time - frame_start
@@ -388,7 +398,11 @@ class LEDController:
                             self.consecutive_errors = 0
 
                     except zmq.Again:
+                        print("No frame available (zmq.Again)")  # Debug log
                         continue
+                    except Exception as e:
+                        print(f"Error receiving frame: {e}")  # Debug log
+                        raise
 
                     # Check for timeout
                     if time.time() - self.last_frame_time > self.frame_timeout:
