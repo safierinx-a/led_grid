@@ -29,16 +29,15 @@ class PatternServer:
         # MQTT client for control commands
         self.mqtt_client = mqtt.Client()
 
-        # ZMQ setup for frame data - PUB socket for frame distribution
+        # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
         self.frame_pub_socket = self.zmq_context.socket(zmq.PUB)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         # Set ZMQ socket options
-        self.frame_pub_socket.setsockopt(zmq.LINGER, 0)  # Don't wait on close
-        self.frame_pub_socket.setsockopt(
-            zmq.SNDHWM, 2
-        )  # Only keep last 2 frames in queue
+        self.frame_pub_socket.setsockopt(zmq.LINGER, 0)
+        self.frame_pub_socket.setsockopt(zmq.SNDHWM, 1)  # Only keep latest frame
+        self.frame_pub_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest message
 
         # MQTT settings
         self.mqtt_host = os.getenv("MQTT_BROKER", "localhost")
@@ -49,10 +48,8 @@ class PatternServer:
         # Pattern state
         self.current_pattern: Optional[Pattern] = None
         self.current_params: Dict[str, Any] = {}
-        self.next_pattern: Optional[Pattern] = None
-        self.next_params: Dict[str, Any] = {}
+        self.pattern_id = None  # Unique ID for current pattern
         self.pattern_lock = threading.RLock()
-        self.pattern_change_pending = False
 
         # Modifier chain
         self.modifiers: List[Tuple[Modifier, Dict[str, Any]]] = []
@@ -62,7 +59,6 @@ class PatternServer:
         self.is_running = False
         self.frame_thread = None
         self.target_frame_time = 1.0 / 60  # Target 60 FPS
-        self.last_frame_time = 0
         self.frame_count = 0
         self.frame_times = []
 
@@ -97,53 +93,86 @@ class PatternServer:
             if name != "base":
                 importlib.import_module(f"server.modifiers.{name}")
 
+    def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
+        """Set pattern with immediate effect"""
+        with self.pattern_lock:
+            # Clean up old pattern
+            if self.current_pattern:
+                if hasattr(self.current_pattern, "_color_buffer"):
+                    self.current_pattern._color_buffer.clear()
+                if hasattr(self.current_pattern, "trails"):
+                    self.current_pattern.trails.clear()
+
+            # Set new pattern
+            pattern_class = PatternRegistry.get_pattern(pattern_name)
+            if pattern_class:
+                self.current_pattern = pattern_class(self.grid_config)
+                self.current_params = params or {}
+                self.pattern_id = time.time_ns()  # New unique ID for pattern
+                print(f"Pattern changed to {pattern_name} with ID {self.pattern_id}")
+            else:
+                self.current_pattern = None
+                self.current_params = {}
+                self.pattern_id = None
+                print("Pattern cleared")
+
+    def _generate_frame(self) -> Optional[bytearray]:
+        """Generate a single frame with error handling"""
+        try:
+            if not self.current_pattern:
+                return None
+
+            # Generate frame
+            pixels = self.current_pattern.generate_frame(self.current_params)
+
+            # Apply modifiers
+            with self.modifier_lock:
+                for modifier, params in self.modifiers:
+                    pixels = modifier.apply(pixels, params)
+
+            # Convert to bytes
+            frame_data = bytearray()
+            for pixel in pixels:
+                frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
+            return frame_data
+
+        except Exception as e:
+            print(f"Error generating frame: {e}")
+            return None
+
     def _frame_generation_loop(self):
-        """Main frame generation loop - runs at fixed rate"""
+        """Main frame generation loop with metadata"""
         last_fps_print = time.time()
         frame_count = 0
+        frame_seq = 0
 
         while self.is_running:
             loop_start = time.time()
 
             try:
-                # Check for pattern change at frame boundary
-                if self.pattern_change_pending:
-                    self._swap_patterns()
+                # Generate frame with metadata
+                with self.pattern_lock:
+                    frame_data = self._generate_frame()
+                    if frame_data is None:
+                        frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
 
-                # Generate frame
-                frame_data = None
-                try:
-                    with self.pattern_lock:
-                        if self.current_pattern:
-                            # Generate frame
-                            pixels = self.current_pattern.generate_frame(
-                                self.current_params
-                            )
+                    # Create frame metadata
+                    metadata = {
+                        "seq": frame_seq,
+                        "pattern_id": self.pattern_id,
+                        "timestamp": time.time_ns(),
+                        "frame_size": len(frame_data),
+                    }
 
-                            # Apply modifiers
-                            with self.modifier_lock:
-                                for modifier, params in self.modifiers:
-                                    pixels = modifier.apply(pixels, params)
-
-                            # Convert to bytes
-                            frame_data = bytearray()
-                            for pixel in pixels:
-                                frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
-                except Exception as e:
-                    print(f"Error generating frame: {e}")
-                    frame_data = None
-
-                # Send empty frame if no pattern or error
-                if frame_data is None:
-                    frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
-
-                # Publish frame with topic "frame"
-                try:
-                    self.frame_pub_socket.send_multipart(
-                        [b"frame", frame_data], flags=zmq.NOBLOCK
-                    )
-                except zmq.Again:
-                    print("Frame publish would block, skipping")
+                    # Send frame with metadata
+                    try:
+                        self.frame_pub_socket.send_multipart(
+                            [b"frame", json.dumps(metadata).encode(), frame_data],
+                            flags=zmq.NOBLOCK,
+                        )
+                        frame_seq += 1
+                    except zmq.Again:
+                        print("Frame publish would block, skipping")
 
                 # Performance tracking
                 frame_time = time.time() - loop_start
@@ -172,7 +201,7 @@ class PatternServer:
 
             except Exception as e:
                 print(f"Error in frame generation loop: {e}")
-                time.sleep(0.001)  # Prevent tight error loop
+                time.sleep(0.001)
 
     def connect(self):
         """Connect to MQTT broker and bind ZMQ socket"""
@@ -330,46 +359,6 @@ class PatternServer:
         except Exception as e:
             print(f"Error handling command: {e}")
             print(f"Message payload: {msg.payload}")
-
-    def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
-        """Set next pattern with double buffering for clean transitions"""
-        with self.pattern_lock:
-            # Clean up old next pattern if exists
-            if self.next_pattern:
-                if hasattr(self.next_pattern, "_color_buffer"):
-                    self.next_pattern._color_buffer.clear()
-                if hasattr(self.next_pattern, "trails"):
-                    self.next_pattern.trails.clear()
-
-            # Create new pattern
-            pattern_class = PatternRegistry.get_pattern(pattern_name)
-            if pattern_class:
-                self.next_pattern = pattern_class(self.grid_config)
-                self.next_params = params or {}
-                self.pattern_change_pending = True
-                print(f"Queued pattern change to {pattern_name} with params {params}")
-            else:
-                print(f"Pattern {pattern_name} not found")
-                self.next_pattern = None
-                self.next_params = {}
-                self.pattern_change_pending = True
-
-    def _swap_patterns(self):
-        """Swap current and next patterns atomically"""
-        with self.pattern_lock:
-            # Clean up old pattern
-            if self.current_pattern:
-                if hasattr(self.current_pattern, "_color_buffer"):
-                    self.current_pattern._color_buffer.clear()
-                if hasattr(self.current_pattern, "trails"):
-                    self.current_pattern.trails.clear()
-
-            # Swap patterns
-            self.current_pattern = self.next_pattern
-            self.current_params = self.next_params
-            self.next_pattern = None
-            self.next_params = {}
-            self.pattern_change_pending = False
 
     def add_modifier(self, modifier_name: str, params: Dict[str, Any] = None):
         """Add a modifier to the chain"""
