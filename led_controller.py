@@ -47,7 +47,8 @@ class LEDController:
         self.frame_sub_socket.setsockopt(zmq.LINGER, 0)
         self.frame_sub_socket.setsockopt(zmq.RCVHWM, 1)  # Only keep latest frame
         self.frame_sub_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest message
-        self.frame_sub_socket.setsockopt_string(zmq.SUBSCRIBE, "frame")
+        self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1 second timeout
+        self.frame_sub_socket.setsockopt(zmq.SUBSCRIBE, b"frame")  # Use bytes for topic
 
         print(f"MQTT Configuration:")
         print(f"Host: {self.mqtt_host}")
@@ -179,10 +180,58 @@ class LEDController:
     def connect_zmq(self):
         """Connect to ZMQ server for frame data"""
         try:
+            # Close any existing connection
+            if hasattr(self, "frame_sub_socket"):
+                self.frame_sub_socket.close(linger=0)
+                time.sleep(0.1)  # Allow socket to close
+
+            # Create new socket
+            self.frame_sub_socket = self.zmq_context.socket(zmq.SUB)
+
+            # Set socket options
+            self.frame_sub_socket.setsockopt(zmq.LINGER, 0)
+            self.frame_sub_socket.setsockopt(zmq.RCVHWM, 1)  # Only keep latest frame
+            self.frame_sub_socket.setsockopt(
+                zmq.CONFLATE, 1
+            )  # Only keep latest message
+            self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1 second timeout
+            self.frame_sub_socket.setsockopt(
+                zmq.SUBSCRIBE, b"frame"
+            )  # Use bytes for topic
+
+            # Connect to server
             zmq_address = f"tcp://{self.zmq_host}:{self.zmq_port}"
             print(f"Connecting to ZMQ server at {zmq_address}")
             self.frame_sub_socket.connect(zmq_address)
+
+            # Allow time for connection to establish and subscription to take effect
+            time.sleep(0.5)
+
+            print("Verifying ZMQ connection...")
+            # Try to receive a frame to verify connection
+            start_time = time.time()
+            while time.time() - start_time < 5.0:  # Wait up to 5 seconds
+                try:
+                    if self.frame_sub_socket.poll(timeout=100):
+                        topic, metadata_bytes, frame_data = (
+                            self.frame_sub_socket.recv_multipart(zmq.NOBLOCK)
+                        )
+                        print(
+                            f"Connection verified - received frame of size {len(frame_data)}"
+                        )
+                        return True
+                except zmq.Again:
+                    continue
+                except Exception as e:
+                    print(f"Error during connection verification: {e}")
+                    break
+                time.sleep(0.1)
+
+            print(
+                "Warning: Could not verify frame reception, but connection established"
+            )
             return True
+
         except Exception as e:
             print(f"Error connecting to ZMQ server: {e}")
             return False
@@ -276,7 +325,8 @@ class LEDController:
             self.frame_sub_socket.setsockopt(zmq.LINGER, 0)
             self.frame_sub_socket.setsockopt(zmq.RCVHWM, 1)
             self.frame_sub_socket.setsockopt(zmq.CONFLATE, 1)
-            self.frame_sub_socket.setsockopt_string(zmq.SUBSCRIBE, "frame")
+            self.frame_sub_socket.setsockopt(zmq.RCVTIMEO, 1000)
+            self.frame_sub_socket.setsockopt(zmq.SUBSCRIBE, b"frame")
 
             # Try to reconnect
             try:
