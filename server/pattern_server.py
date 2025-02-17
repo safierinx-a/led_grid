@@ -293,8 +293,12 @@ class PatternServer:
 
         while self.is_running:
             try:
-                # Wait for request from LED controller
-                request = self.zmq_socket.recv_string()
+                # Use poll with timeout to allow for graceful shutdown
+                if self.zmq_socket.poll(timeout=1000) == 0:  # 1 second timeout
+                    continue
+
+                # Get the request
+                request = self.zmq_socket.recv_string(zmq.NOBLOCK)
 
                 if request == "READY":
                     frame_start = time.time()
@@ -343,9 +347,12 @@ class PatternServer:
                         self.cleanup()
                         self.last_cleanup = current_time
 
+            except zmq.Again:
+                continue  # No message available
             except Exception as e:
-                print(f"Error in update loop: {e}")
-                time.sleep(0.01)  # Brief delay on error
+                if self.is_running:  # Only log errors if we're supposed to be running
+                    print(f"Error in update loop: {e}")
+                time.sleep(0.01)
 
     def start(self):
         """Start the pattern server"""
@@ -357,27 +364,26 @@ class PatternServer:
 
     def stop(self):
         """Stop the pattern server and clean up resources gracefully"""
+        if not self.is_running:  # Prevent multiple shutdown attempts
+            return
+
         print("\nInitiating graceful shutdown...")
 
         # 1. Signal shutdown to Home Assistant
-        self.ha_manager.update_component_status("pattern_server", "shutting_down")
+        try:
+            self.ha_manager.update_component_status("pattern_server", "shutting_down")
+        except:
+            pass
 
         # 2. Set flag to stop update loop
         self.is_running = False
 
-        # 3. Send one final black frame if we have a pending request
+        # 3. Close ZMQ socket first to unblock update thread
+        print("Cleaning up ZMQ...")
         try:
-            # Non-blocking receive to check for pending request
-            if self.zmq_socket.poll(timeout=100) > 0:  # 100ms timeout
-                request = self.zmq_socket.recv_string(zmq.NOBLOCK)
-                if request == "READY":
-                    # Send black frame
-                    black_frame = bytearray([0] * (self.grid_config.num_pixels * 3))
-                    self.zmq_socket.send(black_frame)
-        except zmq.Again:
-            pass  # No pending request
-        except Exception as e:
-            print(f"Error during final frame: {e}")
+            self.zmq_socket.close(linger=0)  # Don't wait for messages
+        except:
+            pass
 
         # 4. Wait for update thread to finish
         if self.update_thread and self.update_thread.is_alive():
@@ -389,20 +395,17 @@ class PatternServer:
         try:
             # Send offline status
             self.ha_manager.update_component_status("pattern_server", "offline")
-            # Small delay to allow status to be sent
-            time.sleep(0.1)
+            time.sleep(0.1)  # Allow status to be sent
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
-        except Exception as e:
-            print(f"Error cleaning up MQTT: {e}")
+        except:
+            pass
 
-        # 6. Clean up ZMQ
-        print("Cleaning up ZMQ...")
+        # 6. Terminate ZMQ context
         try:
-            self.zmq_socket.close(linger=100)  # 100ms linger
             self.zmq_context.term()
-        except Exception as e:
-            print(f"Error cleaning up ZMQ: {e}")
+        except:
+            pass
 
         # 7. Final cleanup
         print("Performing final cleanup...")
