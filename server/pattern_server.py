@@ -31,13 +31,13 @@ class PatternServer:
 
         # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
-        self.frame_pub_socket = self.zmq_context.socket(zmq.PUB)
+        self.frame_socket = self.zmq_context.socket(zmq.ROUTER)  # Change to ROUTER
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         # Set ZMQ socket options
-        self.frame_pub_socket.setsockopt(zmq.LINGER, 0)
-        self.frame_pub_socket.setsockopt(zmq.SNDHWM, 1)  # Only keep latest frame
-        self.frame_pub_socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest message
+        self.frame_socket.setsockopt(zmq.LINGER, 0)
+        self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms receive timeout
+        self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms send timeout
 
         # MQTT settings
         self.mqtt_host = os.getenv("MQTT_BROKER", "localhost")
@@ -157,80 +157,75 @@ class PatternServer:
         last_pattern_id = None
 
         while self.is_running:
-            loop_start = time.time()
-
             try:
-                # Generate frame with metadata
-                with self.pattern_lock:
-                    # Check for pattern changes
-                    if self.pattern_id != last_pattern_id:
-                        print(f"\nPattern change detected in frame loop:")
-                        print(f"Old pattern ID: {last_pattern_id}")
-                        print(f"New pattern ID: {self.pattern_id}")
-                        if self.current_pattern:
-                            print(
-                                f"Current pattern: {self.current_pattern.definition().name}"
-                            )
-                            print(f"Current params: {self.current_params}")
-                        else:
-                            print("No active pattern")
-                        last_pattern_id = self.pattern_id
-                        frame_seq = 0  # Reset frame sequence on pattern change
+                # Wait for frame request
+                try:
+                    identity, msg = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
+                    if msg == b"READY":
+                        # Generate frame with metadata
+                        with self.pattern_lock:
+                            # Check for pattern changes
+                            if self.pattern_id != last_pattern_id:
+                                print(f"\nPattern change detected in frame loop:")
+                                print(f"Old pattern ID: {last_pattern_id}")
+                                print(f"New pattern ID: {self.pattern_id}")
+                                if self.current_pattern:
+                                    print(
+                                        f"Current pattern: {self.current_pattern.definition().name}"
+                                    )
+                                    print(f"Current params: {self.current_params}")
+                                else:
+                                    print("No active pattern")
+                                last_pattern_id = self.pattern_id
+                                frame_seq = 0  # Reset frame sequence on pattern change
 
-                    # Generate frame
-                    frame_data = self._generate_frame()
-                    if frame_data is None:
-                        print("No frame data generated, using empty frame")
-                        frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
+                            # Generate frame
+                            frame_data = self._generate_frame()
+                            if frame_data is None:
+                                frame_data = bytearray(
+                                    [0] * (self.grid_config.num_pixels * 3)
+                                )
 
-                    # Create frame metadata
-                    metadata = {
-                        "seq": frame_seq,
-                        "pattern_id": self.pattern_id,
-                        "timestamp": time.time_ns(),
-                        "frame_size": len(frame_data),
-                    }
+                            # Create frame metadata
+                            metadata = {
+                                "seq": frame_seq,
+                                "pattern_id": self.pattern_id,
+                                "timestamp": time.time_ns(),
+                                "frame_size": len(frame_data),
+                            }
 
-                    # Send frame with metadata
-                    try:
-                        if frame_seq % 60 == 0:  # Log every 60th frame
-                            print(
-                                f"Sending frame {frame_seq} with size {len(frame_data)}"
-                            )
-                        self.frame_pub_socket.send_multipart(
-                            [b"frame", json.dumps(metadata).encode(), frame_data],
-                            flags=zmq.NOBLOCK,
-                        )
-                        frame_seq += 1
-                    except zmq.Again:
-                        print("Frame publish would block, skipping")
-                    except Exception as e:
-                        print(f"Error sending frame: {e}")
+                            # Send frame with metadata
+                            try:
+                                if frame_seq % 60 == 0:  # Log every 60th frame
+                                    print(
+                                        f"Sending frame {frame_seq} with size {len(frame_data)}"
+                                    )
+                                self.frame_socket.send_multipart(
+                                    [
+                                        identity,
+                                        b"frame",
+                                        json.dumps(metadata).encode(),
+                                        frame_data,
+                                    ]
+                                )
+                                frame_seq += 1
+                                frame_count += 1
+                            except Exception as e:
+                                print(f"Error sending frame: {e}")
+
+                except zmq.Again:
+                    time.sleep(0.001)  # Small sleep when no requests
+                    continue
 
                 # Performance tracking
-                frame_time = time.time() - loop_start
-                self.frame_times.append(frame_time)
-                if len(self.frame_times) > 100:
-                    self.frame_times.pop(0)
-                frame_count += 1
-
-                # Print FPS every second
                 current_time = time.time()
                 time_since_last_print = current_time - last_fps_print
                 if time_since_last_print >= 1.0:
-                    if frame_count > 0 and len(self.frame_times) > 0:
-                        avg_frame_time = sum(self.frame_times) / len(self.frame_times)
+                    if frame_count > 0:
                         fps = frame_count / time_since_last_print
-                        print(
-                            f"Server FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
-                        )
+                        print(f"Server FPS: {fps:.1f}")
                     frame_count = 0
                     last_fps_print = current_time
-
-                # Maintain target frame rate
-                elapsed = time.time() - loop_start
-                if elapsed < self.target_frame_time:
-                    time.sleep(self.target_frame_time - elapsed)
 
             except Exception as e:
                 print(f"Error in frame generation loop: {e}")
@@ -281,32 +276,10 @@ class PatternServer:
             print("Subscribing to command topics...")
             self.mqtt_client.subscribe("led/command/#")
 
-            # Close any existing ZMQ socket
-            if hasattr(self, "frame_pub_socket"):
-                self.frame_pub_socket.close(linger=0)
-                time.sleep(0.1)  # Allow socket to close
-
-            # Create new ZMQ PUB socket
-            self.frame_pub_socket = self.zmq_context.socket(zmq.PUB)
-
-            # Set socket options
-            self.frame_pub_socket.setsockopt(zmq.LINGER, 0)
-            self.frame_pub_socket.setsockopt(zmq.SNDHWM, 1)  # Only keep latest frame
-            self.frame_pub_socket.setsockopt(
-                zmq.CONFLATE, 1
-            )  # Only keep latest message
-            self.frame_pub_socket.setsockopt(
-                zmq.SNDTIMEO, 1000
-            )  # 1 second send timeout
-
-            # Bind ZMQ PUB socket
-            zmq_address = f"tcp://*:{self.zmq_port}"  # Bind to all interfaces
-            print(f"Binding ZMQ PUB socket at {zmq_address}")
-            self.frame_pub_socket.bind(zmq_address)
-
-            # Allow time for socket to bind
-            time.sleep(0.5)
-
+            # Bind ZMQ ROUTER socket
+            zmq_address = f"tcp://*:{self.zmq_port}"
+            print(f"Binding ZMQ ROUTER socket at {zmq_address}")
+            self.frame_socket.bind(zmq_address)
             print("ZMQ socket bound successfully")
 
             # Initial setup
@@ -531,7 +504,7 @@ class PatternServer:
 
         # Clean up ZMQ
         try:
-            self.frame_pub_socket.close(linger=0)
+            self.frame_socket.close(linger=0)
             self.zmq_context.term()
         except:
             pass
