@@ -27,12 +27,17 @@ class PatternServer:
         self.grid_config = grid_config
 
         # MQTT client for control commands
-        self.mqtt_client = mqtt.Client(protocol=mqtt.MQTTv5)  # Use MQTT v5 protocol
+        self.mqtt_client = mqtt.Client()  # Remove MQTTv5 protocol
 
         # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
         self.zmq_socket = self.zmq_context.socket(zmq.ROUTER)  # Change to ROUTER
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
+
+        # Set ZMQ socket options for better stability
+        self.zmq_socket.setsockopt(zmq.LINGER, 0)  # Don't wait on close
+        self.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms receive timeout
+        self.zmq_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms send timeout
 
         # MQTT settings
         self.mqtt_host = os.getenv("MQTT_BROKER", "localhost")
@@ -43,11 +48,11 @@ class PatternServer:
         # Current pattern state
         self.current_pattern: Optional[Pattern] = None
         self.current_params: Dict[str, Any] = {}
-        self.pattern_lock = threading.Lock()  # Add lock for pattern state
+        self.pattern_lock = threading.RLock()  # Use RLock instead of Lock
 
         # Modifier chain
         self.modifiers: List[Tuple[Modifier, Dict[str, Any]]] = []
-        self.modifier_lock = threading.Lock()  # Add lock for modifier chain
+        self.modifier_lock = threading.RLock()  # Use RLock instead of Lock
 
         # Thread control
         self.is_running = False
@@ -355,13 +360,17 @@ class PatternServer:
         frame_count = 0
         frame_times = []
         target_frame_time = 1.0 / 60  # Target 60 FPS
+        last_frame_time = time.time()
+        min_frame_interval = 1.0 / 120  # Maximum 120 FPS
 
         while self.is_running:
             try:
                 frame_start = time.time()
 
-                # Use poll with timeout to allow for graceful shutdown
-                if self.zmq_socket.poll(timeout=100) == 0:  # Reduced timeout to 100ms
+                # Pace the frames
+                time_since_last_frame = frame_start - last_frame_time
+                if time_since_last_frame < min_frame_interval:
+                    time.sleep(min_frame_interval - time_since_last_frame)
                     continue
 
                 try:
@@ -380,9 +389,9 @@ class PatternServer:
 
                     # Generate frame if we have a pattern
                     frame_data = None
-                    with self.pattern_lock:  # Lock while accessing pattern
-                        if self.current_pattern:
-                            try:
+                    try:
+                        with self.pattern_lock:  # Lock while accessing pattern
+                            if self.current_pattern:
                                 # Generate frame with timeout protection
                                 pixels = self.current_pattern.generate_frame(
                                     self.current_params
@@ -401,18 +410,23 @@ class PatternServer:
                                     frame_data.extend(
                                         [pixel["r"], pixel["g"], pixel["b"]]
                                     )
-                            except Exception as e:
-                                print(f"Error generating frame: {e}")
-                                frame_data = None
+                    except Exception as e:
+                        print(f"Error generating frame: {e}")
+                        frame_data = None
 
                     if frame_data is None:
                         # Send empty frame if no pattern or error
                         frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
 
-                    # Send response with identity for ROUTER socket
-                    self.zmq_socket.send_multipart(
-                        [identity, empty, frame_data], flags=zmq.NOBLOCK
-                    )
+                    try:
+                        # Send response with identity for ROUTER socket
+                        self.zmq_socket.send_multipart(
+                            [identity, empty, frame_data], flags=zmq.NOBLOCK
+                        )
+                        last_frame_time = time.time()
+                    except zmq.Again:
+                        print("Send would block, skipping frame")
+                        continue
 
                     # Track performance
                     frame_time = time.time() - frame_start
@@ -431,11 +445,6 @@ class PatternServer:
                         )
                         frame_count = 0
                         last_fps_print = current_time
-
-                    # Pace the frames
-                    elapsed = time.time() - frame_start
-                    if elapsed < target_frame_time:
-                        time.sleep(target_frame_time - elapsed)
 
                 except zmq.Again:
                     # No message available, just continue

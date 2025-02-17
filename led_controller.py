@@ -43,6 +43,16 @@ class LEDController:
         self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", self.mqtt_host)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
+        # Set ZMQ socket options for better stability
+        self.zmq_socket.setsockopt(zmq.LINGER, 0)  # Don't wait on close
+        self.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms receive timeout
+        self.zmq_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms send timeout
+        self.zmq_socket.setsockopt(zmq.IMMEDIATE, 1)  # Don't queue messages
+        self.zmq_socket.setsockopt(
+            zmq.RCVHWM, 1
+        )  # Only keep 1 message in receive queue
+        self.zmq_socket.setsockopt(zmq.SNDHWM, 1)  # Only keep 1 message in send queue
+
         print(f"MQTT Configuration:")
         print(f"Host: {self.mqtt_host}")
         print(f"Port: {self.mqtt_port}")
@@ -266,10 +276,20 @@ class LEDController:
             self.clear_strip()
 
             # Close existing socket
-            self.zmq_socket.close()
+            self.zmq_socket.close(linger=0)
+            time.sleep(0.1)  # Give socket time to close
 
             # Create new socket
             self.zmq_socket = self.zmq_context.socket(zmq.DEALER)
+
+            # Set socket options
+            self.zmq_socket.setsockopt(zmq.LINGER, 0)
+            self.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)
+            self.zmq_socket.setsockopt(zmq.SNDTIMEO, 100)
+            self.zmq_socket.setsockopt(zmq.IMMEDIATE, 1)
+            self.zmq_socket.setsockopt(zmq.RCVHWM, 1)
+            self.zmq_socket.setsockopt(zmq.SNDHWM, 1)
+            self.zmq_socket.setsockopt_string(zmq.IDENTITY, "led_controller")
 
             # Try to reconnect
             try:
@@ -277,6 +297,7 @@ class LEDController:
                 print(f"Attempting to reconnect to {zmq_address}")
                 self.zmq_socket.connect(zmq_address)
                 self.reconnect_attempt = 0  # Reset on successful connection
+                time.sleep(0.1)  # Give connection time to establish
                 return True
             except Exception as e:
                 print(f"Reconnection failed: {e}")
