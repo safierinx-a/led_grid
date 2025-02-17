@@ -41,9 +41,15 @@ class LEDController:
         )
 
         # Initialize MQTT client with a unique client ID
+        client_id = f"led_controller_{int(time.time())}"
+        print(f"Using MQTT client ID: {client_id}")
         self.mqtt_client = mqtt.Client(
-            client_id="led_controller", clean_session=True, protocol=mqtt.MQTTv311
+            client_id=client_id, clean_session=True, protocol=mqtt.MQTTv311
         )
+
+        # Enable MQTT debug logging
+        self.mqtt_client.enable_logger()
+
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
         self.mqtt_client.on_disconnect = self.on_disconnect
@@ -119,12 +125,50 @@ class LEDController:
                 print(
                     f"Attempting to connect to MQTT broker at {self.mqtt_host}:{self.mqtt_port}"
                 )
-                self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
-                return True
+
+                # Stop any existing loop
+                self.mqtt_client.loop_stop()
+
+                # Disconnect if already connected
+                try:
+                    self.mqtt_client.disconnect()
+                except:
+                    pass
+
+                # Start the network loop
+                self.mqtt_client.loop_start()
+
+                # Connect with result flag
+                print("Initiating connection...")
+                result = self.mqtt_client.connect(
+                    self.mqtt_host, self.mqtt_port, keepalive=60
+                )
+                print(f"Connection initiation result: {result}")
+
+                if result == 0:
+                    # Wait for connection to be established
+                    timeout = 10
+                    while timeout > 0 and not self.is_connected:
+                        print(f"Waiting for connection... (timeout in {timeout:.1f}s)")
+                        time.sleep(0.1)
+                        timeout -= 0.1
+
+                    if self.is_connected:
+                        print("Successfully connected to MQTT broker")
+                        return True
+                    else:
+                        print("Connection timeout - no connection callback received")
+                        self.mqtt_client.loop_stop()
+                else:
+                    print(f"Connection failed with result code {result}")
+                    self.mqtt_client.loop_stop()
             except Exception as e:
                 print(f"Error connecting to MQTT: {str(e)}")
-                print("Retrying in 5 seconds...")
-                time.sleep(5)
+                self.mqtt_client.loop_stop()
+
+            print("Retrying in 5 seconds...")
+            time.sleep(5)
+        return False
 
     def on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages with error checking"""
@@ -172,9 +216,6 @@ class LEDController:
     def run(self):
         """Main run loop with error recovery"""
         try:
-            # Start MQTT loop in a separate thread
-            self.mqtt_client.loop_start()
-
             # Initial connection
             if not self.connect_mqtt():
                 print("Failed to establish initial MQTT connection")
@@ -184,7 +225,8 @@ class LEDController:
             while True:
                 if not self.is_connected:
                     print("MQTT connection lost, attempting to reconnect...")
-                    self.connect_mqtt()
+                    if not self.connect_mqtt():
+                        continue
 
                 self.update_strip()
                 time.sleep(0.001)  # Small delay to prevent CPU overload
