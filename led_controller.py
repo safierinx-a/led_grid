@@ -40,9 +40,18 @@ class LEDController:
             f"Password: {'*' * len(self.mqtt_password) if self.mqtt_password else 'None'}"
         )
 
-        self.mqtt_client = mqtt.Client()
+        # Initialize MQTT client with a unique client ID
+        self.mqtt_client = mqtt.Client(
+            client_id="led_controller", clean_session=True, protocol=mqtt.MQTTv311
+        )
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
+        self.mqtt_client.on_disconnect = self.on_disconnect
+
+        # Set up authentication if provided
+        if self.mqtt_user and self.mqtt_password:
+            print(f"Setting up MQTT authentication for user: {self.mqtt_user}")
+            self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
 
         # Frame buffer to store current state
         self.frame_buffer = [(0, 0, 0)] * LED_COUNT
@@ -51,6 +60,7 @@ class LEDController:
         self.consecutive_errors = 0
         self.max_consecutive_errors = 3
         self.error_reset_interval = 60  # Reset error count after 60 seconds
+        self.is_connected = False
 
     def init_strip(self):
         """Initialize the LED strip with error handling"""
@@ -87,29 +97,34 @@ class LEDController:
         )
 
         if rc == 0:
+            self.is_connected = True
             print("Subscribing to led/pixels")
             client.subscribe("led/pixels")
         else:
-            print("Connection failed, retrying...")
-            time.sleep(5)
-            self.connect_mqtt()
+            self.is_connected = False
+            print("Connection failed")
+
+    def on_disconnect(self, client, userdata, rc):
+        """Handle MQTT disconnection"""
+        self.is_connected = False
+        if rc != 0:
+            print(f"Unexpected MQTT disconnection (code {rc}). Reconnecting...")
+        else:
+            print("MQTT disconnected cleanly")
 
     def connect_mqtt(self):
         """Attempt to connect to MQTT broker with retry logic"""
-        try:
-            print(
-                f"Attempting to connect to MQTT broker at {self.mqtt_host}:{self.mqtt_port}"
-            )
-            if self.mqtt_user and self.mqtt_password:
-                print(f"Using authentication with username: {self.mqtt_user}")
-                self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
-            self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, 60)
-            print("MQTT connection successful")
-        except Exception as e:
-            print(f"Error connecting to MQTT: {str(e)}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
-            self.connect_mqtt()
+        while not self.is_connected:
+            try:
+                print(
+                    f"Attempting to connect to MQTT broker at {self.mqtt_host}:{self.mqtt_port}"
+                )
+                self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
+                return True
+            except Exception as e:
+                print(f"Error connecting to MQTT: {str(e)}")
+                print("Retrying in 5 seconds...")
+                time.sleep(5)
 
     def on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages with error checking"""
@@ -156,23 +171,43 @@ class LEDController:
 
     def run(self):
         """Main run loop with error recovery"""
-        while True:
-            try:
-                self.mqtt_client.loop_start()
-                while True:
-                    self.update_strip()
-                    time.sleep(0.001)  # Small delay to prevent CPU overload
-            except Exception as e:
-                print(f"Error in main loop: {e}")
-                self.mqtt_client.loop_stop()
-                time.sleep(1)
-                print("Attempting to recover...")
-                try:
-                    self.init_strip()
+        try:
+            # Start MQTT loop in a separate thread
+            self.mqtt_client.loop_start()
+
+            # Initial connection
+            if not self.connect_mqtt():
+                print("Failed to establish initial MQTT connection")
+                return
+
+            # Main loop
+            while True:
+                if not self.is_connected:
+                    print("MQTT connection lost, attempting to reconnect...")
                     self.connect_mqtt()
-                except Exception as recovery_error:
-                    print(f"Recovery failed: {recovery_error}")
-                    time.sleep(5)  # Wait before retrying
+
+                self.update_strip()
+                time.sleep(0.001)  # Small delay to prevent CPU overload
+
+        except KeyboardInterrupt:
+            print("\nShutting down gracefully...")
+            self.mqtt_client.loop_stop()
+            self.mqtt_client.disconnect()
+            # Turn off all LEDs
+            for i in range(LED_COUNT):
+                self.strip.setPixelColor(i, Color(0, 0, 0))
+            self.strip.show()
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+            self.mqtt_client.loop_stop()
+            time.sleep(1)
+            print("Attempting to recover...")
+            try:
+                self.init_strip()
+                self.connect_mqtt()
+            except Exception as recovery_error:
+                print(f"Recovery failed: {recovery_error}")
+                time.sleep(5)  # Wait before retrying
 
 
 if __name__ == "__main__":
