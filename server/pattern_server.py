@@ -7,6 +7,7 @@ import pkgutil
 import threading
 from typing import Dict, Any, Optional, List, Tuple
 import paho.mqtt.client as mqtt
+import zmq  # Add ZMQ import
 import math
 import signal
 import os
@@ -23,7 +24,14 @@ load_dotenv()
 class PatternServer:
     def __init__(self, grid_config: GridConfig = DEFAULT_CONFIG):
         self.grid_config = grid_config
+
+        # MQTT client for control commands
         self.mqtt_client = mqtt.Client()
+
+        # ZMQ setup for frame data
+        self.zmq_context = zmq.Context()
+        self.zmq_socket = self.zmq_context.socket(zmq.REP)
+        self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         # MQTT settings
         self.mqtt_host = os.getenv("MQTT_BROKER", "localhost")
@@ -76,7 +84,7 @@ class PatternServer:
                 importlib.import_module(f"server.modifiers.{name}")
 
     def connect(self):
-        """Connect to MQTT broker"""
+        """Connect to MQTT broker and bind ZMQ socket"""
         try:
             # Create MQTT client with unique ID
             client_id = f"pattern_server_{int(time.time())}"
@@ -98,10 +106,15 @@ class PatternServer:
             print("Subscribing to command topics...")
             self.mqtt_client.subscribe("led/command/#")
 
+            # Bind ZMQ socket for frame data
+            zmq_address = f"tcp://*:{self.zmq_port}"
+            print(f"Binding ZMQ socket at {zmq_address}")
+            self.zmq_socket.bind(zmq_address)
+
             self.mqtt_client.loop_start()
             print("MQTT client started")
         except Exception as e:
-            print(f"Error connecting to MQTT broker: {e}")
+            print(f"Error connecting to services: {e}")
             raise
 
     def on_message(self, client, userdata, msg):
@@ -205,9 +218,14 @@ class PatternServer:
             self.modifiers[index] = (modifier, current_params)
 
     def send_frame(self, pixels: list):
-        """Send frame data to LED controller"""
-        message = {"command": "set_pixels", "pixels": pixels}
-        self.mqtt_client.publish("led/pixels", json.dumps(message))
+        """Send frame data to LED controller using optimized format"""
+        # Convert to compact format: [index,r,g,b,index,r,g,b,...]
+        compact_data = []
+        for pixel in pixels:
+            compact_data.extend([pixel["index"], pixel["r"], pixel["g"], pixel["b"]])
+
+        message = {"command": "set_pixels_fast", "data": compact_data}
+        self.mqtt_client.publish("led/pixels", json.dumps(message), qos=0)
 
     def cleanup(self):
         """Perform periodic cleanup of resources"""
@@ -233,27 +251,42 @@ class PatternServer:
             print(f"Error during cleanup: {e}")
 
     def _update_loop(self):
-        """Main update loop with memory management"""
-        last_frame_time = time.time()
-        frame_times = []  # Track frame times for performance monitoring
-        frame_count = 0
+        """Main update loop with synchronized frame generation"""
         last_fps_print = time.time()
+        frame_count = 0
+        frame_times = []
 
         while self.is_running:
             try:
-                # Generate and send frame immediately
-                if self.current_pattern:
+                # Wait for request from LED controller
+                request = self.zmq_socket.recv_string()
+
+                if request == "READY":
                     frame_start = time.time()
 
-                    # Generate frame
-                    pixels = self.current_pattern.generate_frame(self.current_params)
+                    # Generate frame if we have a pattern
+                    if self.current_pattern:
+                        # Generate frame
+                        pixels = self.current_pattern.generate_frame(
+                            self.current_params
+                        )
 
-                    # Apply modifiers
-                    for modifier, params in self.modifiers:
-                        pixels = modifier.apply(pixels, params)
+                        # Apply modifiers
+                        for modifier, params in self.modifiers:
+                            pixels = modifier.apply(pixels, params)
 
-                    # Send frame immediately
-                    self.send_frame(pixels)
+                        # Convert to bytes for efficient transmission
+                        frame_data = bytearray()
+                        for pixel in pixels:
+                            frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
+
+                        # Send frame
+                        self.zmq_socket.send(frame_data)
+                    else:
+                        # Send empty frame if no pattern
+                        self.zmq_socket.send(
+                            bytearray([0] * (self.grid_config.num_pixels * 3))
+                        )
 
                     # Track performance
                     frame_time = time.time() - frame_start
@@ -296,16 +329,13 @@ class PatternServer:
         if self.update_thread:
             self.update_thread.join()
 
-        # Clear all pixels
-        black_frame = [
-            {"index": i, "r": 0, "g": 0, "b": 0}
-            for i in range(self.grid_config.num_pixels)
-        ]
-        self.send_frame(black_frame)
-
         # Clean up MQTT
         self.mqtt_client.loop_stop()
         self.mqtt_client.disconnect()
+
+        # Clean up ZMQ
+        self.zmq_socket.close()
+        self.zmq_context.term()
 
         # Final cleanup
         self.cleanup()
