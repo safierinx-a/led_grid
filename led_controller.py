@@ -67,6 +67,13 @@ class LEDController:
         self.max_consecutive_errors = 3
         self.error_reset_interval = 60
 
+        # Add reconnection settings
+        self.reconnect_delay = 5  # seconds
+        self.max_reconnect_attempts = 3
+        self.reconnect_attempt = 0
+        self.last_frame_time = time.time()
+        self.frame_timeout = 5.0  # seconds
+
     def init_strip(self):
         """Initialize the LED strip with error handling"""
         try:
@@ -239,8 +246,46 @@ class LEDController:
             if time.time() - self.last_update_time > self.error_reset_interval:
                 self.consecutive_errors = 0
 
+    def clear_strip(self):
+        """Turn off all LEDs"""
+        for i in range(LED_COUNT):
+            self.strip.setPixelColor(i, Color(0, 0, 0))
+        self.strip.show()
+
+    def handle_connection_error(self):
+        """Handle ZMQ connection error with reconnection attempts"""
+        self.reconnect_attempt += 1
+        if self.reconnect_attempt <= self.max_reconnect_attempts:
+            print(
+                f"Connection lost. Attempt {self.reconnect_attempt}/{self.max_reconnect_attempts}"
+            )
+
+            # Clear LEDs while disconnected
+            self.clear_strip()
+
+            # Close existing socket
+            self.zmq_socket.close()
+
+            # Create new socket
+            self.zmq_socket = self.zmq_context.socket(zmq.REQ)
+
+            # Try to reconnect
+            try:
+                zmq_address = f"tcp://{self.zmq_host}:{self.zmq_port}"
+                print(f"Attempting to reconnect to {zmq_address}")
+                self.zmq_socket.connect(zmq_address)
+                self.reconnect_attempt = 0  # Reset on successful connection
+                return True
+            except Exception as e:
+                print(f"Reconnection failed: {e}")
+                time.sleep(self.reconnect_delay)
+                return False
+        else:
+            print("Max reconnection attempts reached")
+            return False
+
     def run(self):
-        """Main run loop with synchronized frame updates"""
+        """Main run loop with synchronized frame updates and error handling"""
         try:
             # Initial connections
             if not self.connect_mqtt():
@@ -250,6 +295,9 @@ class LEDController:
             if not self.connect_zmq():
                 print("Failed to establish ZMQ connection")
                 return
+
+            # Update Home Assistant status
+            self.mqtt_client.publish("led/status/led_controller", "online", retain=True)
 
             # Performance tracking
             last_fps_print = time.time()
@@ -261,11 +309,22 @@ class LEDController:
                 frame_start = time.time()
 
                 try:
+                    # Check for server timeout
+                    if time.time() - self.last_frame_time > self.frame_timeout:
+                        print("Frame timeout - server may be down")
+                        if not self.handle_connection_error():
+                            break
+                        continue
+
                     # Request new frame
                     self.zmq_socket.send_string("READY")
 
-                    # Receive frame data
-                    frame_data = self.zmq_socket.recv()
+                    # Receive frame data with timeout
+                    if self.zmq_socket.poll(timeout=1000):  # 1 second timeout
+                        frame_data = self.zmq_socket.recv()
+                        self.last_frame_time = time.time()
+                    else:
+                        raise zmq.Again("Frame receive timeout")
 
                     # Update LED strip
                     for i in range(LED_COUNT):
@@ -296,31 +355,47 @@ class LEDController:
                         frame_count = 0
                         last_fps_print = current_time
 
-                    # Maintain target frame rate
-                    elapsed = time.time() - frame_start
-                    sleep_time = max(0, FRAME_TIME - elapsed)
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
+                    # Reset reconnection counter on successful frame
+                    self.reconnect_attempt = 0
 
                 except zmq.Again:
-                    # Socket would block, skip this frame
                     print("Frame skip - ZMQ would block")
                     time.sleep(0.001)
                 except Exception as e:
                     print(f"Error updating frame: {e}")
-                    time.sleep(0.1)  # Longer delay on error
+                    if not self.handle_connection_error():
+                        break
+                    continue
 
         except KeyboardInterrupt:
             print("\nShutting down gracefully...")
+        finally:
+            # Clean shutdown
+            print("Cleaning up...")
+
+            # Update status
+            try:
+                self.mqtt_client.publish(
+                    "led/status/led_controller", "offline", retain=True
+                )
+                time.sleep(0.1)  # Allow status to be sent
+            except:
+                pass
+
+            # Stop MQTT
             self.mqtt_client.loop_stop()
             self.mqtt_client.disconnect()
-            self.zmq_socket.close()
-            self.zmq_context.term()
 
-            # Turn off all LEDs
-            for i in range(LED_COUNT):
-                self.strip.setPixelColor(i, Color(0, 0, 0))
-            self.strip.show()
+            # Clean up ZMQ
+            try:
+                self.zmq_socket.close(linger=100)
+                self.zmq_context.term()
+            except:
+                pass
+
+            # Turn off LEDs
+            print("Turning off LEDs...")
+            self.clear_strip()
 
 
 if __name__ == "__main__":

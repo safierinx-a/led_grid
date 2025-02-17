@@ -356,24 +356,59 @@ class PatternServer:
             self.update_thread.start()
 
     def stop(self):
-        """Stop the pattern server and clean up resources"""
-        # Update status before stopping
-        self.ha_manager.update_component_status("pattern_server", "offline")
+        """Stop the pattern server and clean up resources gracefully"""
+        print("\nInitiating graceful shutdown...")
 
+        # 1. Signal shutdown to Home Assistant
+        self.ha_manager.update_component_status("pattern_server", "shutting_down")
+
+        # 2. Set flag to stop update loop
         self.is_running = False
-        if self.update_thread:
-            self.update_thread.join()
 
-        # Clean up MQTT
-        self.mqtt_client.loop_stop()
-        self.mqtt_client.disconnect()
+        # 3. Send one final black frame if we have a pending request
+        try:
+            # Non-blocking receive to check for pending request
+            if self.zmq_socket.poll(timeout=100) > 0:  # 100ms timeout
+                request = self.zmq_socket.recv_string(zmq.NOBLOCK)
+                if request == "READY":
+                    # Send black frame
+                    black_frame = bytearray([0] * (self.grid_config.num_pixels * 3))
+                    self.zmq_socket.send(black_frame)
+        except zmq.Again:
+            pass  # No pending request
+        except Exception as e:
+            print(f"Error during final frame: {e}")
 
-        # Clean up ZMQ
-        self.zmq_socket.close()
-        self.zmq_context.term()
+        # 4. Wait for update thread to finish
+        if self.update_thread and self.update_thread.is_alive():
+            print("Waiting for update thread to finish...")
+            self.update_thread.join(timeout=1.0)  # Wait up to 1 second
 
-        # Final cleanup
+        # 5. Clean up MQTT
+        print("Cleaning up MQTT...")
+        try:
+            # Send offline status
+            self.ha_manager.update_component_status("pattern_server", "offline")
+            # Small delay to allow status to be sent
+            time.sleep(0.1)
+            self.mqtt_client.loop_stop()
+            self.mqtt_client.disconnect()
+        except Exception as e:
+            print(f"Error cleaning up MQTT: {e}")
+
+        # 6. Clean up ZMQ
+        print("Cleaning up ZMQ...")
+        try:
+            self.zmq_socket.close(linger=100)  # 100ms linger
+            self.zmq_context.term()
+        except Exception as e:
+            print(f"Error cleaning up ZMQ: {e}")
+
+        # 7. Final cleanup
+        print("Performing final cleanup...")
         self.cleanup()
+
+        print("Shutdown complete")
 
     def list_patterns(self):
         """List all available patterns"""
