@@ -22,6 +22,11 @@ class GridConfig:
     row_progression: RowDirection = RowDirection.BOTTOM_TO_TOP
     serpentine: bool = True
 
+    @property
+    def num_pixels(self) -> int:
+        """Total number of pixels in the grid"""
+        return self.width * self.height
+
     def xy_to_index(self, x: int, y: int) -> int:
         """Convert x,y coordinates to LED strip index based on configuration"""
         # Normalize y coordinate based on row progression

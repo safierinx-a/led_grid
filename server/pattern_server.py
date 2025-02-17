@@ -107,7 +107,9 @@ class PatternServer:
             self.mqtt_client.subscribe("led/command/#")
 
             # Bind ZMQ socket for frame data
-            zmq_address = f"tcp://*:{self.zmq_port}"
+            zmq_address = (
+                f"tcp://0.0.0.0:{self.zmq_port}"  # Explicitly bind to all interfaces
+            )
             print(f"Binding ZMQ socket at {zmq_address}")
             self.zmq_socket.bind(zmq_address)
 
