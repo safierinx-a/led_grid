@@ -27,17 +27,17 @@ class PatternServer:
         self.grid_config = grid_config
 
         # MQTT client for control commands
-        self.mqtt_client = mqtt.Client()  # Remove MQTTv5 protocol
+        self.mqtt_client = mqtt.Client()
 
         # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
-        self.zmq_socket = self.zmq_context.socket(zmq.ROUTER)  # Change to ROUTER
+        self.zmq_socket = self.zmq_context.socket(zmq.ROUTER)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         # Set ZMQ socket options for better stability
-        self.zmq_socket.setsockopt(zmq.LINGER, 0)  # Don't wait on close
-        self.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms receive timeout
-        self.zmq_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms send timeout
+        self.zmq_socket.setsockopt(zmq.LINGER, 0)
+        self.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)
+        self.zmq_socket.setsockopt(zmq.SNDTIMEO, 100)
 
         # MQTT settings
         self.mqtt_host = os.getenv("MQTT_BROKER", "localhost")
@@ -45,14 +45,17 @@ class PatternServer:
         self.mqtt_user = os.getenv("MQTT_USER")
         self.mqtt_password = os.getenv("MQTT_PASSWORD")
 
-        # Current pattern state
+        # Pattern state with double buffering
         self.current_pattern: Optional[Pattern] = None
         self.current_params: Dict[str, Any] = {}
-        self.pattern_lock = threading.RLock()  # Use RLock instead of Lock
+        self.next_pattern: Optional[Pattern] = None
+        self.next_params: Dict[str, Any] = {}
+        self.pattern_lock = threading.RLock()
+        self.pattern_change_pending = False
 
         # Modifier chain
         self.modifiers: List[Tuple[Modifier, Dict[str, Any]]] = []
-        self.modifier_lock = threading.RLock()  # Use RLock instead of Lock
+        self.modifier_lock = threading.RLock()
 
         # Thread control
         self.is_running = False
@@ -100,7 +103,7 @@ class PatternServer:
             # Create MQTT client with unique ID
             client_id = f"pattern_server_{int(time.time())}"
             print(f"Creating MQTT client with ID: {client_id}")
-            self.mqtt_client = mqtt.Client(client_id=client_id)  # Remove MQTTv5 for now
+            self.mqtt_client = mqtt.Client(client_id=client_id)
 
             # Update HomeAssistantManager's MQTT client reference
             self.ha_manager.mqtt_client = self.mqtt_client
@@ -265,8 +268,31 @@ class PatternServer:
             print(f"Message payload: {msg.payload}")
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
-        """Set current pattern with cleanup of old pattern"""
-        with self.pattern_lock:  # Protect pattern state changes
+        """Set next pattern with double buffering for clean transitions"""
+        with self.pattern_lock:
+            # Clean up old next pattern if exists
+            if self.next_pattern:
+                if hasattr(self.next_pattern, "_color_buffer"):
+                    self.next_pattern._color_buffer.clear()
+                if hasattr(self.next_pattern, "trails"):
+                    self.next_pattern.trails.clear()
+
+            # Create new pattern
+            pattern_class = PatternRegistry.get_pattern(pattern_name)
+            if pattern_class:
+                self.next_pattern = pattern_class(self.grid_config)
+                self.next_params = params or {}
+                self.pattern_change_pending = True
+                print(f"Queued pattern change to {pattern_name} with params {params}")
+            else:
+                print(f"Pattern {pattern_name} not found")
+                self.next_pattern = None
+                self.next_params = {}
+                self.pattern_change_pending = True
+
+    def _swap_patterns(self):
+        """Swap current and next patterns atomically"""
+        with self.pattern_lock:
             # Clean up old pattern
             if self.current_pattern:
                 if hasattr(self.current_pattern, "_color_buffer"):
@@ -274,14 +300,12 @@ class PatternServer:
                 if hasattr(self.current_pattern, "trails"):
                     self.current_pattern.trails.clear()
 
-            # Create new pattern
-            pattern_class = PatternRegistry.get_pattern(pattern_name)
-            if pattern_class:
-                self.current_pattern = pattern_class(self.grid_config)
-                self.current_params = params or {}
-                print(f"Set pattern to {pattern_name} with params {params}")
-            else:
-                print(f"Pattern {pattern_name} not found")
+            # Swap patterns
+            self.current_pattern = self.next_pattern
+            self.current_params = self.next_params
+            self.next_pattern = None
+            self.next_params = {}
+            self.pattern_change_pending = False
 
     def add_modifier(self, modifier_name: str, params: Dict[str, Any] = None):
         """Add a modifier to the chain"""
@@ -359,9 +383,9 @@ class PatternServer:
         last_fps_print = time.time()
         frame_count = 0
         frame_times = []
-        target_frame_time = 1.0 / 60  # Target 60 FPS
+        target_frame_time = 1.0 / 60
         last_frame_time = time.time()
-        min_frame_interval = 1.0 / 120  # Maximum 120 FPS
+        min_frame_interval = 1.0 / 120
 
         while self.is_running:
             try:
@@ -374,7 +398,7 @@ class PatternServer:
                     continue
 
                 try:
-                    # Get the request - ROUTER socket receives [identity, empty, msg]
+                    # Get the request
                     message = self.zmq_socket.recv_multipart(flags=zmq.NOBLOCK)
                     if len(message) != 3:
                         print(
@@ -387,24 +411,23 @@ class PatternServer:
                         print(f"Invalid request: {request}")
                         continue
 
+                    # Check for pattern change at frame boundary
+                    if self.pattern_change_pending:
+                        self._swap_patterns()
+
                     # Generate frame if we have a pattern
                     frame_data = None
                     try:
-                        with self.pattern_lock:  # Lock while accessing pattern
+                        with self.pattern_lock:
                             if self.current_pattern:
-                                # Generate frame with timeout protection
                                 pixels = self.current_pattern.generate_frame(
                                     self.current_params
                                 )
 
-                                with (
-                                    self.modifier_lock
-                                ):  # Lock while applying modifiers
-                                    # Apply modifiers
+                                with self.modifier_lock:
                                     for modifier, params in self.modifiers:
                                         pixels = modifier.apply(pixels, params)
 
-                                # Convert to bytes for efficient transmission
                                 frame_data = bytearray()
                                 for pixel in pixels:
                                     frame_data.extend(
@@ -415,11 +438,9 @@ class PatternServer:
                         frame_data = None
 
                     if frame_data is None:
-                        # Send empty frame if no pattern or error
                         frame_data = bytearray([0] * (self.grid_config.num_pixels * 3))
 
                     try:
-                        # Send response with identity for ROUTER socket
                         self.zmq_socket.send_multipart(
                             [identity, empty, frame_data], flags=zmq.NOBLOCK
                         )
@@ -428,16 +449,14 @@ class PatternServer:
                         print("Send would block, skipping frame")
                         continue
 
-                    # Track performance
+                    # Performance tracking
                     frame_time = time.time() - frame_start
                     frame_times.append(frame_time)
                     if len(frame_times) > 100:
                         frame_times.pop(0)
                     frame_count += 1
 
-                    # Print FPS every second
-                    current_time = time.time()
-                    if current_time - last_fps_print >= 1.0:
+                    if current_time := time.time() - last_fps_print >= 1.0:
                         avg_frame_time = sum(frame_times) / len(frame_times)
                         fps = frame_count / (current_time - last_fps_print)
                         print(
@@ -447,12 +466,11 @@ class PatternServer:
                         last_fps_print = current_time
 
                 except zmq.Again:
-                    # No message available, just continue
                     time.sleep(0.001)
                     continue
 
             except Exception as e:
-                if self.is_running:  # Only log errors if we're supposed to be running
+                if self.is_running:
                     print(f"Error in update loop: {e}")
                 time.sleep(0.001)
 
