@@ -11,14 +11,10 @@ from server.config.grid_config import GridConfig, DEFAULT_CONFIG
 from server.patterns.base import Pattern
 from server.core.pattern_manager.pattern_manager import PatternManager
 from server.core.frame_generator.frame_generator import FrameGenerator, Frame
-from server.core.display_controller.display_controller import (
-    DisplayController,
-    DisplayConfig,
-)
 
 
 class LEDServer:
-    """Main server that coordinates pattern management, frame generation, and display"""
+    """Main server that coordinates pattern management and frame generation"""
 
     def __init__(self, grid_config: GridConfig = DEFAULT_CONFIG):
         # Load environment variables
@@ -36,12 +32,9 @@ class LEDServer:
         # Components
         self.pattern_manager = PatternManager(grid_config, self.mqtt_config)
         self.frame_generator = FrameGenerator(grid_config)
-        self.display_config = DisplayConfig()  # Use defaults
-        self.display_controller = DisplayController(self.display_config)
 
         # Connect components
         self.pattern_manager.register_pattern_change_callback(self._on_pattern_change)
-        self.display_controller.register_frame_callback(self._get_next_frame)
 
         # Server state
         self.is_running = False
@@ -51,11 +44,6 @@ class LEDServer:
     ):
         """Handle pattern changes from pattern manager"""
         self.frame_generator.set_pattern(pattern, params, pattern_id)
-
-    def _get_next_frame(self) -> Optional[bytearray]:
-        """Get next frame for display controller"""
-        frame = self.frame_generator.get_frame(timeout=0.1)
-        return frame.data if frame else None
 
     def start(self):
         """Start all components"""
@@ -74,14 +62,6 @@ class LEDServer:
             self.frame_generator.start()
             print("Frame Generator started successfully")
 
-            # Start display controller
-            print("\nInitializing Display Controller...")
-            if not self.display_controller.start():
-                print("Failed to start Display Controller")
-                self.stop()
-                return False
-            print("Display Controller started successfully")
-
             self.is_running = True
             print("\nLED Server started successfully")
             return True
@@ -96,10 +76,6 @@ class LEDServer:
         print("\nStopping LED Server...")
 
         try:
-            # Stop display controller
-            print("Stopping Display Controller...")
-            self.display_controller.stop()
-
             # Stop frame generator
             print("Stopping Frame Generator...")
             self.frame_generator.stop()

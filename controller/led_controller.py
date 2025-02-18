@@ -2,7 +2,6 @@
 
 import time
 import json
-import paho.mqtt.client as mqtt
 import zmq
 from rpi_ws281x import PixelStrip, Color
 import argparse
@@ -24,23 +23,15 @@ LED_CHANNEL = 0  # PWM channel
 
 
 class LEDController:
-    def __init__(self, mqtt_host=None, zmq_host=None):
+    def __init__(self, zmq_host=None):
         # Hardware setup
         self.strip = None
         self.init_strip()
 
-        # MQTT setup for control plane
-        self.mqtt_host = mqtt_host or os.getenv("MQTT_BROKER", "localhost")
-        self.mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
-        self.mqtt_user = os.getenv("MQTT_USER")
-        self.mqtt_password = os.getenv("MQTT_PASSWORD")
-        self.mqtt_client = None
-        self.is_mqtt_connected = False
-
         # ZMQ setup for frame data
         self.zmq_context = zmq.Context()
         self.frame_socket = self.zmq_context.socket(zmq.DEALER)
-        self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", self.mqtt_host)
+        self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", "localhost")
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         # Set socket options
@@ -80,47 +71,6 @@ class LEDController:
             traceback.print_exc()
             return False
 
-    def connect_mqtt(self):
-        """Connect to MQTT broker for control plane"""
-        try:
-            # Create client with unique ID
-            client_id = f"led_controller_{int(time.time())}"
-            self.mqtt_client = mqtt.Client(client_id=client_id)
-
-            # Set up callbacks
-            self.mqtt_client.on_connect = self._on_mqtt_connect
-            self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
-            self.mqtt_client.on_message = self._on_mqtt_message
-
-            # Set up authentication if provided
-            if self.mqtt_user and self.mqtt_password:
-                self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
-
-            # Connect to broker
-            print(f"Connecting to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
-            self.mqtt_client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
-            self.mqtt_client.loop_start()
-
-            # Wait for connection
-            timeout = 10
-            while timeout > 0 and not self.is_mqtt_connected:
-                time.sleep(0.1)
-                timeout -= 0.1
-
-            if not self.is_mqtt_connected:
-                raise Exception("MQTT connection timeout")
-
-            # Subscribe to control topics
-            self.mqtt_client.subscribe("led/command/#")
-            return True
-
-        except Exception as e:
-            print(f"Error connecting to MQTT: {e}")
-            if self.mqtt_client:
-                self.mqtt_client.loop_stop()
-                self.mqtt_client = None
-            return False
-
     def connect_zmq(self):
         """Connect to ZMQ server for frame data"""
         try:
@@ -131,37 +81,6 @@ class LEDController:
         except Exception as e:
             print(f"Error connecting to ZMQ server: {e}")
             return False
-
-    def _on_mqtt_connect(self, client, userdata, flags, rc):
-        """Handle MQTT connection"""
-        if rc == 0:
-            print("Connected to MQTT broker successfully")
-            self.is_mqtt_connected = True
-            self.mqtt_client.publish("led/status/led_controller", "online", retain=True)
-        else:
-            print(f"Failed to connect to MQTT broker with code {rc}")
-            self.is_mqtt_connected = False
-
-    def _on_mqtt_disconnect(self, client, userdata, rc):
-        """Handle MQTT disconnection"""
-        print(f"Disconnected from MQTT broker with code {rc}")
-        self.is_mqtt_connected = False
-
-    def _on_mqtt_message(self, client, userdata, msg):
-        """Handle incoming MQTT control messages"""
-        try:
-            print(f"Received message on topic: {msg.topic}")
-            data = json.loads(msg.payload.decode())
-
-            if msg.topic == "led/command/clear":
-                self.clear_strip()
-            elif msg.topic == "led/command/brightness":
-                if "value" in data:
-                    self.strip.setBrightness(int(data["value"]))
-                    self.strip.show()
-
-        except Exception as e:
-            print(f"Error handling MQTT message: {e}")
 
     def clear_strip(self):
         """Turn off all LEDs"""
@@ -209,11 +128,7 @@ class LEDController:
     def run(self):
         """Main run loop"""
         try:
-            # Initial connections
-            if not self.connect_mqtt():
-                print("Failed to connect to MQTT broker")
-                return
-
+            # Initial connection
             if not self.connect_zmq():
                 print("Failed to connect to ZMQ server")
                 return
@@ -250,7 +165,7 @@ class LEDController:
                                 current_time - self.last_fps_print
                             )
                             print(
-                                f"FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
+                                f"Display FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
                             )
                         self.frame_count = 0
                         self.last_fps_print = current_time
@@ -280,18 +195,6 @@ class LEDController:
         # Clear LEDs
         self.clear_strip()
 
-        # Clean up MQTT
-        if self.mqtt_client:
-            try:
-                self.mqtt_client.publish(
-                    "led/status/led_controller", "offline", retain=True
-                )
-                time.sleep(0.1)
-                self.mqtt_client.loop_stop()
-                self.mqtt_client.disconnect()
-            except:
-                pass
-
         # Clean up ZMQ
         try:
             self.frame_socket.close()
@@ -302,9 +205,8 @@ class LEDController:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LED Controller")
-    parser.add_argument("--mqtt-host", help="MQTT broker hostname or IP")
     parser.add_argument("--zmq-host", help="ZMQ server hostname or IP")
     args = parser.parse_args()
 
-    controller = LEDController(mqtt_host=args.mqtt_host, zmq_host=args.zmq_host)
+    controller = LEDController(zmq_host=args.zmq_host)
     controller.run()
