@@ -18,194 +18,172 @@ class HomeAssistantManager:
             "sw_version": "1.0.0",
         }
 
-    def publish_discovery(self, patterns: List[Dict]):
-        """Publish all discovery messages"""
-        print(f"\nPublishing Home Assistant MQTT discovery messages...")
-        print(f"Found {len(patterns)} patterns")
+    def publish_discovery(self):
+        """Publish Home Assistant MQTT discovery messages"""
+        # Pattern selector
+        self._publish_discovery(
+            "input_select",
+            "led_grid_pattern",
+            {
+                "name": "LED Pattern",
+                "icon": "mdi:led-strip-variant",
+                "command_topic": "homeassistant/input_select/led_grid_pattern/set",
+                "state_topic": "homeassistant/input_select/led_grid_pattern/state",
+                "options_topic": "homeassistant/input_select/led_grid_pattern/options",
+                "retain": True,
+            },
+        )
 
-        # Pattern selection
-        self._publish_pattern_select(patterns)
+        # Pattern parameters - numeric
+        for param in ["speed", "scale", "intensity"]:
+            self._publish_discovery(
+                "input_number",
+                f"pattern_{param}",
+                {
+                    "name": f"Pattern {param.title()}",
+                    "icon": "mdi:speedometer"
+                    if param == "speed"
+                    else "mdi:ruler"
+                    if param == "scale"
+                    else "mdi:brightness-percent",
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "mode": "slider",
+                    "command_topic": f"homeassistant/input_number/pattern_{param}/set",
+                    "state_topic": f"homeassistant/input_number/pattern_{param}/state",
+                    "retain": True,
+                },
+            )
 
-        # Pattern parameters
-        for pattern in patterns:
-            print(f"\nPublishing config for pattern: {pattern.name}")
-            self._publish_pattern_params(pattern)
+        # Pattern parameters - select
+        for param in ["variation", "color_mode"]:
+            self._publish_discovery(
+                "input_select",
+                f"pattern_{param}",
+                {
+                    "name": f"Pattern {param.replace('_', ' ').title()}",
+                    "icon": "mdi:palette-swatch-variant"
+                    if param == "color_mode"
+                    else "mdi:shape-plus",
+                    "command_topic": f"homeassistant/input_select/pattern_{param}/set",
+                    "state_topic": f"homeassistant/input_select/pattern_{param}/state",
+                    "options_topic": f"homeassistant/input_select/pattern_{param}/options",
+                    "retain": True,
+                },
+            )
 
         # Hardware controls
-        print("\nPublishing hardware control configs")
-        self._publish_brightness_control()
-        self._publish_power_control()
-        self._publish_reset_control()
+        self._publish_discovery(
+            "input_number",
+            "led_brightness",
+            {
+                "name": "LED Brightness",
+                "icon": "mdi:brightness-percent",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.01,
+                "mode": "slider",
+                "command_topic": "homeassistant/input_number/led_brightness/set",
+                "state_topic": "homeassistant/input_number/led_brightness/state",
+                "retain": True,
+            },
+        )
 
-        # Status sensors
-        print("\nPublishing status sensor configs")
-        self._publish_hardware_sensors()
-        self._publish_performance_sensors()
-        self._publish_status_sensors()
+        # Power switch
+        self._publish_discovery(
+            "switch",
+            "led_power",
+            {
+                "name": "LED Power",
+                "icon": "mdi:power",
+                "command_topic": "led/command/power",
+                "state_topic": "led/status/hardware/power",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "state_on": "ON",
+                "state_off": "OFF",
+                "retain": True,
+            },
+        )
 
-    def _publish_pattern_select(self, patterns: List[Dict]):
-        """Publish pattern selection discovery"""
-        config = {
-            "name": "Pattern",
-            "unique_id": "led_grid_pattern_select",
-            "command_topic": "led/command/pattern",
-            "command_template": '{"name": "{{ value }}", "params": {}}',
-            "state_topic": "led/status/pattern",
-            "value_template": "{{ value }}",
-            "options": [p.name for p in patterns],
-            "icon": "mdi:led-strip-variant",
-            "device": self.device_info,
-        }
-        self._publish_config("select", "led_grid_pattern", config)
+        # Reset button
+        self._publish_discovery(
+            "button",
+            "led_reset",
+            {
+                "name": "Reset LEDs",
+                "icon": "mdi:restart",
+                "command_topic": "led/command/reset",
+                "payload_press": "RESET",
+                "retain": True,
+            },
+        )
 
-    def _publish_pattern_params(self, pattern: Dict):
-        """Publish parameter controls for a pattern"""
-        for param in pattern.parameters:
-            param_id = f"led_grid_{pattern.name}_{param.name}"
-            name = f"{pattern.name} {param.name}"
+        # Clear button
+        self._publish_discovery(
+            "button",
+            "led_clear",
+            {
+                "name": "Clear LEDs",
+                "icon": "mdi:led-off",
+                "command_topic": "led/command/clear",
+                "payload_press": "CLEAR",
+                "retain": True,
+            },
+        )
 
-            # Base config
-            config = {
-                "name": name,
-                "unique_id": param_id,
-                "command_topic": "led/command/params",
-                "command_template": '{"params": {"' + param.name + '": {{ value }}}}',
-                "state_topic": f"led/status/params/{param.name}",
-                "value_template": "{{ value }}",
-                "device": self.device_info,
-            }
+        # Stop button
+        self._publish_discovery(
+            "button",
+            "led_stop",
+            {
+                "name": "Stop Pattern",
+                "icon": "mdi:stop",
+                "command_topic": "led/command/stop",
+                "payload_press": "STOP",
+                "retain": True,
+            },
+        )
 
-            if param.type in [float, int]:
-                config.update(
-                    {
-                        "min": param.min_value if param.min_value is not None else 0,
-                        "max": param.max_value if param.max_value is not None else 100,
-                        "step": 0.1 if param.type == float else 1,
-                        "mode": "box",
-                    }
-                )
-                self._publish_config("number", param_id, config)
-            elif param.type == bool:
-                config.update(
-                    {
-                        "payload_on": "true",
-                        "payload_off": "false",
-                        "state_on": "true",
-                        "state_off": "false",
-                    }
-                )
-                self._publish_config("switch", param_id, config)
-            elif param.type == str:
-                if hasattr(param, "description") and "(" in param.description:
-                    # Extract options from description if present
-                    options_str = param.description.split("(")[1].split(")")[0]
-                    config["options"] = [opt.strip() for opt in options_str.split(",")]
-                self._publish_config("select", param_id, config)
+        # Performance sensors
+        self._publish_discovery(
+            "sensor",
+            "led_fps",
+            {
+                "name": "LED FPS",
+                "icon": "mdi:speedometer",
+                "state_topic": "led/status/performance/fps",
+                "unit_of_measurement": "FPS",
+                "retain": True,
+            },
+        )
 
-    def _publish_brightness_control(self):
-        """Publish brightness control discovery"""
-        config = {
-            "name": "LED Brightness",
-            "unique_id": "led_grid_brightness",
-            "command_topic": "led/command/hardware",
-            "command_template": '{"command": "brightness", "value": {{ value }}}',
-            "state_topic": "led/status/hardware/brightness",
-            "min": 0,
-            "max": 255,
-            "step": 1,
-            "icon": "mdi:brightness-6",
-            "device": self.device_info,
-        }
-        self._publish_config("number", "led_grid_brightness", config)
+        self._publish_discovery(
+            "sensor",
+            "led_frame_time",
+            {
+                "name": "LED Frame Time",
+                "icon": "mdi:timer-outline",
+                "state_topic": "led/status/performance/frame_time",
+                "unit_of_measurement": "ms",
+                "retain": True,
+            },
+        )
 
-    def _publish_power_control(self):
-        """Publish power control discovery"""
-        config = {
-            "name": "LED Power",
-            "unique_id": "led_grid_power",
-            "command_topic": "led/command/hardware",
-            "command_template": '{"command": "power", "value": "{{ value }}"}',
-            "state_topic": "led/status/hardware/power",
-            "payload_on": "ON",
-            "payload_off": "OFF",
-            "icon": "mdi:power",
-            "device": self.device_info,
-        }
-        self._publish_config("switch", "led_grid_power", config)
+        self._publish_discovery(
+            "sensor",
+            "led_last_reset",
+            {
+                "name": "Last Reset Time",
+                "icon": "mdi:clock-outline",
+                "state_topic": "led/status/hardware/last_reset",
+                "device_class": "timestamp",
+                "retain": True,
+            },
+        )
 
-    def _publish_reset_control(self):
-        """Publish reset button discovery"""
-        config = {
-            "name": "LED Reset",
-            "unique_id": "led_grid_reset",
-            "command_topic": "led/command/hardware",
-            "command_template": '{"command": "reset", "value": true}',
-            "icon": "mdi:restart",
-            "device": self.device_info,
-        }
-        self._publish_config("button", "led_grid_reset", config)
-
-    def _publish_hardware_sensors(self):
-        """Publish hardware state sensors"""
-        # Brightness sensor
-        config = {
-            "name": "LED Brightness",
-            "unique_id": "led_grid_brightness_state",
-            "state_topic": "led/status/hardware/brightness",
-            "unit_of_measurement": "level",
-            "icon": "mdi:brightness-6",
-            "device": self.device_info,
-        }
-        self._publish_config("sensor", "led_grid_brightness_state", config)
-
-        # Power sensor
-        config = {
-            "name": "LED Power State",
-            "unique_id": "led_grid_power_state",
-            "state_topic": "led/status/hardware/power",
-            "icon": "mdi:power",
-            "device": self.device_info,
-        }
-        self._publish_config("sensor", "led_grid_power_state", config)
-
-    def _publish_performance_sensors(self):
-        """Publish performance sensors"""
-        # FPS sensor
-        config = {
-            "name": "LED FPS",
-            "unique_id": "led_grid_fps",
-            "state_topic": "led/status/performance/fps",
-            "unit_of_measurement": "FPS",
-            "icon": "mdi:speedometer",
-            "device": self.device_info,
-        }
-        self._publish_config("sensor", "led_grid_fps", config)
-
-        # Frame time sensor
-        config = {
-            "name": "LED Frame Time",
-            "unique_id": "led_grid_frame_time",
-            "state_topic": "led/status/performance/frame_time",
-            "unit_of_measurement": "ms",
-            "icon": "mdi:timer",
-            "device": self.device_info,
-        }
-        self._publish_config("sensor", "led_grid_frame_time", config)
-
-    def _publish_status_sensors(self):
-        """Publish system status sensors"""
-        components = ["pattern_server", "led_controller"]
-        for component in components:
-            config = {
-                "name": f"{component.replace('_', ' ').title()}",
-                "unique_id": f"led_grid_{component}_status",
-                "state_topic": f"led/status/{component}",
-                "icon": "mdi:check-circle",
-                "device": self.device_info,
-            }
-            self._publish_config("sensor", f"led_grid_{component}", config)
-
-    def _publish_config(self, component: str, object_id: str, config: Dict):
+    def _publish_discovery(self, component: str, object_id: str, config: Dict):
         """Publish a discovery config message"""
         try:
             # Add availability
@@ -305,11 +283,96 @@ class HomeAssistantManager:
         print(f"Failed to publish message to {topic} after {max_retries} attempts")
         return False
 
+    def update_pattern_options(self, patterns: List[Dict]):
+        """Update pattern selection options"""
+        try:
+            pattern_names = [p.name for p in patterns]
+            self._publish_with_retry(
+                "homeassistant/input_select/led_grid_pattern/options",
+                json.dumps(pattern_names),
+                retain=True,
+            )
+        except Exception as e:
+            print(f"Error updating pattern options: {e}")
+
+    def update_pattern_variations(self, pattern: Pattern):
+        """Update variation options for current pattern"""
+        try:
+            variation_param = next(
+                (p for p in pattern.definition().parameters if p.name == "variation"),
+                None,
+            )
+            if variation_param and "(" in variation_param.description:
+                options_str = variation_param.description.split("(")[1].split(")")[0]
+                variations = [opt.strip() for opt in options_str.split(",")]
+                self._publish_with_retry(
+                    "homeassistant/input_select/pattern_variation/options",
+                    json.dumps(variations),
+                    retain=True,
+                )
+        except Exception as e:
+            print(f"Error updating variation options: {e}")
+
+    def update_color_modes(self, pattern: Pattern):
+        """Update color mode options for current pattern"""
+        try:
+            color_param = next(
+                (p for p in pattern.definition().parameters if p.name == "color_mode"),
+                None,
+            )
+            if color_param and "(" in color_param.description:
+                options_str = color_param.description.split("(")[1].split(")")[0]
+                color_modes = [opt.strip() for opt in options_str.split(",")]
+                self._publish_with_retry(
+                    "homeassistant/input_select/pattern_color_mode/options",
+                    json.dumps(color_modes),
+                    retain=True,
+                )
+        except Exception as e:
+            print(f"Error updating color mode options: {e}")
+
     def update_pattern_state(self, pattern_name: str, params: Dict[str, Any]):
         """Update pattern and parameter states"""
-        self._publish_with_retry("led/status/pattern", pattern_name)
+        # Update pattern selection
+        self._publish_with_retry(
+            "homeassistant/input_select/led_grid_pattern/state",
+            pattern_name,
+            retain=True,
+        )
+
+        # Update parameters
         for param_name, value in params.items():
-            self._publish_with_retry(f"led/status/params/{param_name}", str(value))
+            if param_name in ["speed", "scale", "intensity"]:
+                self._publish_with_retry(
+                    f"homeassistant/input_number/pattern_{param_name}/state",
+                    str(value),
+                    retain=True,
+                )
+            elif param_name in ["variation", "color_mode"]:
+                self._publish_with_retry(
+                    f"homeassistant/input_select/pattern_{param_name}/state",
+                    str(value),
+                    retain=True,
+                )
+
+    def update_hardware_state(self, state: Dict[str, Any]):
+        """Update hardware state"""
+        # Update brightness
+        self._publish_with_retry(
+            "homeassistant/input_number/led_brightness/state",
+            str(state["brightness"]),
+            retain=True,
+        )
+
+        # Update power state
+        self._publish_with_retry(
+            "led/status/hardware/power", "ON" if state["power"] else "OFF", retain=True
+        )
+
+        # Update last reset time
+        self._publish_with_retry(
+            "led/status/hardware/last_reset", str(state["last_reset"]), retain=True
+        )
 
     def update_modifier_state(
         self,
