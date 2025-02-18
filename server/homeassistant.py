@@ -18,10 +18,10 @@ class HomeAssistantManager:
             "sw_version": "1.0.0",
         }
 
-    def publish_discovery(self, patterns: List[Dict], modifiers: List[Dict]):
+    def publish_discovery(self, patterns: List[Dict]):
         """Publish all discovery messages"""
         print(f"\nPublishing Home Assistant MQTT discovery messages...")
-        print(f"Found {len(patterns)} patterns and {len(modifiers)} modifiers")
+        print(f"Found {len(patterns)} patterns")
 
         # Pattern selection
         self._publish_pattern_select(patterns)
@@ -31,15 +31,16 @@ class HomeAssistantManager:
             print(f"\nPublishing config for pattern: {pattern.name}")
             self._publish_pattern_params(pattern)
 
-        # Modifier slots
-        for i in range(4):
-            print(f"\nPublishing config for modifier slot {i + 1}")
-            self._publish_modifier_select(i, modifiers)
-            self._publish_modifier_enable(i)
+        # Hardware controls
+        print("\nPublishing hardware control configs")
+        self._publish_brightness_control()
+        self._publish_power_control()
+        self._publish_reset_control()
 
-        # System sensors
-        print("\nPublishing system sensor configs")
-        self._publish_fps_sensor()
+        # Status sensors
+        print("\nPublishing status sensor configs")
+        self._publish_hardware_sensors()
+        self._publish_performance_sensors()
         self._publish_status_sensors()
 
     def _publish_pattern_select(self, patterns: List[Dict]):
@@ -101,49 +102,95 @@ class HomeAssistantManager:
                     config["options"] = [opt.strip() for opt in options_str.split(",")]
                 self._publish_config("select", param_id, config)
 
-    def _publish_modifier_select(self, index: int, modifiers: List[Dict]):
-        """Publish modifier slot selection"""
+    def _publish_brightness_control(self):
+        """Publish brightness control discovery"""
         config = {
-            "name": f"Modifier {index + 1}",
-            "unique_id": f"led_grid_modifier_{index}_select",
-            "command_topic": "led/command/modifier/add",
-            "command_template": '{"name": "{{ value }}", "params": {}}',
-            "state_topic": f"led/status/modifier/{index}/type",
-            "value_template": "{{ value }}",
-            "options": [m.name for m in modifiers],
-            "icon": "mdi:blur",
+            "name": "LED Brightness",
+            "unique_id": "led_grid_brightness",
+            "command_topic": "led/command/hardware",
+            "command_template": '{"command": "brightness", "value": {{ value }}}',
+            "state_topic": "led/status/hardware/brightness",
+            "min": 0,
+            "max": 255,
+            "step": 1,
+            "icon": "mdi:brightness-6",
             "device": self.device_info,
         }
-        self._publish_config("select", f"led_grid_modifier_{index}", config)
+        self._publish_config("number", "led_grid_brightness", config)
 
-    def _publish_modifier_enable(self, index: int):
-        """Publish modifier enable switch"""
+    def _publish_power_control(self):
+        """Publish power control discovery"""
         config = {
-            "name": f"Modifier {index + 1} Enable",
-            "unique_id": f"led_grid_modifier_{index}_enable",
-            "command_topic": f"led/command/modifier/{index}/enable",
-            "state_topic": f"led/status/modifier/{index}/enable",
+            "name": "LED Power",
+            "unique_id": "led_grid_power",
+            "command_topic": "led/command/hardware",
+            "command_template": '{"command": "power", "value": "{{ value }}"}',
+            "state_topic": "led/status/hardware/power",
             "payload_on": "ON",
             "payload_off": "OFF",
-            "state_on": "ON",
-            "state_off": "OFF",
-            "icon": "mdi:toggle-switch",
+            "icon": "mdi:power",
             "device": self.device_info,
         }
-        self._publish_config("switch", f"led_grid_modifier_{index}_enable", config)
+        self._publish_config("switch", "led_grid_power", config)
 
-    def _publish_fps_sensor(self):
-        """Publish FPS sensor"""
+    def _publish_reset_control(self):
+        """Publish reset button discovery"""
         config = {
-            "name": "FPS",
+            "name": "LED Reset",
+            "unique_id": "led_grid_reset",
+            "command_topic": "led/command/hardware",
+            "command_template": '{"command": "reset", "value": true}',
+            "icon": "mdi:restart",
+            "device": self.device_info,
+        }
+        self._publish_config("button", "led_grid_reset", config)
+
+    def _publish_hardware_sensors(self):
+        """Publish hardware state sensors"""
+        # Brightness sensor
+        config = {
+            "name": "LED Brightness",
+            "unique_id": "led_grid_brightness_state",
+            "state_topic": "led/status/hardware/brightness",
+            "unit_of_measurement": "level",
+            "icon": "mdi:brightness-6",
+            "device": self.device_info,
+        }
+        self._publish_config("sensor", "led_grid_brightness_state", config)
+
+        # Power sensor
+        config = {
+            "name": "LED Power State",
+            "unique_id": "led_grid_power_state",
+            "state_topic": "led/status/hardware/power",
+            "icon": "mdi:power",
+            "device": self.device_info,
+        }
+        self._publish_config("sensor", "led_grid_power_state", config)
+
+    def _publish_performance_sensors(self):
+        """Publish performance sensors"""
+        # FPS sensor
+        config = {
+            "name": "LED FPS",
             "unique_id": "led_grid_fps",
-            "state_topic": "led/status/fps",
+            "state_topic": "led/status/performance/fps",
             "unit_of_measurement": "FPS",
-            "state_class": "measurement",
             "icon": "mdi:speedometer",
             "device": self.device_info,
         }
         self._publish_config("sensor", "led_grid_fps", config)
+
+        # Frame time sensor
+        config = {
+            "name": "LED Frame Time",
+            "unique_id": "led_grid_frame_time",
+            "state_topic": "led/status/performance/frame_time",
+            "unit_of_measurement": "ms",
+            "icon": "mdi:timer",
+            "device": self.device_info,
+        }
+        self._publish_config("sensor", "led_grid_frame_time", config)
 
     def _publish_status_sensors(self):
         """Publish system status sensors"""

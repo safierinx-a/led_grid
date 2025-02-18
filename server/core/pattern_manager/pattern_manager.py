@@ -2,23 +2,25 @@
 
 import threading
 import time
-from typing import Dict, Any, Optional, List, Tuple, Callable
-import paho.mqtt.client as mqtt
 import json
+import paho.mqtt.client as mqtt
+from typing import Dict, Any, Optional, List, Tuple, Callable
+import os
+from dotenv import load_dotenv
 
 from server.patterns.base import Pattern, PatternRegistry
-from server.modifiers.base import Modifier, ModifierRegistry
 from server.config.grid_config import GridConfig
 from server.homeassistant import HomeAssistantManager
 
 
 class PatternManager:
-    """Manages pattern state and control independently of frame generation"""
+    """Manages pattern state and hardware control"""
 
     def __init__(self, grid_config: GridConfig, mqtt_config: Dict[str, Any]):
-        self.grid_config = grid_config
+        # Load environment variables
+        load_dotenv()
 
-        # MQTT settings
+        self.grid_config = grid_config
         self.mqtt_config = mqtt_config
         self.mqtt_client = None
         self.is_connected = False
@@ -29,9 +31,21 @@ class PatternManager:
         self.pattern_id: Optional[str] = None
         self.pattern_lock = threading.RLock()
 
-        # Modifier chain
-        self.modifiers: List[Tuple[Modifier, Dict[str, Any]]] = []
-        self.modifier_lock = threading.RLock()
+        # Hardware state
+        self.hardware_state = {
+            "brightness": 255,
+            "power": True,
+            "last_reset": 0,
+        }
+        self.hardware_lock = threading.RLock()
+
+        # Performance tracking
+        self.performance_state = {
+            "fps": 0.0,
+            "frame_time": 0.0,
+            "last_update": 0,
+        }
+        self.performance_lock = threading.RLock()
 
         # Home Assistant integration
         self.ha_manager = HomeAssistantManager(None)  # Will be updated with MQTT client
@@ -69,7 +83,7 @@ class PatternManager:
                 print(f"Creating new pattern instance: {pattern_name}")
                 self.current_pattern = pattern_class(self.grid_config)
                 self.current_params = params or {}
-                self.pattern_id = str(time.time_ns())  # New unique ID for pattern
+                self.pattern_id = str(time.time_ns())
                 print(f"Pattern changed to {pattern_name} with ID {self.pattern_id}")
                 print(f"Final params: {self.current_params}")
             else:
@@ -79,14 +93,14 @@ class PatternManager:
                 self.pattern_id = None
                 print("Pattern cleared")
 
-            # Notify frame generator of pattern change
+            # Notify frame generator
             if self.on_pattern_change:
                 self.on_pattern_change(
                     self.current_pattern, self.current_params, self.pattern_id
                 )
 
             # Update Home Assistant state
-            self.ha_manager.update_pattern_state(pattern_name, self.current_params)
+            self._update_pattern_state()
 
     def update_pattern_params(self, params: Dict[str, Any]):
         """Update current pattern parameters"""
@@ -100,18 +114,70 @@ class PatternManager:
                 self.current_params.update(params)
                 print(f"Final merged params: {self.current_params}")
 
-                # Notify frame generator of parameter update
+                # Notify frame generator
                 if self.on_pattern_change:
                     self.on_pattern_change(
                         self.current_pattern, self.current_params, self.pattern_id
                     )
 
                 # Update Home Assistant state
-                self.ha_manager.update_pattern_state(
-                    self.current_pattern.definition().name, self.current_params
-                )
+                self._update_pattern_state()
             else:
                 print("No active pattern to update parameters for")
+
+    def set_brightness(self, brightness: int):
+        """Set LED brightness"""
+        with self.hardware_lock:
+            brightness = max(0, min(255, brightness))
+            self.hardware_state["brightness"] = brightness
+            self._publish_hardware_command("brightness", brightness)
+            self._update_hardware_state()
+
+    def set_power(self, power: bool):
+        """Set LED power state"""
+        with self.hardware_lock:
+            self.hardware_state["power"] = power
+            self._publish_hardware_command("power", "ON" if power else "OFF")
+            self._update_hardware_state()
+
+    def reset_hardware(self):
+        """Reset LED hardware"""
+        with self.hardware_lock:
+            self.hardware_state["last_reset"] = time.time()
+            self._publish_hardware_command("reset", True)
+            self._update_hardware_state()
+
+    def update_performance(self, fps: float, frame_time: float):
+        """Update performance metrics"""
+        with self.performance_lock:
+            self.performance_state["fps"] = fps
+            self.performance_state["frame_time"] = frame_time
+            self.performance_state["last_update"] = time.time()
+            self._update_performance_state()
+
+    def _publish_hardware_command(self, command: str, value: Any):
+        """Publish hardware command to control topic"""
+        if self.mqtt_client and self.is_connected:
+            try:
+                payload = json.dumps({"command": command, "value": value})
+                self.mqtt_client.publish(f"led/command/hardware", payload)
+            except Exception as e:
+                print(f"Error publishing hardware command: {e}")
+
+    def _update_pattern_state(self):
+        """Update pattern state in Home Assistant"""
+        if self.current_pattern:
+            self.ha_manager.update_pattern_state(
+                self.current_pattern.definition().name, self.current_params
+            )
+
+    def _update_hardware_state(self):
+        """Update hardware state in Home Assistant"""
+        self.ha_manager.update_hardware_state(self.hardware_state)
+
+    def _update_performance_state(self):
+        """Update performance state in Home Assistant"""
+        self.ha_manager.update_performance_state(self.performance_state)
 
     def connect_mqtt(self):
         """Connect to MQTT broker and set up command handling"""
@@ -136,6 +202,9 @@ class PatternManager:
                 )
 
             # Connect to broker
+            print(
+                f"Connecting to MQTT broker at {self.mqtt_config['host']}:{self.mqtt_config.get('port', 1883)}"
+            )
             self.mqtt_client.connect(
                 self.mqtt_config["host"], self.mqtt_config.get("port", 1883), 60
             )
@@ -156,10 +225,8 @@ class PatternManager:
             self.mqtt_client.subscribe("led/command/#")
 
             # Publish discovery information
-            self.ha_manager.update_component_status("pattern_manager", "online")
-            self.ha_manager.publish_discovery(
-                PatternRegistry.list_patterns(), ModifierRegistry.list_modifiers()
-            )
+            self.ha_manager.update_component_status("pattern_server", "online")
+            self.ha_manager.publish_discovery(PatternRegistry.list_patterns())
 
             return True
 
@@ -188,27 +255,33 @@ class PatternManager:
         """Handle incoming MQTT messages"""
         try:
             print(f"\nReceived message on topic: {msg.topic}")
-            print(f"Payload: {msg.payload.decode()}")
-
             data = json.loads(msg.payload.decode())
-            topic = msg.topic
 
-            if topic == "led/command/pattern":
+            if msg.topic == "led/command/pattern":
                 self.set_pattern(data["name"], data.get("params", {}))
 
-            elif topic == "led/command/params":
+            elif msg.topic == "led/command/params":
                 self.update_pattern_params(data["params"])
 
-            elif topic == "led/command/stop":
-                self.set_pattern(None)
+            elif msg.topic == "led/command/hardware":
+                command = data.get("command")
+                value = data.get("value")
 
-            elif topic == "led/command/list":
+                if command == "brightness":
+                    self.set_brightness(int(value))
+                elif command == "power":
+                    self.set_power(value == "ON")
+                elif command == "reset":
+                    self.reset_hardware()
+
+            elif msg.topic == "led/command/list":
                 response = {
                     "patterns": PatternRegistry.list_patterns(),
-                    "modifiers": ModifierRegistry.list_modifiers(),
                     "current_pattern": self.current_pattern.definition().name
                     if self.current_pattern
                     else None,
+                    "hardware_state": self.hardware_state,
+                    "performance": self.performance_state,
                 }
                 self.mqtt_client.publish("led/status/list", json.dumps(response))
 
@@ -219,12 +292,12 @@ class PatternManager:
     def stop(self):
         """Stop pattern manager and clean up"""
         try:
-            self.ha_manager.update_component_status("pattern_manager", "shutting_down")
+            self.ha_manager.update_component_status("pattern_server", "shutting_down")
 
             if self.mqtt_client:
                 self.mqtt_client.loop_stop()
                 self.mqtt_client.disconnect()
 
-            self.ha_manager.update_component_status("pattern_manager", "offline")
+            self.ha_manager.update_component_status("pattern_server", "offline")
         except:
             pass
