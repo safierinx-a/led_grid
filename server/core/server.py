@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 
 from server.config.grid_config import GridConfig, DEFAULT_CONFIG
 from server.patterns.base import Pattern
-from server.core.pattern_manager.pattern_manager import PatternManager
-from server.core.frame_generator.frame_generator import FrameGenerator, Frame
+from server.core.pattern_manager import PatternManager
+from server.core.frame_generator import FrameGenerator, Frame
 
 
 class LEDServer:

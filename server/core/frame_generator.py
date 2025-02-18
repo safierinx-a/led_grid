@@ -5,6 +5,7 @@ import time
 import queue
 import json
 import zmq
+import traceback
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import os
@@ -262,8 +263,6 @@ class FrameGenerator:
 
             except Exception as e:
                 print(f"Error in delivery loop: {e}")
-                import traceback
-
                 traceback.print_exc()
                 delivery_errors += 1
 
