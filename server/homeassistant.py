@@ -2,6 +2,7 @@ import json
 from typing import Dict, Any, List, Optional
 import paho.mqtt.client as mqtt
 import time
+from server.patterns.base import Pattern
 
 
 class HomeAssistantManager:
