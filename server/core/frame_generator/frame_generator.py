@@ -184,6 +184,11 @@ class FrameGenerator:
 
     def _delivery_loop(self):
         """Frame delivery loop"""
+        delivery_errors = 0
+        max_delivery_errors = 3
+        error_reset_interval = 60.0
+        last_error_time = time.time()
+
         while self.is_running:
             try:
                 # Wait for frame request
@@ -191,32 +196,107 @@ class FrameGenerator:
                     identity, msg = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
                     if msg == b"READY":
                         # Get frame from buffer
-                        frame = self.frame_buffer.get(timeout=0.1)
-                        if frame:
-                            # Send frame with metadata
-                            metadata = {
-                                "seq": frame.sequence,
-                                "pattern_id": frame.pattern_id,
-                                "timestamp": frame.timestamp,
-                                "frame_size": len(frame.data),
-                            }
-                            self.frame_socket.send_multipart(
-                                [
-                                    identity,
-                                    b"frame",
-                                    json.dumps(metadata).encode(),
-                                    frame.data,
-                                ]
-                            )
-                            self.delivered_count += 1
+                        try:
+                            frame = self.frame_buffer.get(timeout=0.1)
+                            if frame:
+                                try:
+                                    # Send frame with metadata
+                                    metadata = {
+                                        "seq": frame.sequence,
+                                        "pattern_id": frame.pattern_id,
+                                        "timestamp": frame.timestamp,
+                                        "frame_size": len(frame.data),
+                                    }
+                                    self.frame_socket.send_multipart(
+                                        [
+                                            identity,
+                                            b"frame",
+                                            json.dumps(metadata).encode(),
+                                            frame.data,
+                                        ]
+                                    )
+                                    self.delivered_count += 1
+                                    delivery_errors = (
+                                        0  # Reset error count on successful delivery
+                                    )
+                                    last_error_time = time.time()
+                                except zmq.error.Again:
+                                    print("Frame send timeout - client may be slow")
+                                    continue
+                                except Exception as e:
+                                    print(f"Error sending frame: {e}")
+                                    delivery_errors += 1
+                                    if delivery_errors >= max_delivery_errors:
+                                        print(
+                                            "Too many delivery errors, attempting to rebind socket..."
+                                        )
+                                        self._rebind_socket()
+                                        delivery_errors = 0
+                        except queue.Empty:
+                            # No frames available, send empty frame to keep client alive
+                            try:
+                                metadata = {
+                                    "seq": -1,
+                                    "pattern_id": None,
+                                    "timestamp": time.time_ns(),
+                                    "frame_size": 0,
+                                }
+                                self.frame_socket.send_multipart(
+                                    [
+                                        identity,
+                                        b"frame",
+                                        json.dumps(metadata).encode(),
+                                        bytearray(),
+                                    ]
+                                )
+                            except Exception as e:
+                                print(f"Error sending empty frame: {e}")
 
                 except zmq.Again:
                     time.sleep(0.001)  # Small sleep when no requests
                     continue
 
+                # Reset error count if enough time has passed
+                if time.time() - last_error_time > error_reset_interval:
+                    delivery_errors = 0
+
             except Exception as e:
                 print(f"Error in delivery loop: {e}")
-                time.sleep(0.001)
+                import traceback
+
+                traceback.print_exc()
+                delivery_errors += 1
+
+                if delivery_errors >= max_delivery_errors:
+                    print("Too many delivery errors, attempting to rebind socket...")
+                    self._rebind_socket()
+                    delivery_errors = 0
+
+                time.sleep(0.1)  # Brief sleep on error
+
+    def _rebind_socket(self):
+        """Rebind ZMQ socket after errors"""
+        try:
+            # Close existing socket
+            self.frame_socket.close(linger=0)
+            time.sleep(0.1)  # Give socket time to close
+
+            # Create new socket
+            self.frame_socket = self.zmq_context.socket(zmq.ROUTER)
+            self.frame_socket.setsockopt(zmq.LINGER, 0)
+            self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)
+            self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)
+
+            # Rebind
+            zmq_address = f"tcp://*:{self.zmq_port}"
+            print(f"Rebinding frame delivery socket to {zmq_address}")
+            self.frame_socket.bind(zmq_address)
+            print("Socket rebound successfully")
+            return True
+        except Exception as e:
+            print(f"Error rebinding socket: {e}")
+            traceback.print_exc()
+            return False
 
     def start(self):
         """Start frame generation and delivery"""
