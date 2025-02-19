@@ -29,10 +29,14 @@ class HomeAssistantManager:
             {
                 "name": "LED Pattern",
                 "icon": "mdi:led-strip-variant",
-                "command_topic": "homeassistant/input_select/led_grid_pattern/set",
-                "state_topic": "homeassistant/input_select/led_grid_pattern/state",
-                "options_topic": "homeassistant/input_select/led_grid_pattern/options",
+                "command_topic": "led/command/pattern",
+                "state_topic": "led/status/pattern/current",
+                "options_topic": "led/status/pattern/list",
+                "value_template": "{{ value_json.name }}",
+                "command_template": '{"name": "{{ value }}"}',
                 "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_pattern_select",
             },
         )
 
@@ -49,12 +53,16 @@ class HomeAssistantManager:
                     if param == "scale"
                     else "mdi:brightness-percent",
                     "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
+                    "max": 1.0 if param != "speed" else 5.0,
+                    "step": 0.1,
                     "mode": "slider",
-                    "command_topic": f"homeassistant/input_number/pattern_{param}/set",
-                    "state_topic": f"homeassistant/input_number/pattern_{param}/state",
+                    "command_topic": "led/command/params",
+                    "state_topic": "led/status/pattern/params",
+                    "value_template": "{{ value_json.params." + param + " }}",
+                    "command_template": '{"params": {"' + param + '": {{ value }}}}',
                     "retain": True,
+                    "device": self.device_info,
+                    "unique_id": f"led_grid_pattern_{param}",
                 },
             )
 
@@ -68,10 +76,14 @@ class HomeAssistantManager:
                     "icon": "mdi:palette-swatch-variant"
                     if param == "color_mode"
                     else "mdi:shape-plus",
-                    "command_topic": f"homeassistant/input_select/pattern_{param}/set",
-                    "state_topic": f"homeassistant/input_select/pattern_{param}/state",
-                    "options_topic": f"homeassistant/input_select/pattern_{param}/options",
+                    "command_topic": "led/command/params",
+                    "state_topic": "led/status/pattern/params",
+                    "options_topic": f"led/status/pattern/{param}_options",
+                    "value_template": "{{ value_json.params." + param + " }}",
+                    "command_template": '{"params": {"' + param + '": "{{ value }}"}}',
                     "retain": True,
+                    "device": self.device_info,
+                    "unique_id": f"led_grid_pattern_{param}",
                 },
             )
 
@@ -86,9 +98,13 @@ class HomeAssistantManager:
                 "max": 1.0,
                 "step": 0.01,
                 "mode": "slider",
-                "command_topic": "homeassistant/input_number/led_brightness/set",
-                "state_topic": "homeassistant/input_number/led_brightness/state",
+                "command_topic": "led/command/hardware",
+                "state_topic": "led/status/hardware/brightness",
+                "command_template": '{"command": "brightness", "value": {{ value }}}',
+                "value_template": "{{ value }}",
                 "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_brightness",
             },
         )
 
@@ -106,47 +122,31 @@ class HomeAssistantManager:
                 "state_on": "ON",
                 "state_off": "OFF",
                 "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_power",
             },
         )
 
-        # Reset button
-        self._publish_discovery(
-            "button",
-            "led_reset",
-            {
-                "name": "Reset LEDs",
-                "icon": "mdi:restart",
-                "command_topic": "led/command/reset",
-                "payload_press": "RESET",
-                "retain": True,
-            },
-        )
-
-        # Clear button
-        self._publish_discovery(
-            "button",
-            "led_clear",
-            {
-                "name": "Clear LEDs",
-                "icon": "mdi:led-off",
-                "command_topic": "led/command/clear",
-                "payload_press": "CLEAR",
-                "retain": True,
-            },
-        )
-
-        # Stop button
-        self._publish_discovery(
-            "button",
-            "led_stop",
-            {
-                "name": "Stop Pattern",
-                "icon": "mdi:stop",
-                "command_topic": "led/command/stop",
-                "payload_press": "STOP",
-                "retain": True,
-            },
-        )
+        # Buttons
+        for button_id, config in {
+            "reset": ("Reset LEDs", "mdi:restart", "RESET"),
+            "clear": ("Clear LEDs", "mdi:led-off", "CLEAR"),
+            "stop": ("Stop Pattern", "mdi:stop", "STOP"),
+        }.items():
+            name, icon, payload = config
+            self._publish_discovery(
+                "button",
+                f"led_{button_id}",
+                {
+                    "name": name,
+                    "icon": icon,
+                    "command_topic": f"led/command/{button_id}",
+                    "payload_press": payload,
+                    "retain": True,
+                    "device": self.device_info,
+                    "unique_id": f"led_grid_{button_id}",
+                },
+            )
 
         # Performance sensors
         self._publish_discovery(
@@ -157,7 +157,10 @@ class HomeAssistantManager:
                 "icon": "mdi:speedometer",
                 "state_topic": "led/status/performance/fps",
                 "unit_of_measurement": "FPS",
+                "state_class": "measurement",
                 "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_fps",
             },
         )
 
@@ -169,7 +172,10 @@ class HomeAssistantManager:
                 "icon": "mdi:timer-outline",
                 "state_topic": "led/status/performance/frame_time",
                 "unit_of_measurement": "ms",
+                "state_class": "measurement",
                 "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_frame_time",
             },
         )
 
@@ -182,6 +188,41 @@ class HomeAssistantManager:
                 "state_topic": "led/status/hardware/last_reset",
                 "device_class": "timestamp",
                 "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_last_reset",
+            },
+        )
+
+        # Status sensors
+        self._publish_discovery(
+            "binary_sensor",
+            "pattern_server_status",
+            {
+                "name": "Pattern Server Status",
+                "icon": "mdi:server",
+                "state_topic": "led/status/pattern_server",
+                "payload_on": "online",
+                "payload_off": "offline",
+                "device_class": "connectivity",
+                "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_pattern_server_status",
+            },
+        )
+
+        self._publish_discovery(
+            "binary_sensor",
+            "led_controller_status",
+            {
+                "name": "LED Controller Status",
+                "icon": "mdi:led-strip",
+                "state_topic": "led/status/led_controller",
+                "payload_on": "online",
+                "payload_off": "offline",
+                "device_class": "connectivity",
+                "retain": True,
+                "device": self.device_info,
+                "unique_id": "led_grid_controller_status",
             },
         )
 
@@ -291,16 +332,7 @@ class HomeAssistantManager:
             pattern_names = [p.definition().name for p in patterns]
             print(f"Publishing pattern options: {pattern_names}")
             self._publish_with_retry(
-                "homeassistant/input_select/led_grid_pattern/options",
-                json.dumps(pattern_names),
-                retain=True,
-            )
-
-            # Also update the current state if empty
-            self._publish_with_retry(
-                "homeassistant/input_select/led_grid_pattern/state",
-                pattern_names[0] if pattern_names else "",
-                retain=True,
+                "led/status/pattern/list", json.dumps(pattern_names), retain=True
             )
         except Exception as e:
             print(f"Error updating pattern options: {e}")
@@ -317,7 +349,7 @@ class HomeAssistantManager:
                 options_str = variation_param.description.split("(")[1].split(")")[0]
                 variations = [opt.strip() for opt in options_str.split(",")]
                 self._publish_with_retry(
-                    "homeassistant/input_select/pattern_variation/options",
+                    "led/status/pattern/variation_options",
                     json.dumps(variations),
                     retain=True,
                 )
@@ -335,7 +367,7 @@ class HomeAssistantManager:
                 options_str = color_param.description.split("(")[1].split(")")[0]
                 color_modes = [opt.strip() for opt in options_str.split(",")]
                 self._publish_with_retry(
-                    "homeassistant/input_select/pattern_color_mode/options",
+                    "led/status/pattern/color_mode_options",
                     json.dumps(color_modes),
                     retain=True,
                 )
@@ -346,33 +378,21 @@ class HomeAssistantManager:
         """Update pattern and parameter states"""
         # Update pattern selection
         self._publish_with_retry(
-            "homeassistant/input_select/led_grid_pattern/state",
-            pattern_name,
+            "led/status/pattern/current",
+            json.dumps({"name": pattern_name}),
             retain=True,
         )
 
         # Update parameters
-        for param_name, value in params.items():
-            if param_name in ["speed", "scale", "intensity"]:
-                self._publish_with_retry(
-                    f"homeassistant/input_number/pattern_{param_name}/state",
-                    str(value),
-                    retain=True,
-                )
-            elif param_name in ["variation", "color_mode"]:
-                self._publish_with_retry(
-                    f"homeassistant/input_select/pattern_{param_name}/state",
-                    str(value),
-                    retain=True,
-                )
+        self._publish_with_retry(
+            "led/status/pattern/params", json.dumps({"params": params}), retain=True
+        )
 
     def update_hardware_state(self, state: Dict[str, Any]):
         """Update hardware state"""
         # Update brightness
         self._publish_with_retry(
-            "homeassistant/input_number/led_brightness/state",
-            str(state["brightness"]),
-            retain=True,
+            "led/status/hardware/brightness", str(state["brightness"]), retain=True
         )
 
         # Update power state
@@ -410,3 +430,12 @@ class HomeAssistantManager:
     def update_component_status(self, component: str, status: str):
         """Update component status"""
         self._publish_with_retry(f"led/status/{component}", status, retain=True)
+
+    def update_performance_metrics(self, fps: float, frame_time: float):
+        """Update performance metrics"""
+        self._publish_with_retry(
+            "led/status/performance/fps", f"{fps:.1f}", retain=True
+        )
+        self._publish_with_retry(
+            "led/status/performance/frame_time", f"{frame_time * 1000:.1f}", retain=True
+        )
