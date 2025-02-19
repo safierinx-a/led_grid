@@ -1,12 +1,13 @@
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 import threading
 import time
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
+import json
 
 from server.config.grid_config import GridConfig
-from server.patterns.base import Pattern
+from server.patterns.base import Pattern, PatternRegistry
 from server.homeassistant import HomeAssistantManager
 
 
@@ -23,10 +24,16 @@ class PatternManager:
         self.is_connected = False
 
         # Pattern state
+        self.patterns = []  # Will be populated in load_patterns()
         self.current_pattern: Optional[Pattern] = None
         self.current_params: Dict[str, Any] = {}
         self.pattern_id: Optional[str] = None
         self.pattern_lock = threading.RLock()
+
+        # Callback for pattern changes
+        self.on_pattern_change: Optional[
+            Callable[[Optional[Pattern], Dict[str, Any], str], None]
+        ] = None
 
         # Hardware state
         self.hardware_state = {
@@ -40,6 +47,7 @@ class PatternManager:
         self.performance_state = {
             "fps": 0.0,
             "frame_time": 0.0,
+            "frame_count": 0,
             "last_update": 0,
         }
         self.performance_lock = threading.RLock()
@@ -143,6 +151,20 @@ class PatternManager:
         self.mqtt_client.subscribe("led/command/clear", self._handle_clear)
         self.mqtt_client.subscribe("led/command/stop", self._handle_stop)
 
+    def register_pattern_change_callback(
+        self, callback: Callable[[Optional[Pattern], Dict[str, Any], str], None]
+    ):
+        """Register callback for pattern changes"""
+        self.on_pattern_change = callback
+
+    def _notify_pattern_change(self):
+        """Notify callback of pattern changes"""
+        if self.on_pattern_change:
+            pattern_id = str(time.time_ns()) if self.current_pattern else None
+            self.on_pattern_change(
+                self.current_pattern, self.current_params, pattern_id
+            )
+
     def _handle_pattern_select(self, msg):
         """Handle pattern selection"""
         try:
@@ -153,6 +175,7 @@ class PatternManager:
                 self.ha_manager.update_pattern_state(pattern.name, pattern.params)
                 self.ha_manager.update_pattern_variations(pattern)
                 self.ha_manager.update_color_modes(pattern)
+                self._notify_pattern_change()  # Notify callback
         except Exception as e:
             print(f"Error handling pattern select: {e}")
 
@@ -213,7 +236,9 @@ class PatternManager:
             if msg.decode() == "CLEAR":
                 # Clear pattern and update state
                 self.current_pattern = None
+                self.current_params = {}
                 self.ha_manager.update_pattern_state("", {})
+                self._notify_pattern_change()  # Notify callback
         except Exception as e:
             print(f"Error handling clear command: {e}")
 
@@ -223,12 +248,31 @@ class PatternManager:
             if msg.decode() == "STOP":
                 # Stop pattern and update state
                 self.current_pattern = None
+                self.current_params = {}
                 self.ha_manager.update_pattern_state("", {})
+                self._notify_pattern_change()  # Notify callback
         except Exception as e:
             print(f"Error handling stop command: {e}")
 
+    def load_patterns(self):
+        """Load available patterns"""
+        # Get pattern definitions
+        pattern_defs = PatternRegistry.list_patterns()
+
+        # Create pattern instances
+        self.patterns = []
+        for pattern_def in pattern_defs:
+            pattern_class = PatternRegistry.get_pattern(pattern_def.name)
+            if pattern_class:
+                self.patterns.append(pattern_class(self.grid_config))
+
+        print(f"Loaded {len(self.patterns)} patterns")
+
     def start(self):
         """Start the pattern manager"""
+        # Load patterns
+        self.load_patterns()
+
         # Initialize Home Assistant
         self.ha_manager.publish_discovery()
         self.ha_manager.update_pattern_options(self.patterns)
@@ -244,7 +288,8 @@ class PatternManager:
         # Initialize performance state
         self.performance_state["fps"] = 0.0
         self.performance_state["frame_time"] = 0.0
-        self.performance_state["last_update"] = 0
+        self.performance_state["frame_count"] = 0
+        self.performance_state["last_update"] = time.time()
 
     def update_performance_metrics(self, frame_time: float):
         """Update performance metrics with latest frame data"""
@@ -273,3 +318,118 @@ class PatternManager:
                 )
         except Exception as e:
             print(f"Error updating performance metrics: {e}")
+
+    def _on_mqtt_connect(self, client, userdata, flags, rc):
+        """Handle MQTT connection"""
+        if rc == 0:
+            print("Connected to MQTT broker successfully")
+            self.is_connected = True
+        else:
+            print(f"Failed to connect to MQTT broker with code {rc}")
+            self.is_connected = False
+
+    def _on_mqtt_disconnect(self, client, userdata, rc):
+        """Handle MQTT disconnection"""
+        print(f"Disconnected from MQTT broker with code {rc}")
+        self.is_connected = False
+
+    def _on_mqtt_message(self, client, userdata, msg):
+        """Handle incoming MQTT messages"""
+        try:
+            print(f"\nReceived message on topic: {msg.topic}")
+            payload = msg.payload.decode()
+
+            # Handle pattern selection
+            if msg.topic == "led/command/pattern":
+                data = json.loads(payload)
+                self.set_pattern(data["name"], data.get("params", {}))
+
+            # Handle parameter updates
+            elif msg.topic == "led/command/params":
+                data = json.loads(payload)
+                self.update_pattern_params(data["params"])
+
+            # Handle hardware commands
+            elif msg.topic == "led/command/hardware":
+                data = json.loads(payload)
+                command = data.get("command")
+                value = data.get("value")
+
+                if command == "brightness":
+                    self.set_brightness(int(value))
+                elif command == "power":
+                    self.set_power(value == "ON")
+                elif command == "reset":
+                    self.reset_hardware()
+
+            # Handle pattern list request
+            elif msg.topic == "led/command/list":
+                response = {
+                    "patterns": [p.definition() for p in self.patterns],
+                    "current_pattern": self.current_pattern.definition().name
+                    if self.current_pattern
+                    else None,
+                    "hardware_state": self.hardware_state,
+                    "performance": self.performance_state,
+                }
+                self.mqtt_client.publish("led/status/list", json.dumps(response))
+
+        except Exception as e:
+            print(f"Error handling MQTT message: {e}")
+            print(f"Message payload: {msg.payload}")
+
+    def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
+        """Set pattern with immediate effect"""
+        with self.pattern_lock:
+            print(f"\nPattern change requested: {pattern_name}")
+            print(f"Initial params: {params}")
+
+            # Clean up old pattern
+            if self.current_pattern:
+                print(
+                    f"Cleaning up old pattern: {self.current_pattern.definition().name}"
+                )
+
+            # Set new pattern
+            pattern_class = PatternRegistry.get_pattern(pattern_name)
+            if pattern_class:
+                print(f"Creating new pattern instance: {pattern_name}")
+                self.current_pattern = pattern_class(self.grid_config)
+                self.current_params = params or {}
+                self.pattern_id = str(time.time_ns())
+                print(f"Pattern changed to {pattern_name} with ID {self.pattern_id}")
+                print(f"Final params: {self.current_params}")
+            else:
+                print(f"Pattern {pattern_name} not found in registry")
+                self.current_pattern = None
+                self.current_params = {}
+                self.pattern_id = None
+                print("Pattern cleared")
+
+            # Notify frame generator
+            self._notify_pattern_change()
+
+            # Update Home Assistant state
+            self.ha_manager.update_pattern_state(pattern_name, self.current_params)
+
+    def update_pattern_params(self, params: Dict[str, Any]):
+        """Update current pattern parameters"""
+        with self.pattern_lock:
+            if self.current_pattern:
+                print(
+                    f"\nUpdating parameters for pattern: {self.current_pattern.definition().name}"
+                )
+                print(f"Current params: {self.current_params}")
+                print(f"New params to merge: {params}")
+                self.current_params.update(params)
+                print(f"Final merged params: {self.current_params}")
+
+                # Notify frame generator
+                self._notify_pattern_change()
+
+                # Update Home Assistant state
+                self.ha_manager.update_pattern_state(
+                    self.current_pattern.definition().name, self.current_params
+                )
+            else:
+                print("No active pattern to update parameters for")
