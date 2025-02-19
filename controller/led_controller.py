@@ -8,6 +8,7 @@ import argparse
 import os
 from dotenv import load_dotenv
 import traceback
+import paho.mqtt.client as mqtt
 
 # Load environment variables
 load_dotenv()
@@ -34,10 +35,20 @@ class LEDController:
         self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", "localhost")
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
-        # Set socket options
-        self.frame_socket.setsockopt(zmq.LINGER, 0)
-        self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms timeout
-        self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms timeout
+        # MQTT setup for status updates
+        self.mqtt_client = mqtt.Client(f"led_controller_{int(time.time())}")
+        self.mqtt_client.username_pw_set(
+            os.getenv("MQTT_USER"), os.getenv("MQTT_PASSWORD")
+        )
+        self.mqtt_client.connect(
+            os.getenv("MQTT_BROKER", "localhost"),
+            int(os.getenv("MQTT_PORT", "1883")),
+            60,
+        )
+        self.mqtt_client.loop_start()
+
+        # Publish initial status
+        self.mqtt_client.publish("led/status/led_controller", "online", retain=True)
 
         # Performance tracking
         self.frame_count = 0
@@ -194,6 +205,16 @@ class LEDController:
 
         # Clear LEDs
         self.clear_strip()
+
+        # Publish offline status
+        self.mqtt_client.publish("led/status/led_controller", "offline", retain=True)
+
+        # Clean up MQTT
+        try:
+            self.mqtt_client.loop_stop()
+            self.mqtt_client.disconnect()
+        except:
+            pass
 
         # Clean up ZMQ
         try:

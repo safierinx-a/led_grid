@@ -271,6 +271,10 @@ class PatternManager:
 
         # Initialize Home Assistant
         self.ha_manager.publish_discovery()
+
+        # Update pattern options and state
+        pattern_names = [p.definition().name for p in self.patterns]
+        print(f"Available patterns: {pattern_names}")
         self.ha_manager.update_pattern_options(self.patterns)
 
         # Initialize hardware state
@@ -278,6 +282,22 @@ class PatternManager:
 
         # Start performance monitoring
         self._start_performance_monitoring()
+
+        # Publish online status
+        self.mqtt_client.publish("led/status/pattern_server", "online", retain=True)
+
+    def stop(self):
+        """Stop pattern manager and clean up"""
+        try:
+            # Publish offline status
+            if self.mqtt_client:
+                self.mqtt_client.publish(
+                    "led/status/pattern_server", "offline", retain=True
+                )
+                self.mqtt_client.loop_stop()
+                self.mqtt_client.disconnect()
+        except:
+            pass
 
     def _start_performance_monitoring(self):
         """Start monitoring performance metrics"""

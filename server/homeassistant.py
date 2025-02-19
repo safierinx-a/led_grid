@@ -3,6 +3,7 @@ from typing import Dict, Any, List, Optional
 import paho.mqtt.client as mqtt
 import time
 from server.patterns.base import Pattern
+import traceback
 
 
 class HomeAssistantManager:
@@ -284,17 +285,26 @@ class HomeAssistantManager:
         print(f"Failed to publish message to {topic} after {max_retries} attempts")
         return False
 
-    def update_pattern_options(self, patterns: List[Dict]):
+    def update_pattern_options(self, patterns: List[Pattern]):
         """Update pattern selection options"""
         try:
-            pattern_names = [p.name for p in patterns]
+            pattern_names = [p.definition().name for p in patterns]
+            print(f"Publishing pattern options: {pattern_names}")
             self._publish_with_retry(
                 "homeassistant/input_select/led_grid_pattern/options",
                 json.dumps(pattern_names),
                 retain=True,
             )
+
+            # Also update the current state if empty
+            self._publish_with_retry(
+                "homeassistant/input_select/led_grid_pattern/state",
+                pattern_names[0] if pattern_names else "",
+                retain=True,
+            )
         except Exception as e:
             print(f"Error updating pattern options: {e}")
+            traceback.print_exc()
 
     def update_pattern_variations(self, pattern: Pattern):
         """Update variation options for current pattern"""
