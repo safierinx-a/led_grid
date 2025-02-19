@@ -5,6 +5,7 @@ import time
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 import json
+import traceback
 
 from server.config.grid_config import GridConfig
 from server.patterns.base import Pattern, PatternRegistry
@@ -123,33 +124,28 @@ class PatternManager:
             return
 
         # Pattern selection
-        self.mqtt_client.subscribe(
-            "homeassistant/input_select/led_grid_pattern/set",
-            self._handle_pattern_select,
-        )
+        self.mqtt_client.subscribe("homeassistant/input_select/led_grid_pattern/set")
 
         # Pattern parameters
         for param in ["speed", "scale", "intensity"]:
             self.mqtt_client.subscribe(
-                f"homeassistant/input_number/pattern_{param}/set",
-                lambda msg, param=param: self._handle_numeric_param(param, msg),
+                f"homeassistant/input_number/pattern_{param}/set"
             )
 
         for param in ["variation", "color_mode"]:
             self.mqtt_client.subscribe(
-                f"homeassistant/input_select/pattern_{param}/set",
-                lambda msg, param=param: self._handle_select_param(param, msg),
+                f"homeassistant/input_select/pattern_{param}/set"
             )
 
         # Hardware controls
-        self.mqtt_client.subscribe(
-            "homeassistant/input_number/led_brightness/set",
-            self._handle_brightness_control,
-        )
-        self.mqtt_client.subscribe("led/command/power", self._handle_power_control)
-        self.mqtt_client.subscribe("led/command/reset", self._handle_reset_control)
-        self.mqtt_client.subscribe("led/command/clear", self._handle_clear)
-        self.mqtt_client.subscribe("led/command/stop", self._handle_stop)
+        self.mqtt_client.subscribe("homeassistant/input_number/led_brightness/set")
+        self.mqtt_client.subscribe("led/command/power")
+        self.mqtt_client.subscribe("led/command/reset")
+        self.mqtt_client.subscribe("led/command/clear")
+        self.mqtt_client.subscribe("led/command/stop")
+
+        # Set message callback
+        self.mqtt_client.on_message = self._on_mqtt_message
 
     def register_pattern_change_callback(
         self, callback: Callable[[Optional[Pattern], Dict[str, Any], str], None]
@@ -339,17 +335,45 @@ class PatternManager:
             print(f"\nReceived message on topic: {msg.topic}")
             payload = msg.payload.decode()
 
-            # Handle pattern selection
-            if msg.topic == "led/command/pattern":
+            # Pattern selection
+            if msg.topic == "homeassistant/input_select/led_grid_pattern/set":
+                self._handle_pattern_select(msg.payload)
+
+            # Pattern parameters - numeric
+            elif any(
+                msg.topic == f"homeassistant/input_number/pattern_{param}/set"
+                for param in ["speed", "scale", "intensity"]
+            ):
+                param = msg.topic.split("/")[-2].split("_")[1]  # Extract param name
+                self._handle_numeric_param(param, msg.payload)
+
+            # Pattern parameters - select
+            elif any(
+                msg.topic == f"homeassistant/input_select/pattern_{param}/set"
+                for param in ["variation", "color_mode"]
+            ):
+                param = msg.topic.split("/")[-2].split("_")[1]  # Extract param name
+                self._handle_select_param(param, msg.payload)
+
+            # Hardware controls
+            elif msg.topic == "homeassistant/input_number/led_brightness/set":
+                self._handle_brightness_control(msg.payload)
+            elif msg.topic == "led/command/power":
+                self._handle_power_control(msg.payload)
+            elif msg.topic == "led/command/reset":
+                self._handle_reset_control(msg.payload)
+            elif msg.topic == "led/command/clear":
+                self._handle_clear(msg.payload)
+            elif msg.topic == "led/command/stop":
+                self._handle_stop(msg.payload)
+
+            # Pattern commands
+            elif msg.topic == "led/command/pattern":
                 data = json.loads(payload)
                 self.set_pattern(data["name"], data.get("params", {}))
-
-            # Handle parameter updates
             elif msg.topic == "led/command/params":
                 data = json.loads(payload)
                 self.update_pattern_params(data["params"])
-
-            # Handle hardware commands
             elif msg.topic == "led/command/hardware":
                 data = json.loads(payload)
                 command = data.get("command")
@@ -362,7 +386,7 @@ class PatternManager:
                 elif command == "reset":
                     self.reset_hardware()
 
-            # Handle pattern list request
+            # Pattern list request
             elif msg.topic == "led/command/list":
                 response = {
                     "patterns": [p.definition() for p in self.patterns],
@@ -377,6 +401,8 @@ class PatternManager:
         except Exception as e:
             print(f"Error handling MQTT message: {e}")
             print(f"Message payload: {msg.payload}")
+            print(f"Topic: {msg.topic}")
+            traceback.print_exc()
 
     def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
         """Set pattern with immediate effect"""
