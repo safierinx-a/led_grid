@@ -4,12 +4,39 @@ import paho.mqtt.client as mqtt
 import time
 from server.patterns.base import Pattern
 import traceback
+import random
 
 
 class HomeAssistantManager:
-    """Manages Home Assistant MQTT discovery and state management"""
+    """
+    Manages Home Assistant MQTT discovery and state management for the LED Grid system.
+
+    This class handles:
+    1. MQTT discovery for automatic entity registration in Home Assistant
+    2. State updates for patterns, parameters, hardware, and performance metrics
+    3. Bidirectional communication between the LED Grid system and Home Assistant
+
+    Usage:
+        1. Initialize with an MQTT client
+        2. Call publish_discovery() to register entities
+        3. Use update_* methods to keep Home Assistant state in sync
+
+    Entity Structure:
+        - Pattern selection (input_select)
+        - Pattern parameters (input_number, input_select)
+        - Hardware controls (brightness, power)
+        - Action buttons (reset, clear, stop)
+        - Status sensors (FPS, frame time, component status)
+    """
 
     def __init__(self, mqtt_client: mqtt.Client, base_topic: str = "homeassistant"):
+        """
+        Initialize the Home Assistant Manager.
+
+        Args:
+            mqtt_client: MQTT client for communication with Home Assistant
+            base_topic: Base topic for Home Assistant MQTT discovery (default: "homeassistant")
+        """
         self.mqtt_client = mqtt_client
         self.base_topic = base_topic
         self.device_info = {
@@ -21,7 +48,35 @@ class HomeAssistantManager:
         }
 
     def publish_discovery(self):
-        """Publish Home Assistant MQTT discovery messages"""
+        """
+        Publish Home Assistant MQTT discovery messages for all entities.
+
+        This method registers the following entities in Home Assistant:
+
+        Controls:
+        - input_select.led_grid_pattern: Pattern selection
+        - input_number.pattern_speed: Pattern speed control
+        - input_number.pattern_scale: Pattern scale control
+        - input_number.pattern_intensity: Pattern intensity control
+        - input_select.pattern_variation: Pattern variation selection
+        - input_select.pattern_color_mode: Pattern color mode selection
+        - input_number.led_brightness: LED brightness control
+        - switch.led_power: LED power control
+
+        Buttons:
+        - button.reset_leds: Reset LED hardware
+        - button.clear_leds: Clear LED display
+        - button.stop_pattern: Stop current pattern
+
+        Sensors:
+        - sensor.led_fps: Current FPS
+        - sensor.led_frame_time: Frame processing time
+        - sensor.led_last_reset: Last reset timestamp
+        - binary_sensor.pattern_server_status: Pattern server connectivity
+        - binary_sensor.led_controller_status: LED controller connectivity
+
+        All entities are grouped under a single device in Home Assistant.
+        """
         # Pattern selector
         self._publish_discovery(
             "input_select",
@@ -294,34 +349,37 @@ class HomeAssistantManager:
     def _publish_with_retry(
         self, topic: str, payload: str, retain: bool = False
     ) -> bool:
-        """Helper method to publish messages with retry logic"""
-        max_retries = 3
-        retry_delay = 0.5  # seconds
+        """Publish a message with retry logic"""
+        if not self.mqtt_client:
+            print(f"MQTT client not initialized, can't publish to {topic}")
+            return False
+
+        # Exponential backoff parameters
+        max_retries = 5
+        base_delay = 0.5  # seconds
+        max_delay = 8.0  # seconds
 
         for attempt in range(max_retries):
             try:
-                if not self.mqtt_client.is_connected():
+                result = self.mqtt_client.publish(topic, payload, retain=retain)
+                if result.rc == 0:
+                    return True
+                else:
                     print(
-                        f"MQTT client not connected, waiting... (attempt {attempt + 1}/{max_retries})"
+                        f"Failed to publish to {topic} (attempt {attempt + 1}/{max_retries}): MQTT error code {result.rc}"
                     )
-                    time.sleep(retry_delay)
-                    continue
-
-                result = self.mqtt_client.publish(topic, payload, retain=retain, qos=1)
-                if result.rc != mqtt.MQTT_ERR_SUCCESS:
-                    print(
-                        f"Publish returned error code {result.rc} (attempt {attempt + 1}/{max_retries})"
-                    )
-                    time.sleep(retry_delay)
-                    continue
-
-                result.wait_for_publish()
-                return True
-
             except Exception as e:
-                print(f"Error publishing to {topic}: {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
+                print(
+                    f"Exception publishing to {topic} (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+
+            # Calculate backoff delay with jitter
+            delay = min(base_delay * (2**attempt), max_delay)
+            jitter = delay * 0.2 * (random.random() * 2 - 1)  # +/- 20% jitter
+            sleep_time = max(0.1, delay + jitter)
+
+            print(f"Retrying in {sleep_time:.2f} seconds...")
+            time.sleep(sleep_time)
 
         print(f"Failed to publish message to {topic} after {max_retries} attempts")
         return False

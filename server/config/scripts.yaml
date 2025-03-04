@@ -1,0 +1,108 @@
+# LED Grid Control Scripts
+led_grid_reset:
+  alias: "Reset LED Grid"
+  sequence:
+    # Turn off power
+    - service: switch.turn_off
+      target:
+        entity_id: switch.led_power
+    - delay: 1
+    # Turn power back on
+    - service: switch.turn_on
+      target:
+        entity_id: switch.led_power
+    - delay: 1
+    # Send reset command
+    - service: mqtt.publish
+      data:
+        topic: "led/command/reset"
+        payload: "RESET"
+    - delay: 2
+    # Request pattern list refresh
+    - service: mqtt.publish
+      data:
+        topic: "led/command/list"
+        payload: ""
+
+led_grid_clear:
+  alias: "Clear LED Grid"
+  sequence:
+    # Clear display
+    - service: mqtt.publish
+      data:
+        topic: "led/command/clear"
+        payload: "CLEAR"
+    # Clear pattern selection
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.led_grid_pattern
+      data:
+        option: ""
+    # Request pattern list refresh
+    - service: mqtt.publish
+      data:
+        topic: "led/command/list"
+        payload: ""
+
+led_grid_stop:
+  alias: "Stop LED Pattern"
+  sequence:
+    # Stop current pattern
+    - service: mqtt.publish
+      data:
+        topic: "led/command/stop"
+        payload: "STOP"
+    # Clear pattern selection
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.led_grid_pattern
+      data:
+        option: ""
+    # Request pattern list refresh
+    - service: mqtt.publish
+      data:
+        topic: "led/command/list"
+        payload: ""
+
+led_grid_power_cycle:
+  alias: "Power Cycle LED Grid"
+  sequence:
+    # Turn off power
+    - service: switch.turn_off
+      target:
+        entity_id: switch.led_power
+    - delay: 2
+    # Turn power back on
+    - service: switch.turn_on
+      target:
+        entity_id: switch.led_power
+    - delay: 2
+    # Send reset command
+    - service: mqtt.publish
+      data:
+        topic: "led/command/reset"
+        payload: "RESET"
+    - delay: 1
+    # Request pattern list refresh
+    - service: mqtt.publish
+      data:
+        topic: "led/command/list"
+        payload: ""
+
+led_grid_emergency_stop:
+  alias: "Emergency Stop LED Grid"
+  sequence:
+    # Stop pattern
+    - service: mqtt.publish
+      data:
+        topic: "led/command/stop"
+        payload: "STOP"
+    # Clear display
+    - service: mqtt.publish
+      data:
+        topic: "led/command/clear"
+        payload: "CLEAR"
+    # Turn off power
+    - service: switch.turn_off
+      target:
+        entity_id: switch.led_power 

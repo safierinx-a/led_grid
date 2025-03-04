@@ -72,6 +72,9 @@ class PatternManager:
             self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
             self.mqtt_client.on_message = self._on_mqtt_message
 
+            # Enable automatic reconnection with exponential backoff
+            self.mqtt_client.reconnect_delay_set(min_delay=1, max_delay=120)
+
             # Set up authentication if provided
             if self.mqtt_config.get("username") and self.mqtt_config.get("password"):
                 self.mqtt_client.username_pw_set(
@@ -82,11 +85,11 @@ class PatternManager:
             print(
                 f"Connecting to MQTT broker at {self.mqtt_config['host']}:{self.mqtt_config.get('port', 1883)}"
             )
-            self.mqtt_client.connect(
+            self.mqtt_client.connect_async(
                 self.mqtt_config["host"], self.mqtt_config.get("port", 1883), 60
             )
 
-            # Start MQTT loop
+            # Start MQTT loop in background thread
             self.mqtt_client.loop_start()
 
             # Wait for connection
@@ -96,7 +99,10 @@ class PatternManager:
                 timeout -= 0.1
 
             if not self.is_connected:
-                raise Exception("MQTT connection timeout")
+                print(
+                    "MQTT connection timeout, but continuing with async connection attempts"
+                )
+                # We'll continue anyway since we're using async connection
 
             # Set up subscriptions after connection
             self._setup_mqtt_subscriptions()
@@ -112,6 +118,7 @@ class PatternManager:
 
         except Exception as e:
             print(f"Error connecting to MQTT: {e}")
+            traceback.print_exc()
             if self.mqtt_client:
                 self.mqtt_client.loop_stop()
                 self.mqtt_client = None
