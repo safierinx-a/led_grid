@@ -1,0 +1,208 @@
+# LED Grid Control Automations
+
+# Pattern Discovery and Options
+- alias: Request Pattern List on Startup
+  trigger:
+    - platform: homeassistant
+      event: start
+    - platform: state
+      entity_id: binary_sensor.pattern_server_status
+      to: "online"
+  action:
+    service: mqtt.publish
+    data:
+      topic: "led/command/list"
+      payload: ""
+
+- alias: Update Pattern Options
+  trigger:
+    platform: mqtt
+    topic: "homeassistant/input_select/led_grid_pattern/options"
+  action:
+    service: input_select.set_options
+    target:
+      entity_id: input_select.led_grid_pattern
+    data:
+      options: "{{ trigger.payload | from_json }}"
+
+- alias: Update Variation Options
+  trigger:
+    platform: mqtt
+    topic: "homeassistant/input_select/pattern_variation/options"
+  action:
+    service: input_select.set_options
+    target:
+      entity_id: input_select.pattern_variation
+    data:
+      options: "{{ trigger.payload | from_json }}"
+
+- alias: Update Color Mode Options
+  trigger:
+    platform: mqtt
+    topic: "homeassistant/input_select/pattern_color_mode/options"
+  action:
+    service: input_select.set_options
+    target:
+      entity_id: input_select.pattern_color_mode
+    data:
+      options: "{{ trigger.payload | from_json }}"
+
+# Pattern State Updates
+- alias: Update Pattern State from MQTT
+  trigger:
+    platform: mqtt
+    topic: "led/status/pattern/current"
+  action:
+    service: input_select.select_option
+    target:
+      entity_id: input_select.led_grid_pattern
+    data:
+      option: "{{ trigger.payload_json.name }}"
+
+- alias: Update Pattern Parameters from MQTT
+  trigger:
+    platform: mqtt
+    topic: "led/status/pattern/params"
+  action:
+    - service: input_number.set_value
+      target:
+        entity_id: input_number.pattern_speed
+      data:
+        value: "{{ trigger.payload_json.params.speed if trigger.payload_json.params is defined and trigger.payload_json.params.speed is defined else states('input_number.pattern_speed') }}"
+    - service: input_number.set_value
+      target:
+        entity_id: input_number.pattern_scale
+      data:
+        value: "{{ trigger.payload_json.params.scale if trigger.payload_json.params is defined and trigger.payload_json.params.scale is defined else states('input_number.pattern_scale') }}"
+    - service: input_number.set_value
+      target:
+        entity_id: input_number.pattern_intensity
+      data:
+        value: "{{ trigger.payload_json.params.intensity if trigger.payload_json.params is defined and trigger.payload_json.params.intensity is defined else states('input_number.pattern_intensity') }}"
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.pattern_variation
+      data:
+        option: "{{ trigger.payload_json.params.variation if trigger.payload_json.params is defined and trigger.payload_json.params.variation is defined and trigger.payload_json.params.variation in state_attr('input_select.pattern_variation', 'options') else states('input_select.pattern_variation') }}"
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.pattern_color_mode
+      data:
+        option: "{{ trigger.payload_json.params.color_mode if trigger.payload_json.params is defined and trigger.payload_json.params.color_mode is defined and trigger.payload_json.params.color_mode in state_attr('input_select.pattern_color_mode', 'options') else states('input_select.pattern_color_mode') }}"
+
+# Existing Control Automations
+- alias: Update Pattern
+  trigger:
+    platform: state
+    entity_id: input_select.led_grid_pattern
+  action:
+    service: mqtt.publish
+    data:
+      topic: "led/command/pattern"
+      payload_template: >
+        {"name": "{{ states('input_select.led_grid_pattern') }}"}
+
+- alias: Update Pattern Parameters
+  trigger:
+    platform: state
+    entity_id:
+      - input_number.pattern_speed
+      - input_number.pattern_scale
+      - input_select.pattern_variation
+      - input_number.pattern_intensity
+      - input_select.pattern_color_mode
+  action:
+    service: mqtt.publish
+    data:
+      topic: "led/command/params"
+      payload_template: >
+        {"params": {
+          "speed": {{ states('input_number.pattern_speed') | float }},
+          "scale": {{ states('input_number.pattern_scale') | float }},
+          "variation": "{{ states('input_select.pattern_variation') }}",
+          "intensity": {{ states('input_number.pattern_intensity') | float }},
+          "color_mode": "{{ states('input_select.pattern_color_mode') }}"
+        }}
+
+# Hardware Control
+- alias: Update LED Brightness
+  trigger:
+    platform: state
+    entity_id: input_number.led_brightness
+  action:
+    service: mqtt.publish
+    data:
+      topic: "led/command/hardware"
+      payload_template: >
+        {"command": "brightness", "value": {{ states('input_number.led_brightness') | float }}}
+
+- alias: Update LED Power State
+  trigger:
+    platform: state
+    entity_id: switch.led_power
+  action:
+    service: mqtt.publish
+    data:
+      topic: "led/command/power"
+      payload_template: "{{ states('switch.led_power') }}"
+
+# Button Actions
+- alias: Reset LED Hardware
+  trigger:
+    platform: state
+    entity_id: button.reset_leds
+    to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "led/command/reset"
+        payload: "RESET"
+    - delay: 1
+    - service: mqtt.publish
+      data:
+        topic: "led/command/list"
+        payload: ""
+
+- alias: Clear LED Display
+  trigger:
+    platform: state
+    entity_id: button.clear_leds
+    to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "led/command/clear"
+        payload: "CLEAR"
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.led_grid_pattern
+      data:
+        option: ""
+
+- alias: Stop Pattern
+  trigger:
+    platform: state
+    entity_id: button.stop_pattern
+    to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: "led/command/stop"
+        payload: "STOP"
+    - service: input_select.select_option
+      target:
+        entity_id: input_select.led_grid_pattern
+      data:
+        option: ""
+
+# State Updates
+- alias: Update Hardware State from MQTT
+  trigger:
+    platform: mqtt
+    topic: "led/status/hardware/brightness"
+  action:
+    service: input_number.set_value
+    target:
+      entity_id: input_number.led_brightness
+    data:
+      value: "{{ trigger.payload | float }}" 
