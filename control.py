@@ -6,11 +6,16 @@ import paho.mqtt.client as mqtt
 import time
 
 
-def send_command(topic: str, payload: dict, mqtt_host="localhost"):
+def send_command(topic: str, payload, mqtt_host="localhost"):
     """Send a command to the pattern server"""
     client = mqtt.Client()
     client.connect(mqtt_host, 1883, 60)
-    client.publish(topic, json.dumps(payload))
+
+    # Convert dict payloads to JSON, leave strings as is
+    if isinstance(payload, dict):
+        payload = json.dumps(payload)
+
+    client.publish(topic, payload)
     client.disconnect()
 
 
@@ -65,6 +70,18 @@ def main():
 
     # Clear display
     subparsers.add_parser("clear", help="Clear display")
+
+    # Set brightness
+    brightness_parser = subparsers.add_parser("brightness", help="Set LED brightness")
+    brightness_parser.add_argument(
+        "value", type=float, help="Brightness value (0.0-1.0)"
+    )
+
+    # Power control
+    power_parser = subparsers.add_parser("power", help="Control LED power")
+    power_parser.add_argument(
+        "state", choices=["on", "off"], help="Power state (on/off)"
+    )
 
     args = parser.parse_args()
 
@@ -144,6 +161,23 @@ def main():
 
     elif args.command == "clear":
         send_command("led/command/clear", {}, args.mqtt_host)
+
+    elif args.command == "brightness":
+        # Validate brightness value
+        if args.value < 0.0 or args.value > 1.0:
+            print("Error: Brightness value must be between 0.0 and 1.0")
+            return
+
+        send_command(
+            "led/command/hardware",
+            {"command": "brightness", "value": args.value},
+            args.mqtt_host,
+        )
+
+    elif args.command == "power":
+        # Convert to uppercase for the MQTT protocol
+        state = "ON" if args.state.lower() == "on" else "OFF"
+        send_command("led/command/power", state, args.mqtt_host)
 
     else:
         parser.print_help()

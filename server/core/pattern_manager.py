@@ -407,11 +407,11 @@ class PatternManager:
                 value = data.get("value")
 
                 if command == "brightness":
-                    self.set_brightness(int(value))
+                    self._handle_brightness_control(str(value).encode())
                 elif command == "power":
-                    self.set_power(value == "ON")
+                    self._handle_power_control(("ON" if value else "OFF").encode())
                 elif command == "reset":
-                    self.reset_hardware()
+                    self._handle_reset_control(b"RESET")
 
             # Pattern list request
             elif msg.topic == "led/command/list":
