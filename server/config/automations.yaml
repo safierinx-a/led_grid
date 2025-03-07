@@ -96,11 +96,32 @@
     platform: state
     entity_id: input_select.led_grid_pattern
   action:
-    service: mqtt.publish
-    data:
-      topic: "led/command/pattern"
-      payload_template: >
-        {"name": "{{ states('input_select.led_grid_pattern') }}"}
+    - service: mqtt.publish
+      data:
+        topic: "led/command/pattern"
+        payload_template: >
+          {"name": "{{ states('input_select.led_grid_pattern') }}"}
+    # Subscribe to response topic to handle errors
+    - service: mqtt.subscribe
+      data:
+        topic: "led/response/pattern"
+    # Wait for response
+    - wait_for_trigger:
+        - platform: mqtt
+          topic: "led/response/pattern"
+      timeout:
+        seconds: 5
+      continue_on_timeout: true
+    # Handle response
+    - if:
+        condition: template
+        value_template: "{{ wait.trigger.payload_json.success == false }}"
+      then:
+        - service: persistent_notification.create
+          data:
+            title: "LED Grid Error"
+            message: "Failed to set pattern: {{ wait.trigger.payload_json.error }}"
+            notification_id: "led_grid_pattern_error"
 
 - alias: Update Pattern Parameters
   trigger:
@@ -130,11 +151,32 @@
     platform: state
     entity_id: input_number.led_brightness
   action:
-    service: mqtt.publish
-    data:
-      topic: "led/command/hardware"
-      payload_template: >
-        {"command": "brightness", "value": {{ states('input_number.led_brightness') | float }}}
+    - service: mqtt.publish
+      data:
+        topic: "led/command/hardware"
+        payload_template: >
+          {"command": "brightness", "value": {{ states('input_number.led_brightness') | float }}}
+    # Subscribe to response topic to handle errors
+    - service: mqtt.subscribe
+      data:
+        topic: "led/response/brightness"
+    # Wait for response
+    - wait_for_trigger:
+        - platform: mqtt
+          topic: "led/response/brightness"
+      timeout:
+        seconds: 5
+      continue_on_timeout: true
+    # Handle response
+    - if:
+        condition: template
+        value_template: "{{ wait.trigger.payload_json.success == false }}"
+      then:
+        - service: persistent_notification.create
+          data:
+            title: "LED Grid Error"
+            message: "Failed to set brightness: {{ wait.trigger.payload_json.error }}"
+            notification_id: "led_grid_brightness_error"
 
 - alias: Update LED Power State
   trigger:

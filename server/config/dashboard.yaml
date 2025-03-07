@@ -49,37 +49,31 @@ views:
                 icon: mdi:playlist-play
 
           # Pattern Parameters
-          - type: entities
-            title: Pattern Parameters
-            entities:
-              - entity: input_number.pattern_speed
-                name: Speed
-                icon: mdi:speedometer
-                condition: "{{ states('input_select.led_grid_pattern') != '' }}"
-              - entity: input_number.pattern_scale
-                name: Scale
-                icon: mdi:ruler
-                condition: "{{ states('input_select.led_grid_pattern') != '' }}"
-              - entity: input_select.pattern_variation
-                name: Variation
-                icon: mdi:palette-advanced
-                condition: "{{ states('input_select.led_grid_pattern') != '' and states.input_select.pattern_variation.attributes.options|length > 1 }}"
-              - entity: input_number.pattern_intensity
-                name: Intensity
-                icon: mdi:brightness-percent
-                condition: "{{ states('input_select.led_grid_pattern') != '' }}"
-              - entity: input_select.pattern_color_mode
-                name: Color Mode
-                icon: mdi:palette
-                condition: "{{ states('input_select.led_grid_pattern') != '' and states.input_select.pattern_color_mode.attributes.options|length > 1 }}"
-              - type: conditional
-                conditions:
-                  - condition: state
-                    entity: input_select.led_grid_pattern
-                    state: ""
-                row:
-                  type: section
-                  label: "Select a pattern to see parameters"
+          - type: conditional
+            conditions:
+              - condition: template
+                value_template: "{{ states('input_select.led_grid_pattern') != '' }}"
+            card:
+              type: entities
+              title: Pattern Parameters
+              entities:
+                - entity: input_number.pattern_speed
+                  name: Speed
+                  icon: mdi:speedometer
+                - entity: input_number.pattern_scale
+                  name: Scale
+                  icon: mdi:ruler
+                - entity: input_select.pattern_variation
+                  name: Variation
+                  icon: mdi:palette-advanced
+                  condition: "{{ states.input_select.pattern_variation.attributes.options|length > 1 }}"
+                - entity: input_number.pattern_intensity
+                  name: Intensity
+                  icon: mdi:brightness-percent
+                - entity: input_select.pattern_color_mode
+                  name: Color Mode
+                  icon: mdi:palette
+                  condition: "{{ states.input_select.pattern_color_mode.attributes.options|length > 1 }}"
 
           # Hardware Control
           - type: entities
