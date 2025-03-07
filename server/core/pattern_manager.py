@@ -209,11 +209,42 @@ class PatternManager:
     def _handle_brightness_control(self, msg):
         """Handle brightness control"""
         try:
-            brightness = float(msg.decode())
+            # Parse the brightness value
+            brightness_str = msg.decode()
+            brightness = float(brightness_str)
+
+            # Normalize brightness value
+            if brightness > 1.0 and brightness <= 255:
+                # Convert from 0-255 range to 0.0-1.0 range
+                brightness = brightness / 255.0
+            elif brightness < 0.0 or brightness > 1.0:
+                # Clamp to valid range
+                brightness = max(0.0, min(1.0, brightness))
+
+            # Update hardware state
             self.hardware_state["brightness"] = brightness
             self.ha_manager.update_hardware_state(self.hardware_state)
+
+            # Log the change
+            print(f"Brightness set to {brightness:.2f} ({int(brightness * 255)}/255)")
+
+            # Send response
+            self.mqtt_client.publish(
+                "led/response/brightness",
+                json.dumps({"success": True, "value": brightness}),
+                retain=False,
+            )
+
         except Exception as e:
             print(f"Error handling brightness control: {e}")
+            traceback.print_exc()
+
+            # Send error response
+            self.mqtt_client.publish(
+                "led/response/brightness",
+                json.dumps({"success": False, "error": str(e)}),
+                retain=False,
+            )
 
     def _handle_power_control(self, msg):
         """Handle power control"""
@@ -363,16 +394,27 @@ class PatternManager:
             payload = msg.payload.decode()
 
             # Pattern selection
-            if msg.topic == "homeassistant/input_select/led_grid_pattern/set":
+            if (
+                msg.topic == "homeassistant/input_select/led_grid_pattern/set"
+                or msg.topic == "led/command/pattern/set"
+            ):
                 self._handle_pattern_select(msg.payload)
 
             # Pattern parameters - numeric
-            elif any(
-                msg.topic == f"homeassistant/input_number/pattern_{param}/set"
-                for param in ["speed", "scale", "intensity"]
+            elif (
+                any(
+                    msg.topic == f"homeassistant/input_number/pattern_{param}/set"
+                    for param in ["speed", "scale", "intensity"]
+                )
+                or msg.topic == "led/command/params"
             ):
-                param = msg.topic.split("/")[-2].split("_")[1]  # Extract param name
-                self._handle_numeric_param(param, msg.payload)
+                if msg.topic == "led/command/params":
+                    data = json.loads(payload)
+                    for param, value in data.get("params", {}).items():
+                        self._handle_numeric_param(param, str(value).encode())
+                else:
+                    param = msg.topic.split("/")[-2].split("_")[1]  # Extract param name
+                    self._handle_numeric_param(param, msg.payload)
 
             # Pattern parameters - select
             elif any(
@@ -383,7 +425,10 @@ class PatternManager:
                 self._handle_select_param(param, msg.payload)
 
             # Hardware controls
-            elif msg.topic == "homeassistant/input_number/led_brightness/set":
+            elif (
+                msg.topic == "homeassistant/input_number/led_brightness/set"
+                or msg.topic == "led/command/brightness"
+            ):
                 self._handle_brightness_control(msg.payload)
             elif msg.topic == "led/command/power":
                 self._handle_power_control(msg.payload)
@@ -398,9 +443,6 @@ class PatternManager:
             elif msg.topic == "led/command/pattern":
                 data = json.loads(payload)
                 self.set_pattern(data["name"], data.get("params", {}))
-            elif msg.topic == "led/command/params":
-                data = json.loads(payload)
-                self.update_pattern_params(data["params"])
             elif msg.topic == "led/command/hardware":
                 data = json.loads(payload)
                 command = data.get("command")
@@ -450,14 +492,43 @@ class PatternManager:
                 self.current_pattern = pattern_class(self.grid_config)
                 self.current_params = params or {}
                 self.pattern_id = str(time.time_ns())
-                print(f"Pattern changed to {pattern_name} with ID {self.pattern_id}")
-                print(f"Final params: {self.current_params}")
+
+                # Notify frame generator
+                self._notify_pattern_change()
+
+                # Send success response
+                self.mqtt_client.publish(
+                    "led/response/pattern",
+                    json.dumps(
+                        {
+                            "success": True,
+                            "pattern": pattern_name,
+                            "params": self.current_params,
+                        }
+                    ),
+                    retain=False,
+                )
             else:
                 print(f"Pattern {pattern_name} not found in registry")
                 self.current_pattern = None
                 self.current_params = {}
                 self.pattern_id = None
                 print("Pattern cleared")
+
+                # Send error response
+                self.mqtt_client.publish(
+                    "led/response/pattern",
+                    json.dumps(
+                        {
+                            "success": False,
+                            "error": f"Pattern '{pattern_name}' not found",
+                            "available_patterns": [
+                                p.definition().name for p in self.patterns
+                            ],
+                        }
+                    ),
+                    retain=False,
+                )
 
             # Notify frame generator
             self._notify_pattern_change()

@@ -8,15 +8,45 @@ import time
 
 def send_command(topic: str, payload, mqtt_host="localhost"):
     """Send a command to the pattern server"""
-    client = mqtt.Client()
-    client.connect(mqtt_host, 1883, 60)
+    try:
+        # Create MQTT client
+        client = mqtt.Client()
 
-    # Convert dict payloads to JSON, leave strings as is
-    if isinstance(payload, dict):
-        payload = json.dumps(payload)
+        # Set up connection timeout
+        connection_timeout = 5  # seconds
 
-    client.publish(topic, payload)
-    client.disconnect()
+        # Connect with timeout
+        try:
+            client.connect(mqtt_host, 1883, 60)
+        except Exception as e:
+            print(f"Error connecting to MQTT broker at {mqtt_host}: {e}")
+            return False
+
+        # Convert dict payloads to JSON, leave strings as is
+        if isinstance(payload, dict):
+            payload = json.dumps(payload)
+
+        # Publish with QoS 1 to ensure delivery
+        result = client.publish(topic, payload, qos=1)
+
+        # Check publish result
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            print(f"Error publishing to {topic}: MQTT error code {result.rc}")
+            client.disconnect()
+            return False
+
+        # Wait for publish to complete
+        result.wait_for_publish(timeout=5.0)
+
+        # Disconnect
+        client.disconnect()
+
+        print(f"Command sent successfully to {topic}")
+        return True
+
+    except Exception as e:
+        print(f"Error sending command: {e}")
+        return False
 
 
 def main():
@@ -86,14 +116,34 @@ def main():
     args = parser.parse_args()
 
     if args.command == "pattern":
-        send_command(
+        # Validate pattern name
+        if not args.name:
+            print("Error: Pattern name is required")
+            return
+
+        # Send command and check result
+        success = send_command(
             "led/command/pattern",
             {"name": args.name, "params": args.params},
             args.mqtt_host,
         )
 
+        if success:
+            print(f"Pattern set to '{args.name}' with parameters: {args.params}")
+
     elif args.command == "params":
-        send_command("led/command/params", {"params": args.params}, args.mqtt_host)
+        # Validate params
+        if not args.params:
+            print("Error: Parameters are required")
+            return
+
+        # Send command and check result
+        success = send_command(
+            "led/command/params", {"params": args.params}, args.mqtt_host
+        )
+
+        if success:
+            print(f"Pattern parameters updated: {args.params}")
 
     elif args.command == "add-modifier":
         send_command(
@@ -157,7 +207,11 @@ def main():
         client.loop_stop()
 
     elif args.command == "stop":
-        send_command("led/command/stop", {}, args.mqtt_host)
+        # Send command and check result
+        success = send_command("led/command/stop", {}, args.mqtt_host)
+
+        if success:
+            print("Pattern stopped")
 
     elif args.command == "clear":
         send_command("led/command/clear", {}, args.mqtt_host)
@@ -168,16 +222,25 @@ def main():
             print("Error: Brightness value must be between 0.0 and 1.0")
             return
 
-        send_command(
+        # Send command and check result
+        success = send_command(
             "led/command/hardware",
             {"command": "brightness", "value": args.value},
             args.mqtt_host,
         )
 
+        if success:
+            print(f"Brightness set to {args.value * 100:.1f}%")
+
     elif args.command == "power":
         # Convert to uppercase for the MQTT protocol
         state = "ON" if args.state.lower() == "on" else "OFF"
-        send_command("led/command/power", state, args.mqtt_host)
+
+        # Send command and check result
+        success = send_command("led/command/power", state, args.mqtt_host)
+
+        if success:
+            print(f"Power set to {args.state.upper()}")
 
     else:
         parser.print_help()
