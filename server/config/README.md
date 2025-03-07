@@ -95,6 +95,10 @@ If the pattern list is empty:
 2. Restart the pattern server
 3. Check MQTT broker connectivity
 
+### Error Notifications
+
+The system now displays error notifications when commands fail. These notifications provide information about what went wrong and how to fix it.
+
 ## Advanced Usage
 
 ### Custom Automations
@@ -122,3 +126,43 @@ The LED grid can be integrated with other Home Assistant components:
 - **Motion Sensors**: Activate patterns when motion is detected
 - **Time-Based**: Change patterns based on time of day
 - **Weather**: Reflect current weather conditions
+
+### MQTT Command Reference
+
+You can control the LED grid directly using MQTT commands:
+
+- **Set Pattern**: `led/command/pattern` with payload `{"name": "pattern_name", "params": {...}}`
+- **Update Parameters**: `led/command/params` with payload `{"params": {...}}`
+- **Set Brightness**: `led/command/hardware` with payload `{"command": "brightness", "value": 0.8}`
+- **Power Control**: `led/command/power` with payload `ON` or `OFF`
+- **Reset**: `led/command/reset` with payload `RESET`
+- **Clear**: `led/command/clear` with payload `CLEAR`
+- **Stop**: `led/command/stop` with payload `STOP`
+
+### Response Topics
+
+The system now provides feedback on command execution through response topics:
+
+- **Pattern Response**: `led/response/pattern`
+- **Brightness Response**: `led/response/brightness`
+- **Power Response**: `led/response/power`
+
+These topics provide JSON payloads with `success` and `error` fields to indicate command status.
+
+## Performance Optimization
+
+To optimize performance:
+
+1. **Reduce Update Frequency**: Lower the update frequency for non-critical entities
+2. **Use Efficient Patterns**: Some patterns are more computationally intensive than others
+3. **Limit Concurrent Commands**: Avoid sending multiple commands simultaneously
+4. **Monitor Resource Usage**: Keep an eye on CPU and network usage
+
+## Security Considerations
+
+To secure your LED grid control system:
+
+1. **Use MQTT Authentication**: Enable username/password authentication for MQTT
+2. **Restrict Network Access**: Limit access to the MQTT broker and pattern server
+3. **Use TLS**: Enable TLS encryption for MQTT communication
+4. **Implement Access Control**: Use MQTT ACLs to restrict topic access

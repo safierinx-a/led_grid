@@ -92,6 +92,7 @@ class HomeAssistantManager:
                 "retain": True,
                 "device": self.device_info,
                 "unique_id": "led_grid_pattern_select",
+                "entity_category": "config",
             },
         )
 
@@ -118,6 +119,7 @@ class HomeAssistantManager:
                     "retain": True,
                     "device": self.device_info,
                     "unique_id": f"led_grid_pattern_{param}",
+                    "entity_category": "config",
                 },
             )
 
@@ -139,6 +141,7 @@ class HomeAssistantManager:
                     "retain": True,
                     "device": self.device_info,
                     "unique_id": f"led_grid_pattern_{param}",
+                    "entity_category": "config",
                 },
             )
 
@@ -154,12 +157,13 @@ class HomeAssistantManager:
                 "step": 0.01,
                 "mode": "slider",
                 "command_topic": "led/command/hardware",
-                "state_topic": "led/status/hardware/brightness",
                 "command_template": '{"command": "brightness", "value": {{ value }}}',
+                "state_topic": "led/status/hardware/brightness",
                 "value_template": "{{ value }}",
                 "retain": True,
                 "device": self.device_info,
                 "unique_id": "led_grid_brightness",
+                "entity_category": "config",
             },
         )
 
