@@ -269,6 +269,7 @@ class HomeAssistantManager:
                 "state_topic": "led/status/hardware/last_reset",
                 "device_class": "timestamp",
                 "icon": "mdi:clock-outline",
+                "value_template": "{% if '+' in value or '-' in value or value[-1] == 'Z' %}{{ value }}{% else %}{{ value }}Z{% endif %}",
                 "retain": True,
                 "device": self.device_info,
                 "unique_id": f"{self.unique_id_prefix}_last_reset",
@@ -450,6 +451,7 @@ class HomeAssistantManager:
             if variation_param and "(" in variation_param.description:
                 options_str = variation_param.description.split("(")[1].split(")")[0]
                 variations = [opt.strip() for opt in options_str.split(",")]
+                print(f"Publishing variation options: {variations}")
                 # Publish to both topics for backward compatibility
                 self._publish_with_retry(
                     "led/status/pattern/variation_options",
@@ -462,8 +464,33 @@ class HomeAssistantManager:
                     json.dumps(variations),
                     retain=True,
                 )
+
+                # Also update the current value if available
+                if pattern.params.get("variation"):
+                    self._publish_with_retry(
+                        "homeassistant/input_select/pattern_variation/state",
+                        pattern.params.get("variation"),
+                        retain=True,
+                    )
+            else:
+                print(
+                    f"No variation options found for pattern: {pattern.definition().name}"
+                )
+                # Set default options
+                default_options = ["Default"]
+                self._publish_with_retry(
+                    "led/status/pattern/variation_options",
+                    json.dumps(default_options),
+                    retain=True,
+                )
+                self._publish_with_retry(
+                    "homeassistant/input_select/pattern_variation/options",
+                    json.dumps(default_options),
+                    retain=True,
+                )
         except Exception as e:
             print(f"Error updating variation options: {e}")
+            traceback.print_exc()
 
     def update_color_modes(self, pattern: Pattern):
         """Update color mode options for current pattern"""
@@ -475,6 +502,7 @@ class HomeAssistantManager:
             if color_param and "(" in color_param.description:
                 options_str = color_param.description.split("(")[1].split(")")[0]
                 color_modes = [opt.strip() for opt in options_str.split(",")]
+                print(f"Publishing color mode options: {color_modes}")
                 # Publish to both topics for backward compatibility
                 self._publish_with_retry(
                     "led/status/pattern/color_mode_options",
@@ -487,8 +515,118 @@ class HomeAssistantManager:
                     json.dumps(color_modes),
                     retain=True,
                 )
+
+                # Also update the current value if available
+                if pattern.params.get("color_mode"):
+                    self._publish_with_retry(
+                        "homeassistant/input_select/pattern_color_mode/state",
+                        pattern.params.get("color_mode"),
+                        retain=True,
+                    )
+            else:
+                print(
+                    f"No color mode options found for pattern: {pattern.definition().name}"
+                )
+                # Set default options
+                default_options = ["Default"]
+                self._publish_with_retry(
+                    "led/status/pattern/color_mode_options",
+                    json.dumps(default_options),
+                    retain=True,
+                )
+                self._publish_with_retry(
+                    "homeassistant/input_select/pattern_color_mode/options",
+                    json.dumps(default_options),
+                    retain=True,
+                )
         except Exception as e:
             print(f"Error updating color mode options: {e}")
+            traceback.print_exc()
+
+    def update_pattern_specific_param(
+        self, pattern: Pattern, param_name: str, param_type: str, description: str
+    ):
+        """
+        Update pattern-specific parameters in Home Assistant.
+
+        Args:
+            pattern: The pattern object
+            param_name: Name of the parameter
+            param_type: Type of parameter ('number' or 'select')
+            description: Description of the parameter
+        """
+        try:
+            print(f"Updating pattern-specific parameter: {param_name} ({param_type})")
+
+            # Get current value if available
+            current_value = pattern.params.get(param_name, None)
+            print(f"Current value: {current_value}")
+
+            # For select parameters, extract options from description if available
+            if param_type == "select" and "(" in description:
+                try:
+                    options_str = description.split("(")[1].split(")")[0]
+                    options = [opt.strip() for opt in options_str.split(",")]
+                    print(f"Options for {param_name}: {options}")
+
+                    # Publish options
+                    options_topic = f"led/status/pattern/param/{param_name}/options"
+                    self._publish_with_retry(
+                        options_topic, json.dumps(options), retain=True
+                    )
+                except Exception as e:
+                    print(f"Error extracting options for {param_name}: {e}")
+                    options = ["Default"]
+
+            # Publish current value if available
+            if current_value is not None:
+                value_topic = f"led/status/pattern/param/{param_name}"
+                self._publish_with_retry(
+                    value_topic,
+                    json.dumps(current_value)
+                    if isinstance(current_value, (dict, list))
+                    else str(current_value),
+                    retain=True,
+                )
+
+            # Publish parameter metadata for discovery
+            metadata_topic = f"led/status/pattern/param/{param_name}/metadata"
+            metadata = {
+                "name": param_name,
+                "type": param_type,
+                "description": description,
+                "pattern": pattern.definition().name,
+            }
+
+            # Add range information for numeric parameters
+            if param_type == "number":
+                # Try to extract min/max from description if available
+                # Format example: "Speed (0.1-5.0): Controls animation speed"
+                if (
+                    "(" in description
+                    and "-" in description.split("(")[1].split(")")[0]
+                ):
+                    range_str = description.split("(")[1].split(")")[0]
+                    try:
+                        min_val, max_val = range_str.split("-")
+                        metadata["min"] = float(min_val.strip())
+                        metadata["max"] = float(max_val.strip())
+                    except:
+                        # Default ranges if parsing fails
+                        metadata["min"] = 0.0
+                        metadata["max"] = 1.0 if param_name != "speed" else 5.0
+                else:
+                    # Default ranges
+                    metadata["min"] = 0.0
+                    metadata["max"] = 1.0 if param_name != "speed" else 5.0
+
+            self._publish_with_retry(metadata_topic, json.dumps(metadata), retain=True)
+
+            print(f"Successfully updated parameter {param_name}")
+
+        except Exception as e:
+            print(f"Error updating pattern-specific parameter {param_name}: {e}")
+            traceback.print_exc()
 
     def update_pattern_state(self, pattern_name: str, params: Dict[str, Any]):
         """Update pattern and parameter states"""
@@ -504,6 +642,23 @@ class HomeAssistantManager:
             "led/status/pattern/params", json.dumps({"params": params}), retain=True
         )
 
+    def _format_timestamp(self, timestamp: str) -> str:
+        """
+        Format timestamp to include timezone information if missing.
+
+        Args:
+            timestamp: The timestamp string to format
+
+        Returns:
+            Formatted timestamp with timezone information
+        """
+        # If timestamp already has timezone info, return as is
+        if "+" in timestamp or "-" in timestamp or timestamp.endswith("Z"):
+            return timestamp
+
+        # Otherwise, add 'Z' to indicate UTC
+        return timestamp + "Z"
+
     def update_hardware_state(self, state: Dict[str, Any]):
         """Update hardware state"""
         # Update brightness
@@ -516,9 +671,12 @@ class HomeAssistantManager:
             "led/status/hardware/power", "ON" if state["power"] else "OFF", retain=True
         )
 
-        # Update last reset time
+        # Update last reset time with proper timezone formatting
+        last_reset = state.get("last_reset")
+        if last_reset and isinstance(last_reset, str):
+            last_reset = self._format_timestamp(last_reset)
         self._publish_with_retry(
-            "led/status/hardware/last_reset", str(state["last_reset"]), retain=True
+            "led/status/hardware/last_reset", str(last_reset), retain=True
         )
 
     def update_modifier_state(

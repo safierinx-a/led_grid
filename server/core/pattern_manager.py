@@ -172,15 +172,37 @@ class PatternManager:
         """Handle pattern selection"""
         try:
             pattern_name = msg.decode()
-            pattern = next((p for p in self.patterns if p.name == pattern_name), None)
+            print(f"Pattern selection request: {pattern_name}")
+
+            pattern = next(
+                (p for p in self.patterns if p.definition().name == pattern_name), None
+            )
             if pattern:
+                print(f"Found pattern: {pattern.definition().name}")
                 self.current_pattern = pattern
-                self.ha_manager.update_pattern_state(pattern.name, pattern.params)
+
+                # Update Home Assistant with the new pattern state
+                self.ha_manager.update_pattern_state(
+                    pattern.definition().name, pattern.params
+                )
+
+                # Update available variations and color modes for this pattern
+                print("Updating variations and color modes")
                 self.ha_manager.update_pattern_variations(pattern)
                 self.ha_manager.update_color_modes(pattern)
-                self._notify_pattern_change()  # Notify callback
+
+                # Notify callback
+                self._notify_pattern_change()
+
+                print(f"Pattern selection complete: {pattern.definition().name}")
+            else:
+                print(f"Pattern not found: {pattern_name}")
+                print(
+                    f"Available patterns: {[p.definition().name for p in self.patterns]}"
+                )
         except Exception as e:
             print(f"Error handling pattern select: {e}")
+            traceback.print_exc()
 
     def _handle_numeric_param(self, param_name: str, msg):
         """Handle numeric parameter updates"""
@@ -389,6 +411,9 @@ class PatternManager:
         # Publish online status
         self.mqtt_client.publish("led/status/pattern_server", "online", retain=True)
 
+        # Trigger a full sync of all data
+        self._sync_all_data()
+
     def stop(self):
         """Stop pattern manager and clean up"""
         try:
@@ -474,9 +499,12 @@ class PatternManager:
                 or msg.topic == "led/command/params"
             ):
                 if msg.topic == "led/command/params":
-                    data = json.loads(payload)
-                    for param, value in data.get("params", {}).items():
-                        self._handle_numeric_param(param, str(value).encode())
+                    try:
+                        data = json.loads(payload)
+                        for param, value in data.get("params", {}).items():
+                            self._handle_numeric_param(param, str(value).encode())
+                    except json.JSONDecodeError:
+                        print(f"Invalid JSON in params command: {payload}")
                 else:
                     param = msg.topic.split("/")[-2].split("_")[1]  # Extract param name
                     self._handle_numeric_param(param, msg.payload)
@@ -505,34 +533,60 @@ class PatternManager:
                 self._handle_stop(msg.payload)
             elif msg.topic == "led/command/cleanup":
                 self._handle_cleanup(msg.payload)
+            elif msg.topic == "led/command/sync":
+                # New command to trigger full data sync
+                print("Received sync command")
+                self._sync_all_data()
 
             # Pattern commands
             elif msg.topic == "led/command/pattern":
-                data = json.loads(payload)
-                self.set_pattern(data["name"], data.get("params", {}))
-            elif msg.topic == "led/command/hardware":
-                data = json.loads(payload)
-                command = data.get("command")
-                value = data.get("value")
+                try:
+                    # Try to parse as JSON first
+                    data = json.loads(payload)
+                    pattern_name = data.get("name")
+                    params = data.get("params", {})
+                except json.JSONDecodeError:
+                    # Fall back to treating payload as direct pattern name
+                    pattern_name = payload
+                    params = {}
 
-                if command == "brightness":
-                    self._handle_brightness_control(str(value).encode())
-                elif command == "power":
-                    self._handle_power_control(("ON" if value else "OFF").encode())
-                elif command == "reset":
-                    self._handle_reset_control(b"RESET")
+                if pattern_name:
+                    self.set_pattern(pattern_name, params)
+                else:
+                    print(f"Invalid pattern command: {payload}")
+            elif msg.topic == "led/command/hardware":
+                try:
+                    data = json.loads(payload)
+                    command = data.get("command")
+                    value = data.get("value")
+
+                    if command == "brightness":
+                        self._handle_brightness_control(str(value).encode())
+                    elif command == "power":
+                        self._handle_power_control(("ON" if value else "OFF").encode())
+                    elif command == "reset":
+                        self._handle_reset_control(b"RESET")
+                except json.JSONDecodeError:
+                    print(f"Invalid hardware command JSON: {payload}")
 
             # Pattern list request
             elif msg.topic == "led/command/list":
-                response = {
-                    "patterns": [p.definition() for p in self.patterns],
-                    "current_pattern": self.current_pattern.definition().name
-                    if self.current_pattern
-                    else None,
-                    "hardware_state": self.hardware_state,
-                    "performance": self.performance_state,
-                }
-                self.mqtt_client.publish("led/status/list", json.dumps(response))
+                # Send a simple list of pattern names
+                pattern_names = [p.definition().name for p in self.patterns]
+                self.mqtt_client.publish(
+                    "led/status/pattern/list", json.dumps(pattern_names), retain=True
+                )
+
+                # Also send current pattern name for the state
+                if self.current_pattern:
+                    self.mqtt_client.publish(
+                        "led/status/pattern/current",
+                        json.dumps({"name": self.current_pattern.definition().name}),
+                        retain=True,
+                    )
+
+                # Trigger a full sync to ensure all data is up to date
+                self._sync_all_data()
 
         except Exception as e:
             print(f"Error handling MQTT message: {e}")
@@ -575,6 +629,13 @@ class PatternManager:
                     ),
                     retain=False,
                 )
+
+                # Update Home Assistant state
+                self.ha_manager.update_pattern_state(pattern_name, self.current_params)
+
+                # Update available variations and color modes for this pattern
+                self.ha_manager.update_pattern_variations(self.current_pattern)
+                self.ha_manager.update_color_modes(self.current_pattern)
             else:
                 print(f"Pattern {pattern_name} not found in registry")
                 self.current_pattern = None
@@ -624,3 +685,87 @@ class PatternManager:
                 )
             else:
                 print("No active pattern to update parameters for")
+
+    def _sync_all_data(self):
+        """Synchronize all data with Home Assistant"""
+        try:
+            print("Performing full data synchronization with Home Assistant...")
+
+            # 1. Update pattern options
+            pattern_names = [p.definition().name for p in self.patterns]
+            self.ha_manager.update_pattern_options(self.patterns)
+            print(f"Synchronized pattern list: {pattern_names}")
+
+            # 2. Update current pattern state if there is one
+            if self.current_pattern:
+                # Get the pattern definition for parameter metadata
+                pattern_def = self.current_pattern.definition()
+
+                # Log detailed information about the pattern parameters
+                print(f"Current pattern: {pattern_def.name}")
+                print(f"Pattern parameters:")
+                for param in pattern_def.parameters:
+                    print(f"  - {param.name}: {param.description}")
+                    if hasattr(self.current_pattern.params, param.name):
+                        print(
+                            f"    Current value: {self.current_pattern.params.get(param.name, 'Not set')}"
+                        )
+
+                # Update Home Assistant with the pattern state
+                self.ha_manager.update_pattern_state(
+                    pattern_def.name, self.current_pattern.params
+                )
+
+                # 3. Update variations and color modes for current pattern
+                self.ha_manager.update_pattern_variations(self.current_pattern)
+                self.ha_manager.update_color_modes(self.current_pattern)
+
+                # 4. Update any pattern-specific parameters
+                for param in pattern_def.parameters:
+                    # Skip standard parameters that are already handled
+                    if param.name in [
+                        "speed",
+                        "scale",
+                        "intensity",
+                        "variation",
+                        "color_mode",
+                    ]:
+                        continue
+
+                    # Handle pattern-specific parameters
+                    param_type = (
+                        "number"
+                        if param.type == "float" or param.type == "int"
+                        else "select"
+                    )
+                    self.ha_manager.update_pattern_specific_param(
+                        self.current_pattern, param.name, param_type, param.description
+                    )
+
+                print(f"Synchronized current pattern: {pattern_def.name}")
+            else:
+                print("No current pattern to synchronize")
+
+            # 5. Update hardware state
+            self.ha_manager.update_hardware_state(self.hardware_state)
+            print("Synchronized hardware state")
+
+            # 6. Update performance metrics
+            if hasattr(self, "performance_state"):
+                self.ha_manager.update_performance_metrics(
+                    self.performance_state.get("fps", 0),
+                    self.performance_state.get("frame_time", 0),
+                )
+                print("Synchronized performance metrics")
+
+            print("Full data synchronization complete")
+
+            # Publish a notification that sync is complete
+            self.mqtt_client.publish(
+                "led/status/sync_complete",
+                json.dumps({"timestamp": datetime.now().isoformat()}),
+                retain=False,
+            )
+        except Exception as e:
+            print(f"Error during full data synchronization: {e}")
+            traceback.print_exc()
