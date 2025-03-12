@@ -324,6 +324,35 @@ class PatternManager:
         except Exception as e:
             print(f"Error handling stop command: {e}")
 
+    def _handle_cleanup(self, msg):
+        """Handle cleanup command"""
+        try:
+            if msg.decode() == "CLEANUP":
+                print("Received cleanup command")
+                # Force cleanup of all entities
+                self.ha_manager.force_cleanup()
+
+                # Clean up pattern and update state
+                self.current_pattern = None
+                self.current_params = {}
+                self.ha_manager.update_pattern_state("", {})
+                self._notify_pattern_change()  # Notify callback
+
+                # Re-publish discovery information after cleanup
+                self.ha_manager.publish_discovery()
+
+                # Update pattern options and state
+                pattern_names = [p.definition().name for p in self.patterns]
+                print(f"Available patterns after cleanup: {pattern_names}")
+                self.ha_manager.update_pattern_options(self.patterns)
+
+                # Publish confirmation
+                self.mqtt_client.publish("led/status/cleanup", "COMPLETE", retain=True)
+                print("Cleanup completed successfully")
+        except Exception as e:
+            print(f"Error handling cleanup command: {e}")
+            traceback.print_exc()
+
     def load_patterns(self):
         """Load available patterns"""
         # Get pattern definitions
@@ -474,6 +503,8 @@ class PatternManager:
                 self._handle_clear(msg.payload)
             elif msg.topic == "led/command/stop":
                 self._handle_stop(msg.payload)
+            elif msg.topic == "led/command/cleanup":
+                self._handle_cleanup(msg.payload)
 
             # Pattern commands
             elif msg.topic == "led/command/pattern":
