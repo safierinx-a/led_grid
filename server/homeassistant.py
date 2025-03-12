@@ -5,6 +5,7 @@ import time
 from server.patterns.base import Pattern
 import traceback
 import random
+from datetime import datetime
 
 
 class HomeAssistantManager:
@@ -652,6 +653,10 @@ class HomeAssistantManager:
         Returns:
             Formatted timestamp with timezone information
         """
+        # If timestamp is '0', return a valid timestamp
+        if timestamp == "0" or timestamp == 0:
+            return datetime.now().isoformat() + "Z"
+
         # If timestamp already has timezone info, return as is
         if "+" in timestamp or "-" in timestamp or timestamp.endswith("Z"):
             return timestamp
