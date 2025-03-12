@@ -191,8 +191,26 @@ class PatternManager:
                 self.ha_manager.update_pattern_state(
                     self.current_pattern.name, self.current_pattern.params
                 )
+                # Send success response
+                self.mqtt_client.publish(
+                    "led/response/params",
+                    json.dumps({"success": True, "param": param_name, "value": value}),
+                    retain=False,
+                )
         except Exception as e:
             print(f"Error handling numeric param {param_name}: {e}")
+            # Send error response
+            self.mqtt_client.publish(
+                "led/response/params",
+                json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Failed to update {param_name}: {str(e)}",
+                        "param": param_name,
+                    }
+                ),
+                retain=False,
+            )
 
     def _handle_select_param(self, param_name: str, msg):
         """Handle select parameter updates"""
@@ -203,8 +221,26 @@ class PatternManager:
                 self.ha_manager.update_pattern_state(
                     self.current_pattern.name, self.current_pattern.params
                 )
+                # Send success response
+                self.mqtt_client.publish(
+                    "led/response/params",
+                    json.dumps({"success": True, "param": param_name, "value": value}),
+                    retain=False,
+                )
         except Exception as e:
             print(f"Error handling select param {param_name}: {e}")
+            # Send error response
+            self.mqtt_client.publish(
+                "led/response/params",
+                json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Failed to update {param_name}: {str(e)}",
+                        "param": param_name,
+                    }
+                ),
+                retain=False,
+            )
 
     def _handle_brightness_control(self, msg):
         """Handle brightness control"""
