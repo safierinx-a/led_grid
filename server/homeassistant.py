@@ -296,7 +296,7 @@ class HomeAssistantManager:
             f"{self.unique_id_prefix}_controller_status",
             {
                 "name": "Controller Status",
-                "state_topic": "led/status/led_controller",
+                "state_topic": "led/status/controller",
                 "payload_on": "online",
                 "payload_off": "offline",
                 "device_class": "connectivity",
@@ -307,8 +307,24 @@ class HomeAssistantManager:
         )
 
     def _publish_discovery(self, component: str, object_id: str, config: Dict):
-        """Publish a discovery config message"""
+        """
+        Publish a Home Assistant MQTT discovery message.
+
+        Args:
+            component: The component type (sensor, switch, etc.)
+            object_id: The object ID for the entity
+            config: The discovery configuration
+        """
         try:
+            # Create the discovery topic
+            topic = f"{self.base_topic}/{component}/{self.unique_id_prefix}/{object_id}/config"
+
+            # Store the topic for later cleanup
+            self.published_entities.add(topic)
+
+            # Convert config to JSON
+            payload = json.dumps(config)
+
             # Add availability
             config["availability"] = [
                 {
@@ -317,14 +333,6 @@ class HomeAssistantManager:
                     "payload_not_available": "offline",
                 }
             ]
-
-            # Build discovery topic with unique prefix (format: homeassistant/[component]/[node_id]/[object_id]/config)
-            # Use the unique prefix for the node_id to avoid conflicts
-            topic = f"{self.base_topic}/{component}/{self.unique_id_prefix}/{object_id}/config"
-            payload = json.dumps(config)
-
-            # Track this entity for cleanup
-            self.published_entities.add((component, object_id))
 
             print(f"\nPublishing discovery message:")
             print(f"Topic: {topic}")
@@ -537,17 +545,7 @@ class HomeAssistantManager:
 
     def update_component_status(self, component: str, status: str):
         """Update component status"""
-        # Map component names to their topic names if needed
-        topic_map = {
-            "pattern_server": "pattern_server",
-            "controller": "led_controller",  # Ensure this matches the discovery topic
-        }
-
-        # Get the correct topic name
-        topic_name = topic_map.get(component, component)
-
-        # Publish the status
-        self._publish_with_retry(f"led/status/{topic_name}", status, retain=True)
+        self._publish_with_retry(f"led/status/{component}", status, retain=True)
 
     def update_performance_metrics(self, fps: float, frame_time: float):
         """Update performance metrics"""
@@ -574,10 +572,13 @@ class HomeAssistantManager:
             "light",
             "select",
             "number",
+            "input_select",
+            "input_number",
         ]
 
         # List of known object IDs that might have been created in previous versions
         known_object_ids = [
+            # Current format
             "led_fps",
             "led_frame_time",
             "led_last_reset",
@@ -594,6 +595,34 @@ class HomeAssistantManager:
             "pattern_scale",
             "pattern_intensity",
             "led_brightness",
+            # Alternative formats
+            "fps",
+            "frame_time",
+            "last_reset",
+            "power",
+            "reset",
+            "clear",
+            "stop",
+            "pattern_select",
+            "brightness",
+            # Prefixed formats
+            "led_grid_fps",
+            "led_grid_frame_time",
+            "led_grid_last_reset",
+            "led_grid_pattern_server_status",
+            "led_grid_mqtt_status",
+            "led_grid_power",
+            "led_grid_reset",
+            "led_grid_clear",
+            "led_grid_stop",
+            "led_grid_pattern_select",
+            "led_grid_pattern_variation",
+            "led_grid_pattern_color_mode",
+            "led_grid_pattern_speed",
+            "led_grid_pattern_scale",
+            "led_grid_pattern_intensity",
+            "led_grid_pattern_variation_amount",
+            "led_grid_brightness",
         ]
 
         # Clean up entities with known IDs
@@ -607,7 +636,35 @@ class HomeAssistantManager:
                 topic = f"{self.base_topic}/{component}/led_grid/{object_id}/config"
                 self._publish_with_retry(topic, "", retain=True)
 
+                # Clean up entities with just the object_id
+                topic = f"{self.base_topic}/{component}/{object_id}/config"
+                self._publish_with_retry(topic, "", retain=True)
+
+        # Also clean up any entities we've published in this session
+        for entity_topic in self.published_entities:
+            self._publish_with_retry(entity_topic, "", retain=True)
+
+        # Clear the set of published entities
+        self.published_entities.clear()
+
         # Wait a moment for the messages to be processed
         time.sleep(1)
 
         print("Cleanup complete.")
+
+    def force_cleanup(self):
+        """
+        Force cleanup of all LED Grid entities.
+        This can be called on demand to clean up stale entities.
+        """
+        print("Forcing cleanup of all LED Grid entities...")
+        self.cleanup_old_entities()
+
+        # Also publish to a special topic that Home Assistant can listen for
+        self._publish_with_retry(
+            "led/command/cleanup_complete",
+            json.dumps({"timestamp": time.time()}),
+            retain=False,
+        )
+
+        print("Force cleanup complete.")
