@@ -144,6 +144,7 @@ You can control the LED grid directly using MQTT commands:
 The system now provides feedback on command execution through response topics:
 
 - **Pattern Response**: `led/response/pattern`
+- **Parameters Response**: `led/response/params`
 - **Brightness Response**: `led/response/brightness`
 - **Power Response**: `led/response/power`
 

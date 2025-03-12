@@ -133,17 +133,38 @@
       - input_number.pattern_intensity
       - input_select.pattern_color_mode
   action:
-    service: mqtt.publish
-    data:
-      topic: "led/command/params"
-      payload_template: >
-        {"params": {
-          "speed": {{ states('input_number.pattern_speed') | float }},
-          "scale": {{ states('input_number.pattern_scale') | float }},
-          "variation": "{{ states('input_select.pattern_variation') }}",
-          "intensity": {{ states('input_number.pattern_intensity') | float }},
-          "color_mode": "{{ states('input_select.pattern_color_mode') }}"
-        }}
+    - service: mqtt.publish
+      data:
+        topic: "led/command/params"
+        payload_template: >
+          {"params": {
+            "speed": {{ states('input_number.pattern_speed') | float }},
+            "scale": {{ states('input_number.pattern_scale') | float }},
+            "variation": "{{ states('input_select.pattern_variation') }}",
+            "intensity": {{ states('input_number.pattern_intensity') | float }},
+            "color_mode": "{{ states('input_select.pattern_color_mode') }}"
+          }}
+    # Subscribe to response topic to handle errors
+    - service: mqtt.subscribe
+      data:
+        topic: "led/response/params"
+    # Wait for response
+    - wait_for_trigger:
+        - platform: mqtt
+          topic: "led/response/params"
+      timeout:
+        seconds: 5
+      continue_on_timeout: true
+    # Handle response
+    - if:
+        condition: template
+        value_template: "{{ wait.trigger.payload_json.success == false }}"
+      then:
+        - service: persistent_notification.create
+          data:
+            title: "LED Grid Error"
+            message: "Failed to update pattern parameters: {{ wait.trigger.payload_json.error }}"
+            notification_id: "led_grid_params_error"
 
 # Hardware Control
 - alias: Update LED Brightness

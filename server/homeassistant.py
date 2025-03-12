@@ -29,23 +29,39 @@ class HomeAssistantManager:
         - Status sensors (FPS, frame time, component status)
     """
 
-    def __init__(self, mqtt_client: mqtt.Client, base_topic: str = "homeassistant"):
+    def __init__(
+        self,
+        mqtt_client: mqtt.Client,
+        base_topic: str = "homeassistant",
+        unique_id_prefix: str = "led_grid",
+    ):
         """
         Initialize the Home Assistant Manager.
 
         Args:
             mqtt_client: MQTT client for communication with Home Assistant
             base_topic: Base topic for Home Assistant MQTT discovery (default: "homeassistant")
+            unique_id_prefix: Prefix for all unique IDs to prevent conflicts (default: "led_grid")
         """
         self.mqtt_client = mqtt_client
         self.base_topic = base_topic
+        self.unique_id_prefix = unique_id_prefix
+        # Generate a random suffix to ensure uniqueness across restarts
+        self.unique_suffix = f"_{random.randint(1000, 9999)}"
+
+        # Create a unique device identifier that will be consistent across restarts
+        device_id = f"{unique_id_prefix}_controller"
+
         self.device_info = {
-            "identifiers": ["led_grid_controller"],
+            "identifiers": [device_id],
             "name": "LED Grid",
             "model": "WS2812B 24x25",
             "manufacturer": "Custom",
             "sw_version": "1.0.0",
         }
+
+        # Keep track of published entities for cleanup
+        self.published_entities = set()
 
     def publish_discovery(self):
         """
@@ -77,6 +93,12 @@ class HomeAssistantManager:
 
         All entities are grouped under a single device in Home Assistant.
         """
+        # Clean up old entities first
+        self.cleanup_old_entities()
+
+        # Now publish new discovery messages
+        print("Publishing discovery messages...")
+
         # Pattern selector
         self._publish_discovery(
             "input_select",
@@ -91,7 +113,7 @@ class HomeAssistantManager:
                 "command_template": '{"name": "{{ value }}"}',
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_pattern_select",
+                "unique_id": f"{self.unique_id_prefix}_pattern_select",
                 "entity_category": "config",
             },
         )
@@ -118,7 +140,7 @@ class HomeAssistantManager:
                     "command_template": '{"params": {"' + param + '": {{ value }}}}',
                     "retain": True,
                     "device": self.device_info,
-                    "unique_id": f"led_grid_pattern_{param}",
+                    "unique_id": f"{self.unique_id_prefix}_pattern_{param}",
                     "entity_category": "config",
                 },
             )
@@ -140,7 +162,7 @@ class HomeAssistantManager:
                     "command_template": '{"params": {"' + param + '": "{{ value }}"}}',
                     "retain": True,
                     "device": self.device_info,
-                    "unique_id": f"led_grid_pattern_{param}",
+                    "unique_id": f"{self.unique_id_prefix}_pattern_{param}",
                     "entity_category": "config",
                 },
             )
@@ -162,7 +184,7 @@ class HomeAssistantManager:
                 "value_template": "{{ value }}",
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_brightness",
+                "unique_id": f"{self.unique_id_prefix}_brightness",
                 "entity_category": "config",
             },
         )
@@ -182,7 +204,7 @@ class HomeAssistantManager:
                 "state_off": "OFF",
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_power",
+                "unique_id": f"{self.unique_id_prefix}_power",
             },
         )
 
@@ -195,7 +217,7 @@ class HomeAssistantManager:
             name, icon, payload = config
             self._publish_discovery(
                 "button",
-                f"led_{button_id}",
+                f"{self.unique_id_prefix}_led_{button_id}",
                 {
                     "name": name,
                     "icon": icon,
@@ -203,85 +225,84 @@ class HomeAssistantManager:
                     "payload_press": payload,
                     "retain": True,
                     "device": self.device_info,
-                    "unique_id": f"led_grid_{button_id}",
+                    "unique_id": f"{self.unique_id_prefix}_{button_id}",
                 },
             )
 
         # Performance sensors
         self._publish_discovery(
             "sensor",
-            "led_fps",
+            f"{self.unique_id_prefix}_fps",
             {
-                "name": "LED FPS",
-                "icon": "mdi:speedometer",
-                "state_topic": "led/status/performance/fps",
+                "name": "FPS",
+                "state_topic": "led/status/fps",
                 "unit_of_measurement": "FPS",
-                "state_class": "measurement",
+                "icon": "mdi:speedometer",
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_fps",
+                "unique_id": f"{self.unique_id_prefix}_fps",
             },
         )
 
+        # Frame time sensor
         self._publish_discovery(
             "sensor",
-            "led_frame_time",
+            f"{self.unique_id_prefix}_frame_time",
             {
-                "name": "LED Frame Time",
-                "icon": "mdi:timer-outline",
+                "name": "Frame Time",
                 "state_topic": "led/status/performance/frame_time",
                 "unit_of_measurement": "ms",
+                "icon": "mdi:timer-outline",
                 "state_class": "measurement",
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_frame_time",
+                "unique_id": f"{self.unique_id_prefix}_frame_time",
             },
         )
 
+        # Last reset sensor
         self._publish_discovery(
             "sensor",
-            "led_last_reset",
+            f"{self.unique_id_prefix}_last_reset",
             {
-                "name": "Last Reset Time",
-                "icon": "mdi:clock-outline",
+                "name": "Last Reset",
                 "state_topic": "led/status/hardware/last_reset",
                 "device_class": "timestamp",
+                "icon": "mdi:clock-outline",
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_last_reset",
+                "unique_id": f"{self.unique_id_prefix}_last_reset",
             },
         )
 
         # Status sensors
         self._publish_discovery(
             "binary_sensor",
-            "pattern_server_status",
+            f"{self.unique_id_prefix}_pattern_server_status",
             {
                 "name": "Pattern Server Status",
-                "icon": "mdi:server",
                 "state_topic": "led/status/pattern_server",
                 "payload_on": "online",
                 "payload_off": "offline",
                 "device_class": "connectivity",
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_pattern_server_status",
+                "unique_id": f"{self.unique_id_prefix}_pattern_server_status",
             },
         )
 
         self._publish_discovery(
             "binary_sensor",
-            "led_controller_status",
+            f"{self.unique_id_prefix}_controller_status",
             {
-                "name": "LED Controller Status",
-                "icon": "mdi:led-strip",
+                "name": "Controller Status",
                 "state_topic": "led/status/led_controller",
                 "payload_on": "online",
                 "payload_off": "offline",
                 "device_class": "connectivity",
                 "retain": True,
                 "device": self.device_info,
-                "unique_id": "led_grid_controller_status",
+                "unique_id": f"{self.unique_id_prefix}_controller_status",
             },
         )
 
@@ -297,9 +318,13 @@ class HomeAssistantManager:
                 }
             ]
 
-            # Build discovery topic (format: homeassistant/[component]/[node_id]/[object_id]/config)
-            topic = f"{self.base_topic}/{component}/led_grid/{object_id}/config"
+            # Build discovery topic with unique prefix (format: homeassistant/[component]/[node_id]/[object_id]/config)
+            # Use the unique prefix for the node_id to avoid conflicts
+            topic = f"{self.base_topic}/{component}/{self.unique_id_prefix}/{object_id}/config"
             payload = json.dumps(config)
+
+            # Track this entity for cleanup
+            self.published_entities.add((component, object_id))
 
             print(f"\nPublishing discovery message:")
             print(f"Topic: {topic}")
@@ -393,8 +418,15 @@ class HomeAssistantManager:
         try:
             pattern_names = [p.definition().name for p in patterns]
             print(f"Publishing pattern options: {pattern_names}")
+            # Publish to both topics for backward compatibility
             self._publish_with_retry(
                 "led/status/pattern/list", json.dumps(pattern_names), retain=True
+            )
+            # Publish to the topic used by the automation
+            self._publish_with_retry(
+                "homeassistant/input_select/led_grid_pattern/options",
+                json.dumps(pattern_names),
+                retain=True,
             )
         except Exception as e:
             print(f"Error updating pattern options: {e}")
@@ -410,8 +442,15 @@ class HomeAssistantManager:
             if variation_param and "(" in variation_param.description:
                 options_str = variation_param.description.split("(")[1].split(")")[0]
                 variations = [opt.strip() for opt in options_str.split(",")]
+                # Publish to both topics for backward compatibility
                 self._publish_with_retry(
                     "led/status/pattern/variation_options",
+                    json.dumps(variations),
+                    retain=True,
+                )
+                # Publish to the topic used by the automation
+                self._publish_with_retry(
+                    "homeassistant/input_select/pattern_variation/options",
                     json.dumps(variations),
                     retain=True,
                 )
@@ -428,8 +467,15 @@ class HomeAssistantManager:
             if color_param and "(" in color_param.description:
                 options_str = color_param.description.split("(")[1].split(")")[0]
                 color_modes = [opt.strip() for opt in options_str.split(",")]
+                # Publish to both topics for backward compatibility
                 self._publish_with_retry(
                     "led/status/pattern/color_mode_options",
+                    json.dumps(color_modes),
+                    retain=True,
+                )
+                # Publish to the topic used by the automation
+                self._publish_with_retry(
+                    "homeassistant/input_select/pattern_color_mode/options",
                     json.dumps(color_modes),
                     retain=True,
                 )
@@ -491,7 +537,17 @@ class HomeAssistantManager:
 
     def update_component_status(self, component: str, status: str):
         """Update component status"""
-        self._publish_with_retry(f"led/status/{component}", status, retain=True)
+        # Map component names to their topic names if needed
+        topic_map = {
+            "pattern_server": "pattern_server",
+            "controller": "led_controller",  # Ensure this matches the discovery topic
+        }
+
+        # Get the correct topic name
+        topic_name = topic_map.get(component, component)
+
+        # Publish the status
+        self._publish_with_retry(f"led/status/{topic_name}", status, retain=True)
 
     def update_performance_metrics(self, fps: float, frame_time: float):
         """Update performance metrics"""
@@ -501,3 +557,57 @@ class HomeAssistantManager:
         self._publish_with_retry(
             "led/status/performance/frame_time", f"{frame_time * 1000:.1f}", retain=True
         )
+
+    def cleanup_old_entities(self):
+        """
+        Clean up old entities that are no longer needed.
+        This should be called before publishing new discovery messages.
+        """
+        print("Cleaning up old entities...")
+
+        # List of components to check for cleanup
+        components = [
+            "sensor",
+            "binary_sensor",
+            "switch",
+            "button",
+            "light",
+            "select",
+            "number",
+        ]
+
+        # List of known object IDs that might have been created in previous versions
+        known_object_ids = [
+            "led_fps",
+            "led_frame_time",
+            "led_last_reset",
+            "pattern_server_status",
+            "led_controller_status",
+            "led_power",
+            "led_reset",
+            "led_clear",
+            "led_stop",
+            "led_grid_pattern",
+            "pattern_variation",
+            "pattern_color_mode",
+            "pattern_speed",
+            "pattern_scale",
+            "pattern_intensity",
+            "led_brightness",
+        ]
+
+        # Clean up entities with known IDs
+        for component in components:
+            for object_id in known_object_ids:
+                # Clean up the entity without suffix
+                topic = f"{self.base_topic}/{component}/{self.unique_id_prefix}/{object_id}/config"
+                self._publish_with_retry(topic, "", retain=True)
+
+                # Clean up entities with the old format (led_grid as node_id)
+                topic = f"{self.base_topic}/{component}/led_grid/{object_id}/config"
+                self._publish_with_retry(topic, "", retain=True)
+
+        # Wait a moment for the messages to be processed
+        time.sleep(1)
+
+        print("Cleanup complete.")
