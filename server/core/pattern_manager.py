@@ -265,6 +265,7 @@ class PatternManager:
 
     def load_patterns(self):
         """Load available patterns"""
+        print("\n=== Starting Pattern Loading Process ===")
         try:
             # Get pattern definitions
             print("\n=== Loading Pattern Definitions ===")
@@ -319,10 +320,23 @@ class PatternManager:
                     print(f"Loading pattern: {pattern_def.name}")
                     pattern_class = PatternRegistry.get_pattern(pattern_def.name)
                     if pattern_class:
-                        pattern_instance = pattern_class(self.grid_config)
-                        self.patterns.append(pattern_instance)
-                        print(f"Successfully loaded pattern: {pattern_def.name}")
-                        successful_patterns += 1
+                        print(f"  - Found pattern class: {pattern_class.__name__}")
+                        try:
+                            print(f"  - Creating instance of {pattern_class.__name__}")
+                            pattern_instance = pattern_class(self.grid_config)
+                            print(f"  - Successfully created instance")
+                            self.patterns.append(pattern_instance)
+                            print(f"  - Added to patterns list")
+                            print(f"Successfully loaded pattern: {pattern_def.name}")
+                            successful_patterns += 1
+                        except Exception as instance_error:
+                            print(
+                                f"  - ERROR: Failed to create instance: {instance_error}"
+                            )
+                            import traceback
+
+                            traceback.print_exc()
+                            failed_patterns += 1
                     else:
                         print(f"ERROR: Pattern class not found for {pattern_def.name}")
                         print(
@@ -366,11 +380,16 @@ class PatternManager:
                     print(
                         "This suggests a more fundamental issue with the pattern system."
                     )
+
+            print("\n=== Pattern Loading Process Complete ===")
+            return True
         except Exception as e:
             print(f"ERROR: Failed to load patterns: {e}")
             import traceback
 
             traceback.print_exc()
+            print("\n=== Pattern Loading Process Failed ===")
+            return False
 
     def initialize(self):
         """Initialize the pattern manager"""

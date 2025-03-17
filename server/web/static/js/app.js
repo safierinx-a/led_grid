@@ -369,17 +369,13 @@ document.addEventListener("DOMContentLoaded", () => {
     statusMessage.textContent = "Reloading patterns...";
     statusMessage.className = "status-message loading";
 
-    // Call the reload patterns API endpoint
+    // Call the reload patterns API endpoint with simple error handling
     fetch("/api/reload_patterns", {
       method: "POST",
     })
       .then((response) => {
         if (!response.ok) {
-          return response.json().then((data) => {
-            throw new Error(
-              data.message || `HTTP error! Status: ${response.status}`
-            );
-          });
+          throw new Error(`HTTP error! Status: ${response.status}`);
         }
         return response.json();
       })
@@ -387,34 +383,9 @@ document.addEventListener("DOMContentLoaded", () => {
         console.log("Patterns reloaded:", data);
 
         // Update status message with success info
-        statusMessage.textContent = data.message;
+        statusMessage.textContent =
+          data.message || "Patterns reloaded successfully";
         statusMessage.className = "status-message success";
-
-        // Add detailed stats if available
-        if (data.stats) {
-          const statsDetails = document.createElement("div");
-          statsDetails.className = "reload-stats";
-
-          // Create stats summary
-          let statsHtml = `<p>Before: ${data.stats.before_count} patterns | After: ${data.stats.after_count} patterns</p>`;
-
-          // Show new patterns if any
-          if (data.stats.new_patterns && data.stats.new_patterns.length > 0) {
-            statsHtml += `<p class="new-patterns">New patterns: ${data.stats.new_patterns.join(
-              ", "
-            )}</p>`;
-          }
-
-          // Show lost patterns if any
-          if (data.stats.lost_patterns && data.stats.lost_patterns.length > 0) {
-            statsHtml += `<p class="lost-patterns">Lost patterns: ${data.stats.lost_patterns.join(
-              ", "
-            )}</p>`;
-          }
-
-          statsDetails.innerHTML = statsHtml;
-          statusMessage.appendChild(statsDetails);
-        }
 
         // Reload the patterns in the UI
         loadPatterns();
