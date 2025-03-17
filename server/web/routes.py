@@ -196,16 +196,10 @@ def get_status():
 
 @app.route("/api/reload_patterns", methods=["POST"])
 def reload_patterns():
-    """Reload patterns from disk"""
-    print("\n=== Reloading Patterns ===")
+    """Manually reload patterns"""
+    print("\n=== API: Reload Patterns Request ===")
 
     try:
-        # Store the original pattern count for comparison
-        original_pattern_count = len(led_server.pattern_manager.patterns)
-        original_pattern_names = [
-            p.definition().name for p in led_server.pattern_manager.patterns
-        ]
-
         # Reload patterns
         led_server.pattern_manager.load_patterns()
 
@@ -213,14 +207,11 @@ def reload_patterns():
         patterns = led_server.pattern_manager.patterns
         pattern_names = [p.definition().name for p in patterns]
 
-        # Simple response with minimal processing
         return jsonify(
             {
                 "success": True,
                 "message": f"Successfully reloaded {len(patterns)} patterns",
                 "patterns": pattern_names,
-                "before_count": original_pattern_count,
-                "after_count": len(patterns),
             }
         )
     except Exception as e:
@@ -229,7 +220,6 @@ def reload_patterns():
 
         traceback.print_exc()
 
-        # Simple error response with minimal processing
         return jsonify(
             {"success": False, "message": f"Error reloading patterns: {str(e)}"}
         ), 500
