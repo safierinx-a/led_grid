@@ -181,8 +181,47 @@ def main():
         f"Available patterns: {[p.definition().name for p in server.pattern_manager.patterns]}"
     )
 
+    # Start the web server in a separate thread
+    web_thread = None
+    try:
+        from server.web import create_app, socketio
+
+        print("\n=== Starting Web Server ===")
+        app = create_app(server)
+
+        # Get port from environment or use default
+        port = int(os.environ.get("WEB_PORT", 5001))
+
+        # Define a function to run the web server
+        def run_web_server():
+            print(f"Starting web server on port {port}...")
+            socketio.run(
+                app, host="0.0.0.0", port=port, debug=False, use_reloader=False
+            )
+
+        # Start the web server in a separate thread
+        web_thread = threading.Thread(target=run_web_server)
+        web_thread.daemon = True
+        web_thread.start()
+        print("Web server thread started")
+    except Exception as e:
+        print(f"Error starting web server: {e}")
+        traceback.print_exc()
+        print("Continuing without web server...")
+
     # Run server
-    server.run()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("\nReceived shutdown signal")
+    finally:
+        print("Shutting down...")
+        server.stop()
+
+        # Wait for web thread to terminate
+        if web_thread and web_thread.is_alive():
+            print("Waiting for web server to terminate...")
+            web_thread.join(timeout=5)
 
 
 if __name__ == "__main__":

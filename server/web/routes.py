@@ -200,20 +200,42 @@ def reload_patterns():
     print("\n=== API: Reload Patterns Request ===")
 
     try:
+        # Store the original pattern count for comparison
+        original_count = len(led_server.pattern_manager.patterns)
+        original_names = [
+            p.definition().name for p in led_server.pattern_manager.patterns
+        ]
+        print(f"Original patterns: {original_count} patterns")
+
         # Reload patterns
-        led_server.pattern_manager.load_patterns()
+        print("Calling pattern_manager.load_patterns()...")
+        success = led_server.pattern_manager.load_patterns()
+
+        if not success:
+            print("Pattern manager reported loading failure")
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "Pattern manager reported loading failure",
+                    "patterns": original_names,
+                }
+            ), 500
 
         # Get updated pattern list
         patterns = led_server.pattern_manager.patterns
         pattern_names = [p.definition().name for p in patterns]
+        print(f"Reloaded patterns: {len(patterns)} patterns")
 
-        return jsonify(
-            {
-                "success": True,
-                "message": f"Successfully reloaded {len(patterns)} patterns",
-                "patterns": pattern_names,
-            }
-        )
+        # Prepare response
+        response = {
+            "success": True,
+            "message": f"Successfully reloaded {len(patterns)} patterns",
+            "patterns": pattern_names,
+            "before_count": original_count,
+            "after_count": len(patterns),
+        }
+
+        return jsonify(response)
     except Exception as e:
         print(f"Error reloading patterns: {e}")
         import traceback
