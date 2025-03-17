@@ -4,25 +4,70 @@
  */
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Grid dimensions
-  const width = 24;
-  const height = 25;
+  // Grid dimensions (will be configurable)
+  let width = 24;
+  let height = 25;
+  let pixelSize = 15; // Default pixel size in px
+  let pixelGap = 1; // Default gap between pixels in px
+  let ledStripMode = false; // LED strip mode toggle
+
+  // Hardware state
+  let powerState = true;
+  let brightnessValue = 1.0;
 
   // Create grid
   const gridContainer = document.getElementById("grid-container");
-  const pixels = [];
+  let pixels = [];
 
-  for (let y = 0; y < height; y++) {
-    pixels[y] = [];
-    for (let x = 0; x < width; x++) {
-      const pixel = document.createElement("div");
-      pixel.className = "pixel";
-      pixel.dataset.x = x;
-      pixel.dataset.y = y;
-      gridContainer.appendChild(pixel);
-      pixels[y][x] = pixel;
+  function createGrid() {
+    // Clear existing grid
+    gridContainer.innerHTML = "";
+    pixels = [];
+
+    if (ledStripMode) {
+      // In LED strip mode, we create a single row with many columns
+      // This simulates a 60 pixel/meter WS2812B LED strip
+      width = 60; // 60 pixels per meter
+      height = 1; // Single row
+      pixelSize = 10; // Smaller pixels
+      pixelGap = 2; // Slightly larger gap
+
+      // Add LED strip mode class to grid container
+      gridContainer.classList.add("led-strip-mode");
+    } else {
+      // Remove LED strip mode class if not in LED strip mode
+      gridContainer.classList.remove("led-strip-mode");
     }
+
+    // Update grid container style
+    gridContainer.style.gridTemplateColumns = `repeat(${width}, ${pixelSize}px)`;
+    gridContainer.style.gridTemplateRows = `repeat(${height}, ${pixelSize}px)`;
+    gridContainer.style.gap = `${pixelGap}px`;
+
+    // Create new grid
+    for (let y = 0; y < height; y++) {
+      pixels[y] = [];
+      for (let x = 0; x < width; x++) {
+        const pixel = document.createElement("div");
+        pixel.className = "pixel";
+        pixel.dataset.x = x;
+        pixel.dataset.y = y;
+        pixel.style.width = `${pixelSize}px`;
+        pixel.style.height = `${pixelSize}px`;
+        gridContainer.appendChild(pixel);
+        pixels[y][x] = pixel;
+      }
+    }
+
+    // Update input fields to match current grid configuration
+    document.getElementById("grid-width").value = width;
+    document.getElementById("grid-height").value = height;
+    document.getElementById("pixel-size").value = pixelSize;
+    document.getElementById("pixel-gap").value = pixelGap;
   }
+
+  // Initialize grid
+  createGrid();
 
   // Connect to WebSocket
   const socket = io();
@@ -35,7 +80,19 @@ document.addEventListener("DOMContentLoaded", () => {
       for (let x = 0; x < width; x++) {
         if (grid[y] && grid[y][x]) {
           const [r, g, b] = grid[y][x];
-          pixels[y][x].style.backgroundColor = `rgb(${r},${g},${b})`;
+          // Apply brightness to the displayed colors
+          const adjustedR = Math.floor(r * brightnessValue);
+          const adjustedG = Math.floor(g * brightnessValue);
+          const adjustedB = Math.floor(b * brightnessValue);
+
+          // Only show pixels if power is on
+          if (powerState) {
+            pixels[y][
+              x
+            ].style.backgroundColor = `rgb(${adjustedR},${adjustedG},${adjustedB})`;
+          } else {
+            pixels[y][x].style.backgroundColor = "#000";
+          }
         }
       }
     }
@@ -44,10 +101,115 @@ document.addEventListener("DOMContentLoaded", () => {
   // Handle connection status
   socket.on("connect", () => {
     console.log("Connected to server");
+    // Load current status when connected
+    loadStatus();
   });
 
   socket.on("disconnect", () => {
     console.log("Disconnected from server");
+  });
+
+  // Load hardware status
+  function loadStatus() {
+    fetch("/api/status")
+      .then((response) => response.json())
+      .then((data) => {
+        // Update power toggle
+        powerState = data.power;
+        document.getElementById("power-toggle").checked = powerState;
+
+        // Update brightness slider
+        brightnessValue = data.brightness;
+        const brightnessSlider = document.getElementById("brightness-slider");
+        brightnessSlider.value = brightnessValue;
+        document.querySelector(".brightness-value").textContent = `${Math.round(
+          brightnessValue * 100
+        )}%`;
+      })
+      .catch((error) => {
+        console.error("Error loading status:", error);
+      });
+  }
+
+  // Power toggle handler
+  const powerToggle = document.getElementById("power-toggle");
+  powerToggle.addEventListener("change", () => {
+    powerState = powerToggle.checked;
+
+    fetch("/api/power", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        state: powerState,
+      }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        console.log("Power set:", data);
+      })
+      .catch((error) => {
+        console.error("Error setting power:", error);
+        // Revert UI if there was an error
+        powerToggle.checked = !powerState;
+        powerState = !powerState;
+      });
+  });
+
+  // Brightness slider handler
+  const brightnessSlider = document.getElementById("brightness-slider");
+  const brightnessValue_el = document.querySelector(".brightness-value");
+
+  brightnessSlider.addEventListener("input", () => {
+    brightnessValue = parseFloat(brightnessSlider.value);
+    brightnessValue_el.textContent = `${Math.round(brightnessValue * 100)}%`;
+  });
+
+  brightnessSlider.addEventListener("change", () => {
+    fetch("/api/brightness", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        value: brightnessValue,
+      }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        console.log("Brightness set:", data);
+      })
+      .catch((error) => {
+        console.error("Error setting brightness:", error);
+      });
+  });
+
+  // LED Strip Mode toggle handler
+  const ledStripToggle = document.getElementById("led-strip-mode");
+  ledStripToggle.addEventListener("change", () => {
+    ledStripMode = ledStripToggle.checked;
+    createGrid(); // Recreate grid with new settings
+  });
+
+  // Grid configuration apply button handler
+  document.getElementById("apply-grid-config").addEventListener("click", () => {
+    // Only apply custom dimensions if not in LED strip mode
+    if (!ledStripMode) {
+      width = parseInt(document.getElementById("grid-width").value);
+      height = parseInt(document.getElementById("grid-height").value);
+      pixelSize = parseInt(document.getElementById("pixel-size").value);
+      pixelGap = parseInt(document.getElementById("pixel-gap").value);
+
+      // Validate values
+      width = Math.max(1, Math.min(100, width));
+      height = Math.max(1, Math.min(100, height));
+      pixelSize = Math.max(1, Math.min(50, pixelSize));
+      pixelGap = Math.max(0, Math.min(10, pixelGap));
+    }
+
+    // Update grid
+    createGrid();
   });
 
   // Load patterns
