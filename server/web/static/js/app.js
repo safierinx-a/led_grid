@@ -353,70 +353,17 @@ document.addEventListener("DOMContentLoaded", () => {
   reloadButton.style.marginTop = "8px";
   reloadButton.textContent = "Reload Patterns";
   reloadButton.addEventListener("click", () => {
-    // Show loading state
-    reloadButton.disabled = true;
-    reloadButton.textContent = "Reloading...";
-
-    // Create a status message element if it doesn't exist
-    let statusMessage = document.getElementById("pattern-reload-status");
-    if (!statusMessage) {
-      statusMessage = document.createElement("div");
-      statusMessage.id = "pattern-reload-status";
-      statusMessage.className = "status-message";
-      patternSelector.appendChild(statusMessage);
-    }
-
-    statusMessage.textContent = "Reloading patterns...";
-    statusMessage.className = "status-message loading";
-
-    // Call the reload patterns API endpoint with simple error handling
+    // Call the reload patterns API endpoint
     fetch("/api/reload_patterns", {
       method: "POST",
     })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! Status: ${response.status}`);
-        }
-        return response.json();
-      })
+      .then((response) => response.json())
       .then((data) => {
         console.log("Patterns reloaded:", data);
-
-        // Update status message with success info
-        statusMessage.textContent =
-          data.message || "Patterns reloaded successfully";
-        statusMessage.className = "status-message success";
-
-        // Reload the patterns in the UI
-        loadPatterns();
+        loadPatterns(); // Reload the patterns in the UI
       })
       .catch((error) => {
         console.error("Error reloading patterns:", error);
-
-        // Update status message with error info
-        statusMessage.textContent = `Error: ${error.message}`;
-        statusMessage.className = "status-message error";
-
-        // Try to reload patterns anyway to show what's available
-        loadPatterns();
-      })
-      .finally(() => {
-        // Reset button state
-        reloadButton.disabled = false;
-        reloadButton.textContent = "Reload Patterns";
-
-        // Set a timeout to clear the status message after 10 seconds
-        setTimeout(() => {
-          if (statusMessage.parentNode) {
-            statusMessage.className = "status-message fade-out";
-            setTimeout(() => {
-              if (statusMessage.parentNode) {
-                statusMessage.textContent = "";
-                statusMessage.className = "status-message";
-              }
-            }, 1000);
-          }
-        }, 10000);
       });
   });
   patternSelector.appendChild(reloadButton);
