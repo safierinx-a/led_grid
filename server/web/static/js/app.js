@@ -353,20 +353,89 @@ document.addEventListener("DOMContentLoaded", () => {
   reloadButton.style.marginTop = "8px";
   reloadButton.textContent = "Reload Patterns";
   reloadButton.addEventListener("click", () => {
+    // Disable button during reload
+    reloadButton.disabled = true;
+    reloadButton.textContent = "Reloading...";
+
     // Call the reload patterns API endpoint
     fetch("/api/reload_patterns", {
       method: "POST",
     })
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) {
+          return response.json().then((data) => {
+            throw new Error(
+              data.message || `HTTP error! Status: ${response.status}`
+            );
+          });
+        }
+        return response.json();
+      })
       .then((data) => {
         console.log("Patterns reloaded:", data);
-        loadPatterns(); // Reload the patterns in the UI
+
+        // Show success message
+        const message = `${data.message} (${data.before_count} → ${data.after_count})`;
+        showNotification(message, "success");
+
+        // Reload the patterns in the UI
+        loadPatterns();
       })
       .catch((error) => {
         console.error("Error reloading patterns:", error);
+
+        // Show error message
+        showNotification(`Error: ${error.message}`, "error");
+
+        // Try to reload patterns anyway to show what's available
+        loadPatterns();
+      })
+      .finally(() => {
+        // Re-enable button
+        reloadButton.disabled = false;
+        reloadButton.textContent = "Reload Patterns";
       });
   });
   patternSelector.appendChild(reloadButton);
+
+  // Helper function to show notifications
+  function showNotification(message, type = "info") {
+    // Create notification element if it doesn't exist
+    let notification = document.getElementById("notification");
+    if (!notification) {
+      notification = document.createElement("div");
+      notification.id = "notification";
+      document.body.appendChild(notification);
+
+      // Add styles
+      notification.style.position = "fixed";
+      notification.style.bottom = "20px";
+      notification.style.right = "20px";
+      notification.style.padding = "10px 20px";
+      notification.style.borderRadius = "4px";
+      notification.style.color = "#fff";
+      notification.style.zIndex = "1000";
+      notification.style.transition = "opacity 0.3s ease";
+    }
+
+    // Set type-specific styles
+    if (type === "success") {
+      notification.style.backgroundColor = "rgba(3, 218, 198, 0.9)";
+    } else if (type === "error") {
+      notification.style.backgroundColor = "rgba(207, 102, 121, 0.9)";
+    } else {
+      notification.style.backgroundColor = "rgba(187, 134, 252, 0.9)";
+    }
+
+    // Set message and show
+    notification.textContent = message;
+    notification.style.opacity = "1";
+
+    // Hide after 5 seconds
+    setTimeout(() => {
+      notification.style.opacity = "0";
+    }, 5000);
+  }
 
   // Set pattern function
   function setPattern(patternName, params = {}) {
