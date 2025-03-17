@@ -36,6 +36,68 @@
             </section>
 
             <section class="controls-section">
+                <!-- Hardware Controls Section -->
+                <div class="hardware-controls">
+                    <h2>Hardware Controls</h2>
+                    <div class="control-row">
+                        <div class="power-control">
+                            <label for="power-toggle">Power</label>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="power-toggle" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="brightness-control">
+                            <label for="brightness-slider">Brightness</label>
+                            <input type="range" id="brightness-slider" min="0" max="1" step="0.01" value="1">
+                            <span class="brightness-value">100%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Grid Configuration Section -->
+                <div class="grid-config">
+                    <h2>Grid Configuration</h2>
+                    <div class="control-row">
+                        <div class="grid-control">
+                            <label for="grid-width">Width</label>
+                            <input type="number" id="grid-width" min="1" max="100" value="24">
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="grid-control">
+                            <label for="grid-height">Height</label>
+                            <input type="number" id="grid-height" min="1" max="100" value="25">
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="grid-control">
+                            <label for="pixel-size">Pixel Size (px)</label>
+                            <input type="number" id="pixel-size" min="1" max="50" value="15">
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="grid-control">
+                            <label for="pixel-gap">Gap Size (px)</label>
+                            <input type="number" id="pixel-gap" min="0" max="10" value="1">
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="led-strip-toggle">
+                            <label for="led-strip-mode">LED Strip Mode</label>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="led-strip-mode">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <button id="apply-grid-config" class="preset-button">Apply Configuration</button>
+                    </div>
+                </div>
+
                 <div class="pattern-selector">
                     <h2>Current Pattern</h2>
                     <select id="pattern-select">

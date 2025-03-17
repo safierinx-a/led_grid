@@ -94,38 +94,148 @@ body {
   display: flex;
   justify-content: center;
   align-items: center;
+  overflow: auto;
+  max-height: 70vh;
 }
 
 .grid-container {
   display: grid;
-  grid-template-columns: repeat(24, 15px);
-  grid-template-rows: repeat(25, 15px);
-  gap: 1px;
   background-color: rgba(0, 0, 0, 0.3);
   padding: var(--spacing-sm);
   border-radius: var(--border-radius);
 }
 
 .pixel {
-  width: 15px;
-  height: 15px;
   background-color: #000;
-  border-radius: 2px;
+  border-radius: 50%;
   transition: background-color 0.1s ease;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
 }
 
 .controls-section {
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-md);
+}
+
+/* Hardware Controls Styles */
+.hardware-controls {
+  margin-bottom: var(--spacing-lg);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.control-row {
   display: flex;
-  flex-direction: column;
-  gap: var(--spacing-lg);
+  align-items: center;
+  margin-bottom: var(--spacing-md);
+}
+
+.power-control,
+.brightness-control {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.power-control label,
+.brightness-control label {
+  flex: 0 0 100px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* Toggle Switch Styles */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 50px;
+  height: 24px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.2);
+  transition: 0.4s;
+  border-radius: 24px;
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.4s;
+  border-radius: 50%;
+}
+
+input:checked + .toggle-slider {
+  background-color: var(--primary-color);
+}
+
+input:checked + .toggle-slider:before {
+  transform: translateX(26px);
+}
+
+/* Brightness Slider Styles */
+.brightness-control {
+  display: flex;
+  align-items: center;
+}
+
+.brightness-control input[type="range"] {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.brightness-control input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary-color);
+  cursor: pointer;
+}
+
+.brightness-control input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary-color);
+  cursor: pointer;
+  border: none;
+}
+
+.brightness-value {
+  margin-left: var(--spacing-md);
+  min-width: 50px;
+  text-align: right;
+  color: var(--text-secondary);
 }
 
 .pattern-selector,
 .parameters-container,
 .presets-container {
-  background-color: var(--surface-color);
-  border-radius: var(--border-radius);
-  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
 }
 
 h2 {
@@ -286,4 +396,88 @@ select {
     height: 8px;
     border-radius: 1px;
   }
+}
+
+/* Grid Configuration Styles */
+.grid-config {
+  margin-bottom: var(--spacing-lg);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.grid-control {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.grid-control label {
+  flex: 0 0 100px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.grid-control input[type="number"] {
+  width: 80px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--border-radius);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.grid-control input[type="number"]:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+/* Add a toggle for LED strip mode */
+.led-strip-toggle {
+  display: flex;
+  align-items: center;
+  margin-top: var(--spacing-md);
+}
+
+.led-strip-toggle label {
+  margin-right: var(--spacing-md);
+  color: var(--text-secondary);
+}
+
+/* Responsive adjustments for grid configuration */
+@media (max-width: 768px) {
+  .grid-control {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .grid-control label {
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .grid-control input[type="number"] {
+    width: 100%;
+  }
+}
+
+/* Make the grid look more like an LED strip */
+.led-strip-mode {
+  width: 100%;
+  overflow-x: auto;
+  padding: var(--spacing-md);
+}
+
+.led-strip-mode .grid-container {
+  grid-template-columns: repeat(60, 10px) !important;
+  grid-template-rows: 10px !important;
+  width: max-content;
+  min-width: 100%;
+}
+
+.led-strip-mode .pixel {
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50%;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
 }

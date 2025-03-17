@@ -102,6 +102,97 @@ def update_params():
         return jsonify({"success": False, "error": "No active pattern"}), 400
 
 
+@app.route("/api/power", methods=["POST"])
+def set_power():
+    """Set the power state of the LED Grid"""
+    data = request.json
+    power_state = data.get("state", False)
+
+    try:
+        # Update the power state in the pattern manager
+        led_server.pattern_manager.hardware_state["power"] = power_state
+
+        # Call the power control handler with the appropriate state
+        state_str = "ON" if power_state else "OFF"
+        led_server.pattern_manager._handle_power_control(state_str.encode())
+
+        return jsonify(
+            {
+                "success": True,
+                "power": power_state,
+                "message": f"Power set to {'ON' if power_state else 'OFF'}",
+            }
+        )
+    except Exception as e:
+        print(f"Error setting power state: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/brightness", methods=["POST"])
+def set_brightness():
+    """Set the global brightness of the LED Grid"""
+    data = request.json
+    brightness = data.get("value", 1.0)
+
+    try:
+        # Validate brightness value (0.0-1.0)
+        brightness = float(brightness)
+        brightness = max(0.0, min(1.0, brightness))
+
+        # Update the brightness in the pattern manager
+        led_server.pattern_manager.hardware_state["brightness"] = brightness
+
+        # Call the brightness control handler
+        led_server.pattern_manager._handle_brightness_control(str(brightness).encode())
+
+        return jsonify(
+            {
+                "success": True,
+                "brightness": brightness,
+                "message": f"Brightness set to {brightness:.2f} ({int(brightness * 255)}/255)",
+            }
+        )
+    except Exception as e:
+        print(f"Error setting brightness: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/status", methods=["GET"])
+def get_status():
+    """Get the current status of the LED Grid"""
+    try:
+        status = {
+            "power": led_server.pattern_manager.hardware_state.get("power", True),
+            "brightness": led_server.pattern_manager.hardware_state.get(
+                "brightness", 1.0
+            ),
+            "current_pattern": None,
+        }
+
+        # Add current pattern info if available
+        if led_server.pattern_manager.current_pattern:
+            try:
+                status["current_pattern"] = (
+                    led_server.pattern_manager.current_pattern.definition().name
+                )
+            except Exception as e:
+                print(f"Error getting current pattern name: {e}")
+
+        return jsonify(status)
+    except Exception as e:
+        print(f"Error getting status: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/reload_patterns", methods=["POST"])
 def reload_patterns():
     """Manually reload patterns"""
