@@ -198,7 +198,6 @@ def get_status():
 def reload_patterns():
     """Reload patterns from disk"""
     print("\n=== Reloading Patterns ===")
-    print(f"Request received at: {datetime.now().isoformat()}")
 
     try:
         # Store the original pattern count for comparison
@@ -206,67 +205,34 @@ def reload_patterns():
         original_pattern_names = [
             p.definition().name for p in led_server.pattern_manager.patterns
         ]
-        print(f"Original patterns ({original_pattern_count}): {original_pattern_names}")
 
         # Reload patterns
-        print("Calling pattern_manager.load_patterns()...")
         led_server.pattern_manager.load_patterns()
 
         # Get updated pattern list
         patterns = led_server.pattern_manager.patterns
         pattern_names = [p.definition().name for p in patterns]
-        print(f"Reloaded patterns ({len(patterns)}): {pattern_names}")
 
-        # Check if any patterns were lost during reload
-        lost_patterns = set(original_pattern_names) - set(pattern_names)
-        new_patterns = set(pattern_names) - set(original_pattern_names)
-
-        # Prepare detailed response
-        response = {
-            "success": True,
-            "message": f"Successfully reloaded {len(patterns)} patterns",
-            "patterns": pattern_names,
-            "stats": {
+        # Simple response with minimal processing
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Successfully reloaded {len(patterns)} patterns",
+                "patterns": pattern_names,
                 "before_count": original_pattern_count,
                 "after_count": len(patterns),
-                "lost_patterns": list(lost_patterns),
-                "new_patterns": list(new_patterns),
-            },
-        }
-
-        # Log the response
-        print(f"Reload response: {response}")
-
-        return jsonify(response)
+            }
+        )
     except Exception as e:
         print(f"Error reloading patterns: {e}")
         import traceback
 
-        error_traceback = traceback.format_exc()
-        print(error_traceback)
+        traceback.print_exc()
 
-        # Get current pattern list even after error
-        try:
-            current_patterns = led_server.pattern_manager.patterns
-            current_pattern_names = [p.definition().name for p in current_patterns]
-        except:
-            current_pattern_names = []
-
-        # Prepare detailed error response
-        error_response = {
-            "success": False,
-            "message": f"Error reloading patterns: {str(e)}",
-            "error_details": {
-                "type": type(e).__name__,
-                "traceback": error_traceback.split("\n"),
-            },
-            "current_patterns": current_pattern_names,
-        }
-
-        # Log the error response
-        print(f"Error response: {error_response}")
-
-        return jsonify(error_response), 500
+        # Simple error response with minimal processing
+        return jsonify(
+            {"success": False, "message": f"Error reloading patterns: {str(e)}"}
+        ), 500
 
 
 # WebSocket frame observer function
