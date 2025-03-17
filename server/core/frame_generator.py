@@ -6,7 +6,7 @@ import queue
 import json
 import zmq
 import traceback
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
@@ -45,6 +45,9 @@ class FrameGenerator:
         # Frame buffer
         self.frame_buffer = queue.Queue(maxsize=buffer_size)
 
+        # Frame observers list for external components
+        self.frame_observers: List[Callable[[Frame], None]] = []
+
         # ZMQ setup for frame delivery
         self.zmq_context = zmq.Context()
         self.frame_socket = self.zmq_context.socket(zmq.ROUTER)
@@ -69,6 +72,28 @@ class FrameGenerator:
 
         # Target frame rate
         self.target_frame_time = 1.0 / 60  # 60 FPS
+
+    def add_frame_observer(self, observer_func: Callable[[Frame], None]) -> None:
+        """Add a function to be called with each new frame
+
+        Args:
+            observer_func: Function that takes a Frame object as its argument
+        """
+        if observer_func not in self.frame_observers:
+            self.frame_observers.append(observer_func)
+            print(f"Added frame observer, total observers: {len(self.frame_observers)}")
+
+    def remove_frame_observer(self, observer_func: Callable[[Frame], None]) -> None:
+        """Remove a frame observer
+
+        Args:
+            observer_func: The observer function to remove
+        """
+        if observer_func in self.frame_observers:
+            self.frame_observers.remove(observer_func)
+            print(
+                f"Removed frame observer, remaining observers: {len(self.frame_observers)}"
+            )
 
     def bind_zmq(self):
         """Bind ZMQ socket for frame delivery"""
@@ -129,6 +154,15 @@ class FrameGenerator:
                 )
 
                 self.frame_sequence += 1
+
+                # Notify observers with the new frame
+                for observer in self.frame_observers:
+                    try:
+                        observer(frame)
+                    except Exception as e:
+                        print(f"Error in frame observer: {e}")
+                        traceback.print_exc()
+
                 return frame
 
         except Exception as e:
