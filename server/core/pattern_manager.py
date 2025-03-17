@@ -267,6 +267,7 @@ class PatternManager:
         """Load available patterns"""
         try:
             # Get pattern definitions
+            print("\n=== Loading Pattern Definitions ===")
             print("Loading pattern definitions from registry...")
             pattern_defs = PatternRegistry.list_patterns()
             print(f"Found {len(pattern_defs)} pattern definitions in registry")
@@ -275,22 +276,32 @@ class PatternManager:
                 print("WARNING: No pattern definitions found in registry!")
                 print("This could indicate that patterns were not properly registered.")
                 print("Check that all pattern modules are being imported correctly.")
+                print("Pattern Registry contents:", PatternRegistry._patterns)
+            else:
+                print("Pattern definitions found:")
+                for pattern_def in pattern_defs:
+                    print(f"  - {pattern_def.name}: {pattern_def.description}")
 
             # Create pattern instances
+            print("\n=== Creating Pattern Instances ===")
             self.patterns = []
             for pattern_def in pattern_defs:
                 try:
                     print(f"Loading pattern: {pattern_def.name}")
                     pattern_class = PatternRegistry.get_pattern(pattern_def.name)
                     if pattern_class:
-                        self.patterns.append(pattern_class(self.grid_config))
+                        pattern_instance = pattern_class(self.grid_config)
+                        self.patterns.append(pattern_instance)
                         print(f"Successfully loaded pattern: {pattern_def.name}")
                     else:
                         print(f"ERROR: Pattern class not found for {pattern_def.name}")
                 except Exception as e:
                     print(f"ERROR: Failed to load pattern {pattern_def.name}: {e}")
+                    import traceback
+
                     traceback.print_exc()
 
+            print(f"\n=== Pattern Loading Summary ===")
             print(f"Loaded {len(self.patterns)} patterns")
 
             # Print the names of all loaded patterns
@@ -302,6 +313,8 @@ class PatternManager:
                 print("This could indicate an issue with pattern initialization.")
         except Exception as e:
             print(f"ERROR: Failed to load patterns: {e}")
+            import traceback
+
             traceback.print_exc()
 
     def initialize(self):
