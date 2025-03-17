@@ -196,7 +196,12 @@ def main():
         def run_web_server():
             print(f"Starting web server on port {port}...")
             socketio.run(
-                app, host="0.0.0.0", port=port, debug=False, use_reloader=False
+                app,
+                host="0.0.0.0",
+                port=port,
+                debug=False,
+                use_reloader=False,
+                allow_unsafe_werkzeug=True,
             )
 
         # Start the web server in a separate thread
