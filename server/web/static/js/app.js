@@ -87,11 +87,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
           // Only show pixels if power is on
           if (powerState) {
-            pixels[y][
-              x
-            ].style.backgroundColor = `rgb(${adjustedR},${adjustedG},${adjustedB})`;
+            if (pixels[y] && pixels[y][x]) {
+              pixels[y][
+                x
+              ].style.backgroundColor = `rgb(${adjustedR},${adjustedG},${adjustedB})`;
+            }
           } else {
-            pixels[y][x].style.backgroundColor = "#000";
+            if (pixels[y] && pixels[y][x]) {
+              pixels[y][x].style.backgroundColor = "#000";
+            }
           }
         }
       }
@@ -103,6 +107,8 @@ document.addEventListener("DOMContentLoaded", () => {
     console.log("Connected to server");
     // Load current status when connected
     loadStatus();
+    // Load patterns after connection
+    loadPatterns();
   });
 
   socket.on("disconnect", () => {
@@ -212,85 +218,237 @@ document.addEventListener("DOMContentLoaded", () => {
     createGrid();
   });
 
-  // Load patterns
-  fetch("/api/patterns")
-    .then((response) => response.json())
-    .then((data) => {
-      const patternSelect = document.getElementById("pattern-select");
-      const patternGallery = document.getElementById("pattern-gallery");
+  // Function to load patterns
+  function loadPatterns() {
+    console.log("Loading patterns...");
 
-      // Clear loading option
-      patternSelect.innerHTML = "";
-
-      // Group patterns by category
-      const patternsByCategory = {};
-      data.patterns.forEach((pattern) => {
-        if (!patternsByCategory[pattern.category]) {
-          patternsByCategory[pattern.category] = [];
+    fetch("/api/patterns")
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
         }
-        patternsByCategory[pattern.category].push(pattern);
-      });
+        return response.json();
+      })
+      .then((data) => {
+        console.log("Patterns loaded:", data);
 
-      // Add patterns to select dropdown
-      Object.keys(patternsByCategory)
-        .sort()
-        .forEach((category) => {
-          const optgroup = document.createElement("optgroup");
-          optgroup.label = category.charAt(0).toUpperCase() + category.slice(1);
+        if (!data || !data.patterns || !Array.isArray(data.patterns)) {
+          console.error("Invalid pattern data received:", data);
+          return;
+        }
 
-          patternsByCategory[category].forEach((pattern) => {
-            const option = document.createElement("option");
-            option.value = pattern.name;
-            option.textContent = pattern.name;
-            optgroup.appendChild(option);
+        const patternSelect = document.getElementById("pattern-select");
+        const patternGallery = document.getElementById("pattern-gallery");
 
-            // Create pattern card for gallery
-            const card = document.createElement("div");
-            card.className = "pattern-card";
-            card.innerHTML = `
-                        <div class="pattern-preview"></div>
-                        <div class="pattern-info">
-                            <h3>${pattern.name}</h3>
-                            <p>${pattern.description}</p>
-                        </div>
-                    `;
-            card.addEventListener("click", () => {
-              setPattern(pattern.name);
-              patternSelect.value = pattern.name;
-              updateParameterControls(pattern);
-            });
-            patternGallery.appendChild(card);
-          });
+        // Clear existing content
+        patternSelect.innerHTML = "";
+        patternGallery.innerHTML = "";
 
-          patternSelect.appendChild(optgroup);
+        if (data.patterns.length === 0) {
+          patternSelect.innerHTML =
+            "<option value=''>No patterns available</option>";
+          patternGallery.innerHTML =
+            "<p>No patterns available. Try reloading patterns from the server.</p>";
+          return;
+        }
+
+        // Group patterns by category
+        const patternsByCategory = {};
+        data.patterns.forEach((pattern) => {
+          const category = pattern.category || "Uncategorized";
+          if (!patternsByCategory[category]) {
+            patternsByCategory[category] = [];
+          }
+          patternsByCategory[category].push(pattern);
         });
 
-      // Set current pattern if available
-      if (data.current_pattern) {
-        patternSelect.value = data.current_pattern;
-        const currentPattern = data.patterns.find(
-          (p) => p.name === data.current_pattern
-        );
-        if (currentPattern) {
-          updateParameterControls(currentPattern);
-        }
-      }
+        // Add patterns to select dropdown
+        Object.keys(patternsByCategory)
+          .sort()
+          .forEach((category) => {
+            const optgroup = document.createElement("optgroup");
+            optgroup.label =
+              category.charAt(0).toUpperCase() + category.slice(1);
 
-      // Handle pattern selection change
-      patternSelect.addEventListener("change", () => {
-        const patternName = patternSelect.value;
-        if (patternName) {
-          setPattern(patternName);
-          const pattern = data.patterns.find((p) => p.name === patternName);
-          if (pattern) {
-            updateParameterControls(pattern);
+            patternsByCategory[category].forEach((pattern) => {
+              const option = document.createElement("option");
+              option.value = pattern.name;
+              option.textContent = pattern.name;
+              optgroup.appendChild(option);
+
+              // Create pattern card for gallery
+              const card = document.createElement("div");
+              card.className = "pattern-card";
+              card.innerHTML = `
+                <div class="pattern-preview"></div>
+                <div class="pattern-info">
+                    <h3>${pattern.name}</h3>
+                    <p>${pattern.description || "No description available"}</p>
+                </div>
+              `;
+              card.addEventListener("click", () => {
+                setPattern(pattern.name);
+                patternSelect.value = pattern.name;
+                updateParameterControls(pattern);
+              });
+              patternGallery.appendChild(card);
+            });
+
+            patternSelect.appendChild(optgroup);
+          });
+
+        // Set current pattern if available
+        if (data.current_pattern) {
+          patternSelect.value = data.current_pattern;
+          const currentPattern = data.patterns.find(
+            (p) => p.name === data.current_pattern
+          );
+          if (currentPattern) {
+            updateParameterControls(currentPattern);
           }
         }
+
+        // Handle pattern selection change
+        patternSelect.addEventListener("change", () => {
+          const patternName = patternSelect.value;
+          if (patternName) {
+            setPattern(patternName);
+            const pattern = data.patterns.find((p) => p.name === patternName);
+            if (pattern) {
+              updateParameterControls(pattern);
+            }
+          }
+        });
+      })
+      .catch((error) => {
+        console.error("Error loading patterns:", error);
+
+        // Show error message in UI
+        const patternSelect = document.getElementById("pattern-select");
+        const patternGallery = document.getElementById("pattern-gallery");
+
+        patternSelect.innerHTML =
+          "<option value=''>Error loading patterns</option>";
+        patternGallery.innerHTML = `
+          <div class="error-message">
+            <p>Error loading patterns. Please check the server connection.</p>
+            <button id="retry-patterns" class="preset-button">Retry</button>
+          </div>
+        `;
+
+        // Add retry button handler
+        document
+          .getElementById("retry-patterns")
+          ?.addEventListener("click", loadPatterns);
       });
+  }
+
+  // Initial patterns load
+  loadPatterns();
+
+  // Add reload patterns button
+  const patternSelector = document.querySelector(".pattern-selector");
+  const reloadButton = document.createElement("button");
+  reloadButton.className = "preset-button";
+  reloadButton.style.marginTop = "8px";
+  reloadButton.textContent = "Reload Patterns";
+  reloadButton.addEventListener("click", () => {
+    // Show loading state
+    reloadButton.disabled = true;
+    reloadButton.textContent = "Reloading...";
+
+    // Create a status message element if it doesn't exist
+    let statusMessage = document.getElementById("pattern-reload-status");
+    if (!statusMessage) {
+      statusMessage = document.createElement("div");
+      statusMessage.id = "pattern-reload-status";
+      statusMessage.className = "status-message";
+      patternSelector.appendChild(statusMessage);
+    }
+
+    statusMessage.textContent = "Reloading patterns...";
+    statusMessage.className = "status-message loading";
+
+    // Call the reload patterns API endpoint
+    fetch("/api/reload_patterns", {
+      method: "POST",
     })
-    .catch((error) => {
-      console.error("Error loading patterns:", error);
-    });
+      .then((response) => {
+        if (!response.ok) {
+          return response.json().then((data) => {
+            throw new Error(
+              data.message || `HTTP error! Status: ${response.status}`
+            );
+          });
+        }
+        return response.json();
+      })
+      .then((data) => {
+        console.log("Patterns reloaded:", data);
+
+        // Update status message with success info
+        statusMessage.textContent = data.message;
+        statusMessage.className = "status-message success";
+
+        // Add detailed stats if available
+        if (data.stats) {
+          const statsDetails = document.createElement("div");
+          statsDetails.className = "reload-stats";
+
+          // Create stats summary
+          let statsHtml = `<p>Before: ${data.stats.before_count} patterns | After: ${data.stats.after_count} patterns</p>`;
+
+          // Show new patterns if any
+          if (data.stats.new_patterns && data.stats.new_patterns.length > 0) {
+            statsHtml += `<p class="new-patterns">New patterns: ${data.stats.new_patterns.join(
+              ", "
+            )}</p>`;
+          }
+
+          // Show lost patterns if any
+          if (data.stats.lost_patterns && data.stats.lost_patterns.length > 0) {
+            statsHtml += `<p class="lost-patterns">Lost patterns: ${data.stats.lost_patterns.join(
+              ", "
+            )}</p>`;
+          }
+
+          statsDetails.innerHTML = statsHtml;
+          statusMessage.appendChild(statsDetails);
+        }
+
+        // Reload the patterns in the UI
+        loadPatterns();
+      })
+      .catch((error) => {
+        console.error("Error reloading patterns:", error);
+
+        // Update status message with error info
+        statusMessage.textContent = `Error: ${error.message}`;
+        statusMessage.className = "status-message error";
+
+        // Try to reload patterns anyway to show what's available
+        loadPatterns();
+      })
+      .finally(() => {
+        // Reset button state
+        reloadButton.disabled = false;
+        reloadButton.textContent = "Reload Patterns";
+
+        // Set a timeout to clear the status message after 10 seconds
+        setTimeout(() => {
+          if (statusMessage.parentNode) {
+            statusMessage.className = "status-message fade-out";
+            setTimeout(() => {
+              if (statusMessage.parentNode) {
+                statusMessage.textContent = "";
+                statusMessage.className = "status-message";
+              }
+            }, 1000);
+          }
+        }, 10000);
+      });
+  });
+  patternSelector.appendChild(reloadButton);
 
   // Set pattern function
   function setPattern(patternName, params = {}) {
@@ -318,6 +476,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const parametersList = document.getElementById("parameters-list");
     parametersList.innerHTML = "";
 
+    if (!pattern.parameters || pattern.parameters.length === 0) {
+      parametersList.innerHTML =
+        "<p>No adjustable parameters for this pattern</p>";
+      return;
+    }
+
     pattern.parameters.forEach((param) => {
       const paramContainer = document.createElement("div");
       paramContainer.className = "parameter";
@@ -325,7 +489,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const label = document.createElement("label");
       label.textContent =
         param.name.charAt(0).toUpperCase() + param.name.slice(1);
-      label.title = param.description;
+      label.title = param.description || "";
 
       let input;
 
@@ -351,6 +515,7 @@ document.addEventListener("DOMContentLoaded", () => {
         paramContainer.appendChild(valueDisplay);
       } else if (
         param.type === "str" &&
+        param.description &&
         param.description.includes("(") &&
         param.description.includes(")")
       ) {

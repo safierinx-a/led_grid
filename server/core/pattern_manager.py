@@ -277,6 +277,32 @@ class PatternManager:
                 print("This could indicate that patterns were not properly registered.")
                 print("Check that all pattern modules are being imported correctly.")
                 print("Pattern Registry contents:", PatternRegistry._patterns)
+
+                # Try to diagnose the issue
+                print("\n=== Pattern Registry Diagnosis ===")
+                if not hasattr(PatternRegistry, "_patterns"):
+                    print("ERROR: PatternRegistry._patterns attribute not found!")
+                    print(
+                        "This suggests a serious issue with the PatternRegistry class."
+                    )
+                elif PatternRegistry._patterns is None:
+                    print("ERROR: PatternRegistry._patterns is None!")
+                    print("The registry dictionary has not been initialized properly.")
+                elif not isinstance(PatternRegistry._patterns, dict):
+                    print(
+                        f"ERROR: PatternRegistry._patterns is not a dictionary! Type: {type(PatternRegistry._patterns)}"
+                    )
+                    print(
+                        "The registry should be a dictionary mapping pattern names to pattern classes."
+                    )
+                else:
+                    print("PatternRegistry._patterns is an empty dictionary.")
+                    print(
+                        "This suggests that no patterns were registered during import."
+                    )
+                    print(
+                        "Check that pattern modules are imported and use the @PatternRegistry.register decorator."
+                    )
             else:
                 print("Pattern definitions found:")
                 for pattern_def in pattern_defs:
@@ -285,6 +311,9 @@ class PatternManager:
             # Create pattern instances
             print("\n=== Creating Pattern Instances ===")
             self.patterns = []
+            successful_patterns = 0
+            failed_patterns = 0
+
             for pattern_def in pattern_defs:
                 try:
                     print(f"Loading pattern: {pattern_def.name}")
@@ -293,16 +322,23 @@ class PatternManager:
                         pattern_instance = pattern_class(self.grid_config)
                         self.patterns.append(pattern_instance)
                         print(f"Successfully loaded pattern: {pattern_def.name}")
+                        successful_patterns += 1
                     else:
                         print(f"ERROR: Pattern class not found for {pattern_def.name}")
+                        print(
+                            f"This suggests a mismatch between pattern definitions and registered patterns."
+                        )
+                        failed_patterns += 1
                 except Exception as e:
                     print(f"ERROR: Failed to load pattern {pattern_def.name}: {e}")
                     import traceback
 
                     traceback.print_exc()
+                    failed_patterns += 1
 
             print(f"\n=== Pattern Loading Summary ===")
             print(f"Loaded {len(self.patterns)} patterns")
+            print(f"Successful: {successful_patterns}, Failed: {failed_patterns}")
 
             # Print the names of all loaded patterns
             pattern_names = [p.definition().name for p in self.patterns]
@@ -311,6 +347,25 @@ class PatternManager:
             if not self.patterns:
                 print("WARNING: No patterns were loaded successfully!")
                 print("This could indicate an issue with pattern initialization.")
+                print("Check the error messages above for more details.")
+
+                # Try to load a simple test pattern directly
+                print("\n=== Attempting to Load Test Pattern Directly ===")
+                try:
+                    from server.patterns.test_pattern import TestPattern
+
+                    test_pattern = TestPattern(self.grid_config)
+                    self.patterns.append(test_pattern)
+                    print("Successfully loaded test pattern directly!")
+                    print(
+                        "This suggests an issue with the pattern registration process."
+                    )
+                except Exception as e:
+                    print(f"Failed to load test pattern directly: {e}")
+                    traceback.print_exc()
+                    print(
+                        "This suggests a more fundamental issue with the pattern system."
+                    )
         except Exception as e:
             print(f"ERROR: Failed to load patterns: {e}")
             import traceback
