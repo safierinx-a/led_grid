@@ -56,7 +56,12 @@ def main():
     web_port = int(os.getenv("WEB_PORT", "5000"))
     web_thread = threading.Thread(
         target=lambda: socketio.run(
-            app, host="0.0.0.0", port=web_port, debug=False, use_reloader=False
+            app,
+            host="0.0.0.0",
+            port=web_port,
+            debug=False,
+            use_reloader=False,
+            allow_unsafe_werkzeug=True,
         )
     )
     web_thread.daemon = True

@@ -15,6 +15,12 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/health")
+def health_check():
+    """Health check endpoint for the LED Grid web server"""
+    return jsonify({"status": "ok", "service": "led_grid_web", "version": "1.0.0"})
+
+
 @app.route("/api/patterns", methods=["GET"])
 def get_patterns():
     """Get list of available patterns"""
