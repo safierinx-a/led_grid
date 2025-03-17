@@ -11,11 +11,13 @@ import os
 import sys
 import time
 import threading
+import traceback
 from dotenv import load_dotenv
 
 # Import server components
 from server.config.grid_config import DEFAULT_CONFIG
 from server.core.server import LEDServer
+from server.patterns.base import PatternRegistry, Pattern
 
 # Debug: Print the current directory and Python path
 print(f"Current directory: {os.getcwd()}")
@@ -23,119 +25,103 @@ print(f"Python path: {sys.path}")
 
 # Import all patterns to register them
 print("\n=== Importing Pattern Modules ===")
-try:
-    import server.patterns.test_pattern
 
-    print("✓ Imported test_pattern pattern")
-except Exception as e:
-    print(f"✗ Failed to import test_pattern pattern: {e}")
 
-try:
-    import server.patterns.plasma
+# Function to import a pattern module with detailed error reporting
+def import_pattern_module(module_name):
+    try:
+        module = __import__(f"server.patterns.{module_name}", fromlist=["*"])
+        print(f"✓ Imported {module_name} pattern")
 
-    print("✓ Imported plasma pattern")
-except Exception as e:
-    print(f"✗ Failed to import plasma pattern: {e}")
+        # Check if the module contains any classes that are registered with PatternRegistry
+        module_has_registered_patterns = False
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (
+                hasattr(attr, "__module__")
+                and attr.__module__ == f"server.patterns.{module_name}"
+                and isinstance(attr, type)  # Check if it's a class
+                and issubclass(attr, Pattern)  # Check if it's a Pattern subclass
+                and attr != Pattern  # Exclude the base Pattern class
+            ):
+                print(f"  - Found Pattern subclass: {attr.__name__}")
 
-try:
-    import server.patterns.rainbow_wave
+                # Check if this class is in the PatternRegistry
+                if hasattr(PatternRegistry, "_patterns") and PatternRegistry._patterns:
+                    for (
+                        pattern_name,
+                        pattern_class,
+                    ) in PatternRegistry._patterns.items():
+                        if pattern_class == attr:
+                            module_has_registered_patterns = True
+                            print(
+                                f"  - Confirmed registered in PatternRegistry: {pattern_name}"
+                            )
 
-    print("✓ Imported rainbow_wave pattern")
-except Exception as e:
-    print(f"✗ Failed to import rainbow_wave pattern: {e}")
+                # Check if it has a definition method
+                if hasattr(attr, "definition"):
+                    try:
+                        definition = attr.definition()
+                        print(f"  - Pattern definition: {definition.name}")
+                    except Exception as e:
+                        print(f"  - Error getting pattern definition: {e}")
+                else:
+                    print(
+                        f"  - Warning: Pattern class {attr.__name__} has no definition method"
+                    )
 
-try:
-    import server.patterns.fire
+        if not module_has_registered_patterns:
+            print(
+                f"  ! Warning: Module {module_name} imported but no patterns were registered"
+            )
+            print(
+                f"  ! Check that pattern classes have the @PatternRegistry.register decorator"
+            )
 
-    print("✓ Imported fire pattern")
-except Exception as e:
-    print(f"✗ Failed to import fire pattern: {e}")
+        return True
+    except Exception as e:
+        print(f"✗ Failed to import {module_name} pattern: {e}")
+        print(f"Traceback:")
+        traceback.print_exc()
+        return False
 
-try:
-    import server.patterns.matrix_rain
 
-    print("✓ Imported matrix_rain pattern")
-except Exception as e:
-    print(f"✗ Failed to import matrix_rain pattern: {e}")
+# Initialize the PatternRegistry if needed
+if not hasattr(PatternRegistry, "_patterns") or PatternRegistry._patterns is None:
+    print("Initializing PatternRegistry._patterns as it was not initialized")
+    PatternRegistry._patterns = {}
 
-try:
-    import server.patterns.game_of_life
+# Import patterns
+patterns_to_import = [
+    "test_pattern",  # Import test pattern first
+    "plasma",
+    "rainbow_wave",
+    "fire",
+    "matrix_rain",
+    "game_of_life",
+    "starfield",
+    "particle_system",
+    "waves",
+    "polyhedra3d",
+    "color_cycle",
+    "emoji",
+    "perlin_landscape",
+    "sine_wave",
+    "swarm_system",
+    "generative",
+]
 
-    print("✓ Imported game_of_life pattern")
-except Exception as e:
-    print(f"✗ Failed to import game_of_life pattern: {e}")
+successful_imports = 0
+for pattern_name in patterns_to_import:
+    if import_pattern_module(pattern_name):
+        successful_imports += 1
 
-try:
-    import server.patterns.starfield
+print(f"\n=== Pattern Import Summary ===")
+print(
+    f"Successfully imported {successful_imports} out of {len(patterns_to_import)} pattern modules"
+)
 
-    print("✓ Imported starfield pattern")
-except Exception as e:
-    print(f"✗ Failed to import starfield pattern: {e}")
-
-try:
-    import server.patterns.particle_system
-
-    print("✓ Imported particle_system pattern")
-except Exception as e:
-    print(f"✗ Failed to import particle_system pattern: {e}")
-
-try:
-    import server.patterns.waves
-
-    print("✓ Imported waves pattern")
-except Exception as e:
-    print(f"✗ Failed to import waves pattern: {e}")
-
-try:
-    import server.patterns.polyhedra3d
-
-    print("✓ Imported polyhedra3d pattern")
-except Exception as e:
-    print(f"✗ Failed to import polyhedra3d pattern: {e}")
-
-try:
-    import server.patterns.color_cycle
-
-    print("✓ Imported color_cycle pattern")
-except Exception as e:
-    print(f"✗ Failed to import color_cycle pattern: {e}")
-
-try:
-    import server.patterns.emoji
-
-    print("✓ Imported emoji pattern")
-except Exception as e:
-    print(f"✗ Failed to import emoji pattern: {e}")
-
-try:
-    import server.patterns.perlin_landscape
-
-    print("✓ Imported perlin_landscape pattern")
-except Exception as e:
-    print(f"✗ Failed to import perlin_landscape pattern: {e}")
-
-try:
-    import server.patterns.sine_wave
-
-    print("✓ Imported sine_wave pattern")
-except Exception as e:
-    print(f"✗ Failed to import sine_wave pattern: {e}")
-
-try:
-    import server.patterns.swarm_system
-
-    print("✓ Imported swarm_system pattern")
-except Exception as e:
-    print(f"✗ Failed to import swarm_system pattern: {e}")
-
-try:
-    import server.patterns.generative
-
-    print("✓ Imported generative pattern")
-except Exception as e:
-    print(f"✗ Failed to import generative pattern: {e}")
-
-# Import all modifiers to register them
+# Import modifiers
 print("\n=== Importing Modifier Modules ===")
 try:
     import server.modifiers.basic
@@ -143,54 +129,60 @@ try:
     print("✓ Imported basic modifiers")
 except Exception as e:
     print(f"✗ Failed to import basic modifiers: {e}")
+    traceback.print_exc()
 
-# Debug: Check the pattern registry
-from server.patterns.base import PatternRegistry
+# Print the contents of the pattern registry
+print("\n=== Pattern Registry Contents ===")
+if not hasattr(PatternRegistry, "_patterns") or not PatternRegistry._patterns:
+    print("! WARNING: Pattern registry is empty!")
+    print("! No patterns will be available in the UI.")
+    print(
+        "! Check that pattern modules are being imported correctly and patterns are registered."
+    )
 
-print(f"\n=== Pattern Registry Status ===")
-print(f"Registered patterns: {len(PatternRegistry._patterns)}")
-for name in PatternRegistry._patterns:
-    print(f"  - {name}")
+    # Try to diagnose the issue
+    print("\n=== Pattern Registry Diagnosis ===")
+    if not hasattr(PatternRegistry, "_patterns"):
+        print("ERROR: PatternRegistry._patterns attribute not found!")
+        print("This suggests a serious issue with the PatternRegistry class.")
+        print("Initializing it now as an empty dictionary.")
+        PatternRegistry._patterns = {}
+    elif PatternRegistry._patterns is None:
+        print("ERROR: PatternRegistry._patterns is None!")
+        print("The registry dictionary has not been initialized properly.")
+        print("Initializing it now as an empty dictionary.")
+        PatternRegistry._patterns = {}
+else:
+    print(f"Found {len(PatternRegistry._patterns)} registered patterns:")
+    for pattern_name, pattern_class in PatternRegistry._patterns.items():
+        try:
+            definition = pattern_class.definition()
+            print(
+                f"  - {pattern_name}: {definition.description} (Category: {definition.category})"
+            )
+        except Exception as e:
+            print(f"  - {pattern_name}: Error getting definition: {e}")
 
 
+# Create and run the server
 def main():
-    """Main entry point for the pattern server"""
+    """Main entry point"""
     # Load environment variables
     load_dotenv()
 
-    print("\n=== LED Grid Pattern Server ===\n")
-
-    # Create and start the server
+    # Create server
     server = LEDServer(DEFAULT_CONFIG)
 
-    # Start web server in a separate thread
-    from server.web import create_app, socketio
-
-    app = create_app(server)
-
-    web_port = int(os.getenv("WEB_PORT", "5000"))
-    web_thread = threading.Thread(
-        target=lambda: socketio.run(
-            app,
-            host="0.0.0.0",
-            port=web_port,
-            debug=False,
-            use_reloader=False,
-            allow_unsafe_werkzeug=True,
-        )
+    # Print server configuration
+    print("\n=== Server Configuration ===")
+    print(f"Grid dimensions: {server.grid_config.width}x{server.grid_config.height}")
+    print(f"Pattern manager: {server.pattern_manager}")
+    print(
+        f"Available patterns: {[p.definition().name for p in server.pattern_manager.patterns]}"
     )
-    web_thread.daemon = True
-    web_thread.start()
-    print(f"\nWeb dashboard started on port {web_port}")
-    print(f"Access the dashboard at http://localhost:{web_port}")
 
-    try:
-        server.run()
-    except KeyboardInterrupt:
-        print("\nShutdown requested...")
-    finally:
-        server.stop()
-        print("\nServer stopped.")
+    # Run server
+    server.run()
 
 
 if __name__ == "__main__":
