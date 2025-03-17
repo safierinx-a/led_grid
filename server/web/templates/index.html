@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LED Grid Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="20" height="20" rx="2" stroke="currentColor" stroke-width="2" />
+                    <rect x="6" y="6" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="14" y="6" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="6" y="14" width="4" height="4" rx="1" fill="currentColor" />
+                    <rect x="14" y="14" width="4" height="4" rx="1" fill="currentColor" />
+                </svg>
+                <h1>LED Grid</h1>
+            </div>
+            <nav class="main-nav">
+                <button class="active">Dashboard</button>
+                <button>Patterns</button>
+                <button>Editor</button>
+                <button>Settings</button>
+            </nav>
+        </header>
+
+        <main class="app-content">
+            <section class="grid-section">
+                <div class="grid-container" id="grid-container"></div>
+            </section>
+
+            <section class="controls-section">
+                <div class="pattern-selector">
+                    <h2>Current Pattern</h2>
+                    <select id="pattern-select">
+                        <option value="">Loading patterns...</option>
+                    </select>
+                </div>
+
+                <div class="parameters-container" id="parameters-container">
+                    <h2>Parameters</h2>
+                    <div class="parameters-list" id="parameters-list">
+                        <p>Select a pattern to see parameters</p>
+                    </div>
+                </div>
+
+                <div class="presets-container">
+                    <h2>Presets</h2>
+                    <div class="preset-buttons">
+                        <button class="preset-button">Save</button>
+                        <button class="preset-button">Load</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <section class="pattern-gallery">
+            <h2>Pattern Gallery</h2>
+            <div class="pattern-cards" id="pattern-gallery"></div>
+        </section>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+
+</html>

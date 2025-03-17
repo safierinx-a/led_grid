@@ -1,0 +1,135 @@
+"""
+Routes for the LED Grid web dashboard.
+
+This module defines the API endpoints and WebSocket handlers for the LED Grid dashboard.
+"""
+
+from flask import jsonify, request, render_template
+from flask_socketio import emit
+from server.web import app, socketio, led_server
+
+
+@app.route("/")
+def index():
+    """Serve the main dashboard page"""
+    return render_template("index.html")
+
+
+@app.route("/api/patterns", methods=["GET"])
+def get_patterns():
+    """Get list of available patterns"""
+    patterns = led_server.pattern_manager.patterns
+    pattern_data = []
+
+    for pattern in patterns:
+        definition = pattern.definition()
+        pattern_data.append(
+            {
+                "name": definition.name,
+                "description": definition.description,
+                "category": definition.category,
+                "tags": definition.tags,
+                "parameters": [
+                    {
+                        "name": param.name,
+                        "type": param.type.__name__,
+                        "default": param.default,
+                        "min_value": param.min_value,
+                        "max_value": param.max_value,
+                        "description": param.description,
+                    }
+                    for param in definition.parameters
+                    if not param.name.startswith("_")  # Hide internal parameters
+                ],
+            }
+        )
+
+    return jsonify(
+        {
+            "patterns": pattern_data,
+            "current_pattern": led_server.pattern_manager.current_pattern.definition().name
+            if led_server.pattern_manager.current_pattern
+            else None,
+        }
+    )
+
+
+@app.route("/api/patterns/set", methods=["POST"])
+def set_pattern():
+    """Set the current pattern"""
+    data = request.json
+    pattern_name = data.get("name")
+    params = data.get("params", {})
+
+    success = led_server.pattern_manager.set_pattern(pattern_name, params)
+
+    return jsonify({"success": success, "pattern": pattern_name, "params": params})
+
+
+@app.route("/api/params/update", methods=["POST"])
+def update_params():
+    """Update parameters for the current pattern"""
+    data = request.json
+    params = data.get("params", {})
+
+    if led_server.pattern_manager.current_pattern:
+        led_server.pattern_manager.update_pattern_params(params)
+        return jsonify({"success": True, "params": params})
+    else:
+        return jsonify({"success": False, "error": "No active pattern"}), 400
+
+
+# WebSocket frame observer function
+def frame_observer(frame):
+    """Process frames from the generator and send to web clients"""
+    # Convert frame data to RGB array for web rendering
+    width = led_server.grid_config.width
+    height = led_server.grid_config.height
+
+    # Create a 2D array of RGB values
+    grid_data = []
+    for y in range(height):
+        row = []
+        for x in range(width):
+            index = (y * width + x) * 3
+            if index + 2 < len(frame.data):
+                r = frame.data[index]
+                g = frame.data[index + 1]
+                b = frame.data[index + 2]
+                row.append([r, g, b])
+            else:
+                row.append([0, 0, 0])
+        grid_data.append(row)
+
+    # Send to all connected clients
+    socketio.emit(
+        "frame_update",
+        {
+            "grid": grid_data,
+            "sequence": frame.sequence,
+            "timestamp": frame.timestamp,
+            "pattern": frame.metadata.get("pattern_name", ""),
+            "params": frame.metadata.get("params", {}),
+        },
+    )
+
+
+@socketio.on("connect")
+def handle_connect():
+    """Handle client connection"""
+    print(f"Client connected: {request.sid}")
+
+    # Register frame observer if not already registered
+    if frame_observer not in led_server.frame_generator.frame_observers:
+        led_server.frame_generator.add_frame_observer(frame_observer)
+
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    """Handle client disconnection"""
+    print(f"Client disconnected: {request.sid}")
+
+    # Check if there are any clients left
+    if len(socketio.server.eio.sockets) == 0:
+        # Remove frame observer if no clients are connected
+        led_server.frame_generator.remove_frame_observer(frame_observer)

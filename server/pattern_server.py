@@ -10,6 +10,7 @@ to the LED controller via ZMQ.
 import os
 import sys
 import time
+import threading
 from dotenv import load_dotenv
 
 # Import server components
@@ -46,6 +47,22 @@ def main():
 
     # Create and start the server
     server = LEDServer(DEFAULT_CONFIG)
+
+    # Start web server in a separate thread
+    from server.web import create_app, socketio
+
+    app = create_app(server)
+
+    web_port = int(os.getenv("WEB_PORT", "5000"))
+    web_thread = threading.Thread(
+        target=lambda: socketio.run(
+            app, host="0.0.0.0", port=web_port, debug=False, use_reloader=False
+        )
+    )
+    web_thread.daemon = True
+    web_thread.start()
+    print(f"\nWeb dashboard started on port {web_port}")
+    print(f"Access the dashboard at http://localhost:{web_port}")
 
     try:
         server.run()
