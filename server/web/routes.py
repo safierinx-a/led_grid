@@ -24,40 +24,57 @@ def health_check():
 @app.route("/api/patterns", methods=["GET"])
 def get_patterns():
     """Get list of available patterns"""
+    print("\n=== API: Get Patterns Request ===")
     patterns = led_server.pattern_manager.patterns
+    print(f"Number of patterns found: {len(patterns)}")
+
     pattern_data = []
 
     for pattern in patterns:
-        definition = pattern.definition()
-        pattern_data.append(
-            {
-                "name": definition.name,
-                "description": definition.description,
-                "category": definition.category,
-                "tags": definition.tags,
-                "parameters": [
-                    {
-                        "name": param.name,
-                        "type": param.type.__name__,
-                        "default": param.default,
-                        "min_value": param.min_value,
-                        "max_value": param.max_value,
-                        "description": param.description,
-                    }
-                    for param in definition.parameters
-                    if not param.name.startswith("_")  # Hide internal parameters
-                ],
-            }
-        )
+        try:
+            definition = pattern.definition()
+            print(f"Processing pattern: {definition.name}")
+            pattern_data.append(
+                {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "category": definition.category,
+                    "tags": definition.tags,
+                    "parameters": [
+                        {
+                            "name": param.name,
+                            "type": param.type.__name__,
+                            "default": param.default,
+                            "min_value": param.min_value,
+                            "max_value": param.max_value,
+                            "description": param.description,
+                        }
+                        for param in definition.parameters
+                        if not param.name.startswith("_")  # Hide internal parameters
+                    ],
+                }
+            )
+        except Exception as e:
+            print(f"Error processing pattern: {e}")
+            import traceback
 
-    return jsonify(
-        {
-            "patterns": pattern_data,
-            "current_pattern": led_server.pattern_manager.current_pattern.definition().name
-            if led_server.pattern_manager.current_pattern
-            else None,
-        }
-    )
+            traceback.print_exc()
+
+    current_pattern_name = None
+    if led_server.pattern_manager.current_pattern:
+        try:
+            current_pattern_name = (
+                led_server.pattern_manager.current_pattern.definition().name
+            )
+        except Exception as e:
+            print(f"Error getting current pattern name: {e}")
+
+    response_data = {"patterns": pattern_data, "current_pattern": current_pattern_name}
+
+    print(f"Returning {len(pattern_data)} patterns")
+    print(f"Response data: {response_data}")
+
+    return jsonify(response_data)
 
 
 @app.route("/api/patterns/set", methods=["POST"])
@@ -83,6 +100,37 @@ def update_params():
         return jsonify({"success": True, "params": params})
     else:
         return jsonify({"success": False, "error": "No active pattern"}), 400
+
+
+@app.route("/api/reload_patterns", methods=["POST"])
+def reload_patterns():
+    """Manually reload patterns"""
+    print("\n=== API: Reload Patterns Request ===")
+
+    try:
+        # Reload patterns
+        led_server.pattern_manager.load_patterns()
+
+        # Get updated pattern list
+        patterns = led_server.pattern_manager.patterns
+        pattern_names = [p.definition().name for p in patterns]
+
+        return jsonify(
+            {
+                "success": True,
+                "message": f"Successfully reloaded {len(patterns)} patterns",
+                "patterns": pattern_names,
+            }
+        )
+    except Exception as e:
+        print(f"Error reloading patterns: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+        return jsonify(
+            {"success": False, "message": f"Error reloading patterns: {str(e)}"}
+        ), 500
 
 
 # WebSocket frame observer function
