@@ -13,6 +13,7 @@ import time
 import threading
 import traceback
 from dotenv import load_dotenv
+import ssl
 
 # Import server components
 from server.config.grid_config import DEFAULT_CONFIG
@@ -192,9 +193,31 @@ def main():
         # Get port from environment or use default
         port = int(os.environ.get("WEB_PORT", 5001))
 
+        # Get SSL configuration from environment
+        ssl_cert = os.environ.get("SSL_CERT")
+        ssl_key = os.environ.get("SSL_KEY")
+        use_https = (
+            ssl_cert
+            and ssl_key
+            and os.path.exists(ssl_cert)
+            and os.path.exists(ssl_key)
+        )
+
+        # Configure SSL context if using HTTPS
+        ssl_context = None
+        if use_https:
+            print(f"HTTPS enabled with certificate: {ssl_cert}")
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(ssl_cert, ssl_key)
+        else:
+            print("HTTPS not enabled. Using HTTP only.")
+            print("To enable HTTPS, set SSL_CERT and SSL_KEY environment variables.")
+
         # Define a function to run the web server
         def run_web_server():
-            print(f"Starting web server on port {port}...")
+            print(
+                f"Starting {'HTTPS' if use_https else 'HTTP'} web server on port {port}..."
+            )
             socketio.run(
                 app,
                 host="0.0.0.0",
@@ -202,6 +225,7 @@ def main():
                 debug=False,
                 use_reloader=False,
                 allow_unsafe_werkzeug=True,
+                ssl_context=ssl_context,
             )
 
         # Start the web server in a separate thread

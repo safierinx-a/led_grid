@@ -82,6 +82,30 @@ ZMQ_PORT=5555
 ZMQ_HOST=192.168.1.154  # Pattern server's IP
 ```
 
+## Enabling HTTPS
+
+The web dashboard can be served over HTTPS for secure access. To enable HTTPS:
+
+1. Generate SSL certificates:
+
+```bash
+# Run the certificate generation script
+cd led_grid
+./scripts/generate_ssl_cert.sh your-domain.com
+```
+
+2. Set SSL certificate environment variables:
+
+```bash
+# Add to your .env file
+SSL_CERT="./certs/server.crt"
+SSL_KEY="./certs/server.key"
+```
+
+3. Restart the server. It will automatically detect SSL certificates and start in HTTPS mode.
+
+For production use, consider using Let's Encrypt or another trusted certificate authority instead of self-signed certificates.
+
 ## Adding New Patterns
 
 1. Create a new pattern class in `server/patterns/`
