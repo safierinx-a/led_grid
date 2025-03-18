@@ -85,16 +85,46 @@
                         </div>
                     </div>
                     <div class="control-row">
-                        <div class="led-strip-toggle">
-                            <label for="led-strip-mode">LED Strip Mode</label>
+                        <div class="grid-control">
+                            <label for="start-corner">Start Corner</label>
+                            <select id="start-corner">
+                                <option value="bottom-right">Bottom Right</option>
+                                <option value="bottom-left">Bottom Left</option>
+                                <option value="top-right">Top Right</option>
+                                <option value="top-left">Top Left</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="grid-control">
+                            <label for="first-row-direction">First Row Direction</label>
+                            <select id="first-row-direction">
+                                <option value="right_to_left">Right to Left</option>
+                                <option value="left_to_right">Left to Right</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="grid-control">
+                            <label for="row-progression">Row Progression</label>
+                            <select id="row-progression">
+                                <option value="bottom_to_top">Bottom to Top</option>
+                                <option value="top_to_bottom">Top to Bottom</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="control-row">
+                        <div class="grid-control">
+                            <label for="serpentine">Serpentine Pattern</label>
                             <div class="toggle-switch">
-                                <input type="checkbox" id="led-strip-mode">
+                                <input type="checkbox" id="serpentine" checked>
                                 <span class="toggle-slider"></span>
                             </div>
                         </div>
                     </div>
                     <div class="control-row">
-                        <button id="apply-grid-config" class="preset-button">Apply Configuration</button>
+                        <button id="apply-grid-config" class="button primary">Apply</button>
+                        <button id="save-grid-config" class="button secondary">Save as Default</button>
                     </div>
                 </div>
 
