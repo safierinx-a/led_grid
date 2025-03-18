@@ -47,6 +47,9 @@ class FrameGenerator:
 
         # Frame observers list for external components
         self.frame_observers: List[Callable[[Frame], None]] = []
+        self.observer_lock = (
+            threading.RLock()
+        )  # Lock for thread-safe observer management
 
         # ZMQ setup for frame delivery
         self.zmq_context = zmq.Context()
@@ -79,9 +82,12 @@ class FrameGenerator:
         Args:
             observer_func: Function that takes a Frame object as its argument
         """
-        if observer_func not in self.frame_observers:
-            self.frame_observers.append(observer_func)
-            print(f"Added frame observer, total observers: {len(self.frame_observers)}")
+        with self.observer_lock:
+            if observer_func not in self.frame_observers:
+                self.frame_observers.append(observer_func)
+                print(
+                    f"Added frame observer, total observers: {len(self.frame_observers)}"
+                )
 
     def remove_frame_observer(self, observer_func: Callable[[Frame], None]) -> None:
         """Remove a frame observer
@@ -89,11 +95,12 @@ class FrameGenerator:
         Args:
             observer_func: The observer function to remove
         """
-        if observer_func in self.frame_observers:
-            self.frame_observers.remove(observer_func)
-            print(
-                f"Removed frame observer, remaining observers: {len(self.frame_observers)}"
-            )
+        with self.observer_lock:
+            if observer_func in self.frame_observers:
+                self.frame_observers.remove(observer_func)
+                print(
+                    f"Removed frame observer, remaining observers: {len(self.frame_observers)}"
+                )
 
     def bind_zmq(self):
         """Bind ZMQ socket for frame delivery"""
@@ -156,12 +163,13 @@ class FrameGenerator:
                 self.frame_sequence += 1
 
                 # Notify observers with the new frame
-                for observer in self.frame_observers:
-                    try:
-                        observer(frame)
-                    except Exception as e:
-                        print(f"Error in frame observer: {e}")
-                        traceback.print_exc()
+                with self.observer_lock:
+                    for observer in self.frame_observers:
+                        try:
+                            observer(frame)
+                        except Exception as e:
+                            print(f"Error in frame observer: {e}")
+                            traceback.print_exc()
 
                 return frame
 

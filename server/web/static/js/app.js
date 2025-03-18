@@ -107,8 +107,12 @@ document.addEventListener("DOMContentLoaded", () => {
     console.log("Connected to server");
     // Load current status when connected
     loadStatus();
-    // Load patterns after connection
-    loadPatterns();
+
+    // Load patterns after connection with a small delay to ensure server is ready
+    console.log("Waiting a moment for server initialization...");
+    setTimeout(() => {
+      loadPatterns();
+    }, 1500); // Wait 1.5 seconds before first pattern load
   });
 
   socket.on("disconnect", () => {
@@ -395,11 +399,39 @@ document.addEventListener("DOMContentLoaded", () => {
         patternGallery.innerHTML = "";
 
         if (data.patterns.length === 0) {
+          console.warn("No patterns available, triggering reload_patterns...");
+
+          // Show loading message
           patternSelect.innerHTML =
-            "<option value=''>No patterns available</option>";
-          patternGallery.innerHTML =
-            "<p>No patterns available. Try reloading patterns from the server.</p>";
-          return;
+            "<option value=''>Loading patterns...</option>";
+          patternGallery.innerHTML = "<p>Loading patterns, please wait...</p>";
+
+          // Automatically trigger pattern reload
+          return fetch("/api/reload_patterns", {
+            method: "POST",
+          })
+            .then((response) => response.json())
+            .then((reloadData) => {
+              console.log("Patterns reloaded:", reloadData);
+              // Wait a bit and try loading patterns again
+              setTimeout(() => {
+                loadPatterns();
+              }, 1000); // Wait 1 second before trying again
+            })
+            .catch((error) => {
+              console.error("Error reloading patterns:", error);
+              patternSelect.innerHTML =
+                "<option value=''>Error loading patterns</option>";
+              patternGallery.innerHTML = `
+                <div class="error-message">
+                  <p>Error loading patterns: ${error.message}</p>
+                  <button id="retry-patterns" class="preset-button">Retry</button>
+                </div>
+              `;
+              document
+                .getElementById("retry-patterns")
+                ?.addEventListener("click", loadPatterns);
+            });
         }
 
         // Group patterns by category
@@ -457,6 +489,9 @@ document.addEventListener("DOMContentLoaded", () => {
             updateParameterControls(currentPattern);
           }
         }
+
+        // Show success notification
+        showNotification("Patterns loaded successfully", "success");
 
         // Handle pattern selection change
         patternSelect.addEventListener("change", () => {

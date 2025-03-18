@@ -8,6 +8,7 @@ from flask import jsonify, request, render_template
 from flask_socketio import emit
 from server.web import app, socketio, led_server
 from datetime import datetime
+import copy
 
 
 @app.route("/")
@@ -296,17 +297,18 @@ def reload_patterns():
 def get_grid_config():
     """Get the current grid configuration"""
     try:
-        config = led_server.grid_config
+        with led_server.grid_config_lock:
+            config = led_server.grid_config
 
-        # Convert enum values to strings for JSON serialization
-        response = {
-            "width": config.width,
-            "height": config.height,
-            "start_corner": config.start_corner,
-            "first_row_direction": config.first_row_direction.value,
-            "row_progression": config.row_progression.value,
-            "serpentine": config.serpentine,
-        }
+            # Convert enum values to strings for JSON serialization
+            response = {
+                "width": config.width,
+                "height": config.height,
+                "start_corner": config.start_corner,
+                "first_row_direction": config.first_row_direction.value,
+                "row_progression": config.row_progression.value,
+                "serpentine": config.serpentine,
+            }
 
         return jsonify({"success": True, "config": response})
     except Exception as e:
@@ -344,65 +346,74 @@ def set_grid_config():
                 }
             ), 400
 
-        # Update the configuration parameters that are provided
-        if "width" in data:
-            led_server.grid_config.width = int(data["width"])
+        # Update the configuration parameters that are provided - with thread safety
+        with led_server.grid_config_lock:
+            if "width" in data:
+                led_server.grid_config.width = int(data["width"])
 
-        if "height" in data:
-            led_server.grid_config.height = int(data["height"])
+            if "height" in data:
+                led_server.grid_config.height = int(data["height"])
 
-        if "start_corner" in data:
-            # Parse the start corner string (format: "bottom-right", "top-left", etc.)
-            corner = data["start_corner"].split("-")
-            if len(corner) != 2:
-                return jsonify(
-                    {
-                        "success": False,
-                        "error": f"Invalid start_corner format: {data['start_corner']}",
-                    }
-                ), 400
+            if "start_corner" in data:
+                # Parse the start corner string (format: "bottom-right", "top-left", etc.)
+                corner = data["start_corner"].split("-")
+                if len(corner) != 2:
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": f"Invalid start_corner format: {data['start_corner']}",
+                        }
+                    ), 400
 
-            vert, horiz = corner
-            row = 0 if vert == "top" else (led_server.grid_config.height - 1)
-            col = 0 if horiz == "left" else (led_server.grid_config.width - 1)
-            led_server.grid_config.start_corner = (row, col)
+                vert, horiz = corner
+                row = 0 if vert == "top" else (led_server.grid_config.height - 1)
+                col = 0 if horiz == "left" else (led_server.grid_config.width - 1)
+                led_server.grid_config.start_corner = (row, col)
 
-        if "first_row_direction" in data:
-            # Convert string to enum
-            direction = data["first_row_direction"]
-            if direction == "left_to_right":
-                led_server.grid_config.first_row_direction = GridDirection.LEFT_TO_RIGHT
-            elif direction == "right_to_left":
-                led_server.grid_config.first_row_direction = GridDirection.RIGHT_TO_LEFT
-            else:
-                return jsonify(
-                    {
-                        "success": False,
-                        "error": f"Invalid first_row_direction: {direction}",
-                    }
-                ), 400
+            if "first_row_direction" in data:
+                # Convert string to enum
+                direction = data["first_row_direction"]
+                if direction == "left_to_right":
+                    led_server.grid_config.first_row_direction = (
+                        GridDirection.LEFT_TO_RIGHT
+                    )
+                elif direction == "right_to_left":
+                    led_server.grid_config.first_row_direction = (
+                        GridDirection.RIGHT_TO_LEFT
+                    )
+                else:
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": f"Invalid first_row_direction: {direction}",
+                        }
+                    ), 400
 
-        if "row_progression" in data:
-            # Convert string to enum
-            progression = data["row_progression"]
-            if progression == "top_to_bottom":
-                led_server.grid_config.row_progression = RowDirection.TOP_TO_BOTTOM
-            elif progression == "bottom_to_top":
-                led_server.grid_config.row_progression = RowDirection.BOTTOM_TO_TOP
-            else:
-                return jsonify(
-                    {
-                        "success": False,
-                        "error": f"Invalid row_progression: {progression}",
-                    }
-                ), 400
+            if "row_progression" in data:
+                # Convert string to enum
+                progression = data["row_progression"]
+                if progression == "top_to_bottom":
+                    led_server.grid_config.row_progression = RowDirection.TOP_TO_BOTTOM
+                elif progression == "bottom_to_top":
+                    led_server.grid_config.row_progression = RowDirection.BOTTOM_TO_TOP
+                else:
+                    return jsonify(
+                        {
+                            "success": False,
+                            "error": f"Invalid row_progression: {progression}",
+                        }
+                    ), 400
 
-        if "serpentine" in data:
-            led_server.grid_config.serpentine = bool(data["serpentine"])
+            if "serpentine" in data:
+                led_server.grid_config.serpentine = bool(data["serpentine"])
 
-        # Notify the pattern manager and frame generator about the configuration change
-        led_server.pattern_manager.grid_config = led_server.grid_config
-        led_server.frame_generator.grid_config = led_server.grid_config
+            # Make a deep copy of the grid config before passing to components
+            # This ensures components get a consistent copy even if config changes during the update
+            grid_config_copy = copy.deepcopy(led_server.grid_config)
+
+            # Notify the pattern manager and frame generator about the configuration change
+            led_server.pattern_manager.grid_config = grid_config_copy
+            led_server.frame_generator.grid_config = grid_config_copy
 
         # Return the updated configuration
         return get_grid_config()
@@ -431,8 +442,9 @@ def save_default_grid_config():
         # First update the current configuration
         result = set_grid_config()
         if not isinstance(result, tuple) and result.status_code == 200:
-            # Get the current configuration
-            config = led_server.grid_config
+            # Get the current configuration using the lock for thread safety
+            with led_server.grid_config_lock:
+                config = copy.deepcopy(led_server.grid_config)
 
             # Path to the grid_config.py file
             module_path = inspect.getfile(sys.modules["server.config.grid_config"])
@@ -510,9 +522,10 @@ def save_default_grid_config():
 # WebSocket frame observer function
 def frame_observer(frame):
     """Process frames from the generator and send to web clients"""
-    # Convert frame data to RGB array for web rendering
-    width = led_server.grid_config.width
-    height = led_server.grid_config.height
+    # Get grid dimensions with thread safety
+    with led_server.grid_config_lock:
+        width = led_server.grid_config.width
+        height = led_server.grid_config.height
 
     # Create a 2D array of RGB values
     grid_data = []
