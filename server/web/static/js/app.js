@@ -200,23 +200,173 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Grid configuration apply button handler
   document.getElementById("apply-grid-config").addEventListener("click", () => {
-    // Only apply custom dimensions if not in LED strip mode
-    if (!ledStripMode) {
-      width = parseInt(document.getElementById("grid-width").value);
-      height = parseInt(document.getElementById("grid-height").value);
-      pixelSize = parseInt(document.getElementById("pixel-size").value);
-      pixelGap = parseInt(document.getElementById("pixel-gap").value);
+    // Get grid dimensions and visual settings
+    const width = parseInt(document.getElementById("grid-width").value);
+    const height = parseInt(document.getElementById("grid-height").value);
+    const pixelSize = parseInt(document.getElementById("pixel-size").value);
 
-      // Validate values
-      width = Math.max(1, Math.min(100, width));
-      height = Math.max(1, Math.min(100, height));
-      pixelSize = Math.max(1, Math.min(50, pixelSize));
-      pixelGap = Math.max(0, Math.min(10, pixelGap));
+    // Get grid orientation settings
+    const startCorner = document.getElementById("start-corner").value;
+    const firstRowDirection = document.getElementById(
+      "first-row-direction"
+    ).value;
+    const rowProgression = document.getElementById("row-progression").value;
+    const serpentine = document.getElementById("serpentine").checked;
+
+    // Validate values
+    const validWidth = Math.max(1, Math.min(100, width));
+    const validHeight = Math.max(1, Math.min(100, height));
+    const validPixelSize = Math.max(1, Math.min(50, pixelSize));
+
+    // Update local variables for the grid preview
+    if (
+      width !== validWidth ||
+      height !== validHeight ||
+      pixelSize !== validPixelSize
+    ) {
+      showNotification("Invalid values corrected to valid range", "warning");
     }
 
-    // Update grid
-    createGrid();
+    // Set the grid dimensions for the preview
+    window.gridWidth = validWidth;
+    window.gridHeight = validHeight;
+    window.pixelSize = validPixelSize;
+
+    // Send configuration to server
+    fetch("/api/grid_config", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        width: validWidth,
+        height: validHeight,
+        start_corner: startCorner,
+        first_row_direction: firstRowDirection,
+        row_progression: rowProgression,
+        serpentine: serpentine,
+      }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        if (data.success) {
+          showNotification(
+            "Grid configuration updated successfully",
+            "success"
+          );
+          // Update grid preview
+          createGrid();
+        } else {
+          showNotification(
+            `Failed to update configuration: ${data.error}`,
+            "error"
+          );
+        }
+      })
+      .catch((error) => {
+        console.error("Error updating grid configuration:", error);
+        showNotification("Failed to update grid configuration", "error");
+      });
   });
+
+  // Save grid configuration as default
+  document.getElementById("save-grid-config").addEventListener("click", () => {
+    // Get current values from UI
+    const width = parseInt(document.getElementById("grid-width").value);
+    const height = parseInt(document.getElementById("grid-height").value);
+    const startCorner = document.getElementById("start-corner").value;
+    const firstRowDirection = document.getElementById(
+      "first-row-direction"
+    ).value;
+    const rowProgression = document.getElementById("row-progression").value;
+    const serpentine = document.getElementById("serpentine").checked;
+
+    // Validate values
+    const validWidth = Math.max(1, Math.min(100, width));
+    const validHeight = Math.max(1, Math.min(100, height));
+
+    // Save as default configuration
+    fetch("/api/grid_config/save_default", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        width: validWidth,
+        height: validHeight,
+        start_corner: startCorner,
+        first_row_direction: firstRowDirection,
+        row_progression: rowProgression,
+        serpentine: serpentine,
+      }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        if (data.success) {
+          showNotification("Grid configuration saved as default", "success");
+        } else {
+          showNotification(
+            `Failed to save configuration: ${data.error}`,
+            "error"
+          );
+        }
+      })
+      .catch((error) => {
+        console.error("Error saving grid configuration:", error);
+        showNotification("Failed to save grid configuration", "error");
+      });
+  });
+
+  // Function to load grid configuration from server
+  function loadGridConfig() {
+    fetch("/api/grid_config")
+      .then((response) => response.json())
+      .then((data) => {
+        if (data.success) {
+          const config = data.config;
+
+          // Update form values
+          document.getElementById("grid-width").value = config.width;
+          document.getElementById("grid-height").value = config.height;
+
+          // Set start corner
+          const cornerRow = config.start_corner[0];
+          const cornerCol = config.start_corner[1];
+          const isBottom = cornerRow >= config.height / 2;
+          const isRight = cornerCol >= config.width / 2;
+          const cornerValue = `${isBottom ? "bottom" : "top"}-${
+            isRight ? "right" : "left"
+          }`;
+          document.getElementById("start-corner").value = cornerValue;
+
+          // Set other orientation parameters
+          document.getElementById("first-row-direction").value =
+            config.first_row_direction;
+          document.getElementById("row-progression").value =
+            config.row_progression;
+          document.getElementById("serpentine").checked = config.serpentine;
+
+          // Update local variables
+          window.gridWidth = config.width;
+          window.gridHeight = config.height;
+
+          // Update grid preview
+          createGrid();
+        } else {
+          showNotification(
+            `Failed to load grid configuration: ${data.error}`,
+            "error"
+          );
+        }
+      })
+      .catch((error) => {
+        console.error("Error loading grid configuration:", error);
+        showNotification("Failed to load grid configuration", "error");
+      });
+  }
+
+  // Load grid configuration when page loads
+  loadGridConfig();
 
   // Function to load patterns
   function loadPatterns() {
