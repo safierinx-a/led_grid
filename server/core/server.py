@@ -22,6 +22,9 @@ class LEDServer:
 
         # Configuration
         self.grid_config = grid_config
+        self.grid_config_lock = (
+            threading.RLock()
+        )  # Lock for thread-safe grid config access
         self.mqtt_config = {
             "host": os.getenv("MQTT_BROKER", "localhost"),
             "port": int(os.getenv("MQTT_PORT", "1883")),
@@ -52,6 +55,11 @@ class LEDServer:
 
             # Start pattern manager
             print("\nInitializing Pattern Manager...")
+            # First initialize the pattern manager to load patterns
+            print("Loading patterns...")
+            self.pattern_manager.initialize()
+
+            # Then connect to MQTT
             if not self.pattern_manager.connect_mqtt():
                 print("Failed to start Pattern Manager")
                 return False

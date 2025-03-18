@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 import json
 import traceback
+import copy
 
 from server.config.grid_config import GridConfig
 from server.patterns.base import Pattern, PatternRegistry
@@ -135,58 +136,63 @@ class PatternManager:
         self.on_pattern_change = callback
 
     def _notify_pattern_change(self):
-        """Notify callback of pattern changes"""
-        if self.on_pattern_change:
-            pattern_id = str(time.time_ns()) if self.current_pattern else None
-            self.on_pattern_change(
-                self.current_pattern, self.current_params, pattern_id
-            )
+        """Notify callback of pattern changes with thread safety"""
+        with self.pattern_lock:
+            if self.on_pattern_change:
+                pattern_id = str(time.time_ns()) if self.current_pattern else None
+                self.on_pattern_change(
+                    self.current_pattern, self.current_params, pattern_id
+                )
 
     def _handle_pattern_select(self, msg):
-        """Handle pattern selection"""
+        """Handle pattern selection with thread safety"""
         try:
             pattern_name = msg.decode()
             print(f"Pattern selection request: {pattern_name}")
 
-            pattern = next(
-                (p for p in self.patterns if p.definition().name == pattern_name), None
-            )
-            if pattern:
-                print(f"Found pattern: {pattern.definition().name}")
-                self.current_pattern = pattern
-
-                # Notify callback
-                self._notify_pattern_change()
-
-                print(f"Pattern selection complete: {pattern.definition().name}")
-            else:
-                print(f"Pattern not found: {pattern_name}")
-                print(
-                    f"Available patterns: {[p.definition().name for p in self.patterns]}"
+            with self.pattern_lock:
+                pattern = next(
+                    (p for p in self.patterns if p.definition().name == pattern_name),
+                    None,
                 )
+                if pattern:
+                    print(f"Found pattern: {pattern.definition().name}")
+                    self.current_pattern = pattern
+
+                    # Notify callback (this will acquire pattern_lock again, but RLock allows this)
+                    self._notify_pattern_change()
+
+                    print(f"Pattern selection complete: {pattern.definition().name}")
+                else:
+                    print(f"Pattern not found: {pattern_name}")
+                    print(
+                        f"Available patterns: {[p.definition().name for p in self.patterns]}"
+                    )
         except Exception as e:
             print(f"Error handling pattern select: {e}")
             traceback.print_exc()
 
     def _handle_numeric_param(self, param_name: str, msg):
-        """Handle numeric parameter updates"""
+        """Handle numeric parameter updates with thread safety"""
         try:
             value = float(msg.decode())
-            if self.current_pattern:
-                self.current_pattern.params[param_name] = value
-            else:
-                print(f"No active pattern to update parameter {param_name}")
+            with self.pattern_lock:
+                if self.current_pattern:
+                    self.current_params[param_name] = value
+                else:
+                    print(f"No active pattern to update parameter {param_name}")
         except Exception as e:
             print(f"Error handling numeric param {param_name}: {e}")
 
     def _handle_select_param(self, param_name: str, msg):
-        """Handle select parameter updates"""
+        """Handle select parameter updates with thread safety"""
         try:
             value = msg.decode()
-            if self.current_pattern:
-                self.current_pattern.params[param_name] = value
-            else:
-                print(f"No active pattern to update parameter {param_name}")
+            with self.pattern_lock:
+                if self.current_pattern:
+                    self.current_params[param_name] = value
+                else:
+                    print(f"No active pattern to update parameter {param_name}")
         except Exception as e:
             print(f"Error handling select param {param_name}: {e}")
 
@@ -205,8 +211,9 @@ class PatternManager:
                 # Clamp to valid range
                 brightness = max(0.0, min(1.0, brightness))
 
-            # Update hardware state
-            self.hardware_state["brightness"] = brightness
+            # Update hardware state with thread safety
+            with self.hardware_lock:
+                self.hardware_state["brightness"] = brightness
 
             # Log the change
             print(f"Brightness set to {brightness:.2f} ({int(brightness * 255)}/255)")
@@ -219,7 +226,11 @@ class PatternManager:
         """Handle power control"""
         try:
             state = msg.decode()
-            self.hardware_state["power"] = state == "ON"
+
+            # Update hardware state with thread safety
+            with self.hardware_lock:
+                self.hardware_state["power"] = state == "ON"
+
         except Exception as e:
             print(f"Error handling power control: {e}")
 
@@ -227,38 +238,49 @@ class PatternManager:
         """Handle reset control"""
         try:
             if msg.decode() == "RESET":
-                self.hardware_state["last_reset"] = datetime.now().isoformat()
+                # Update hardware state with thread safety
+                with self.hardware_lock:
+                    self.hardware_state["last_reset"] = datetime.now().isoformat()
         except Exception as e:
             print(f"Error handling reset control: {e}")
 
     def _handle_clear(self, msg):
-        """Handle clear command"""
+        """Handle clear command with thread safety"""
         try:
             if msg.decode() == "CLEAR":
-                # Clear pattern and update state
-                self.current_pattern = None
-                self.current_params = {}
+                # Clear pattern and update state with thread safety
+                with self.pattern_lock:
+                    self.current_pattern = None
+                    self.current_params = {}
+                    # Notify pattern change after clearing
+                    self._notify_pattern_change()
         except Exception as e:
             print(f"Error handling clear command: {e}")
 
     def _handle_stop(self, msg):
-        """Handle stop command"""
+        """Handle stop command with thread safety"""
         try:
             if msg.decode() == "STOP":
-                # Stop pattern and update state
-                self.current_pattern = None
-                self.current_params = {}
+                # Stop pattern and update state with thread safety
+                with self.pattern_lock:
+                    self.current_pattern = None
+                    self.current_params = {}
+                    # Notify pattern change after stopping
+                    self._notify_pattern_change()
         except Exception as e:
             print(f"Error handling stop command: {e}")
 
     def _handle_cleanup(self, msg):
-        """Handle cleanup command"""
+        """Handle cleanup command with thread safety"""
         try:
             if msg.decode() == "CLEANUP":
                 print("Received cleanup command")
-                # Clean up pattern and update state
-                self.current_pattern = None
-                self.current_params = {}
+                # Clean up pattern and update state with thread safety
+                with self.pattern_lock:
+                    self.current_pattern = None
+                    self.current_params = {}
+                    # Notify pattern change after cleanup
+                    self._notify_pattern_change()
         except Exception as e:
             print(f"Error handling cleanup command: {e}")
             traceback.print_exc()
@@ -395,11 +417,6 @@ class PatternManager:
         """Initialize the pattern manager"""
         print("\nInitializing pattern manager...")
 
-        # Connect to MQTT broker
-        if not self.connect_mqtt():
-            print("Failed to connect to MQTT broker")
-            return False
-
         # Load patterns
         self.load_patterns()
 
@@ -415,13 +432,6 @@ class PatternManager:
         # Start performance monitoring
         self._start_performance_monitoring()
 
-        # Publish online status
-        self.mqtt_client.publish("led/status/pattern_server", "online", retain=True)
-
-        # Trigger a full sync of all data
-        self._sync_all_data()
-
-        print("Pattern manager initialized successfully")
         return True
 
     def stop(self):
@@ -488,7 +498,7 @@ class PatternManager:
         self.is_connected = False
 
     def _on_mqtt_message(self, client, userdata, msg):
-        """Handle incoming MQTT messages"""
+        """Handle incoming MQTT messages with thread safety"""
         try:
             print(f"\nReceived message on topic: {msg.topic}")
             payload = msg.payload.decode()
@@ -506,6 +516,7 @@ class PatternManager:
                     params = {}
 
                 if pattern_name:
+                    # set_pattern is already thread safe
                     self.set_pattern(pattern_name, params)
                 else:
                     print(f"Invalid pattern command: {payload}")
@@ -516,6 +527,7 @@ class PatternManager:
                     data = json.loads(payload)
                     params = data.get("params", {})
                     if params:
+                        # update_pattern_params is already thread safe
                         self.update_pattern_params(params)
                     else:
                         print("No parameters provided in command")
@@ -529,6 +541,7 @@ class PatternManager:
                     command = data.get("command")
                     value = data.get("value")
 
+                    # All handler methods now use proper locking internally
                     if command == "brightness":
                         self._handle_brightness_control(str(value).encode())
                     elif command == "power":
@@ -538,7 +551,7 @@ class PatternManager:
                 except json.JSONDecodeError:
                     print(f"Invalid hardware command JSON: {payload}")
 
-            # Direct hardware commands
+            # Direct hardware commands - all handlers now use proper locking
             elif msg.topic == "led/command/brightness":
                 self._handle_brightness_control(msg.payload)
             elif msg.topic == "led/command/power":
@@ -555,8 +568,10 @@ class PatternManager:
                 try:
                     print("\nReceived pattern list request")
 
-                    # Get pattern names from loaded patterns
-                    pattern_names = [p.definition().name for p in self.patterns]
+                    # Thread-safe pattern listing
+                    with self.pattern_lock:
+                        # Get pattern names from loaded patterns
+                        pattern_names = [p.definition().name for p in self.patterns]
 
                     if not pattern_names:
                         print("WARNING: No patterns available to list!")
@@ -568,8 +583,9 @@ class PatternManager:
                         # Try to reload patterns
                         self.load_patterns()
 
-                        # Get pattern names again after reload
-                        pattern_names = [p.definition().name for p in self.patterns]
+                        # Get pattern names again after reload, with thread safety
+                        with self.pattern_lock:
+                            pattern_names = [p.definition().name for p in self.patterns]
 
                         if not pattern_names:
                             print("ERROR: Still no patterns available after reload!")
@@ -584,25 +600,40 @@ class PatternManager:
                         retain=True,
                     )
 
-                    # Also send detailed pattern information
+                    # Also send detailed pattern information, with thread safety
                     patterns_info = []
-                    for pattern in self.patterns:
-                        pattern_def = pattern.definition()
-                        patterns_info.append(
-                            {
-                                "name": pattern_def.name,
-                                "description": pattern_def.description,
-                                "parameters": [
-                                    {
-                                        "name": param.name,
-                                        "type": str(param.type.__name__),
-                                        "default": param.default,
-                                        "description": param.description,
-                                    }
-                                    for param in pattern_def.parameters
-                                ],
-                            }
+                    with self.pattern_lock:
+                        for pattern in self.patterns:
+                            pattern_def = pattern.definition()
+                            patterns_info.append(
+                                {
+                                    "name": pattern_def.name,
+                                    "description": pattern_def.description,
+                                    "parameters": [
+                                        {
+                                            "name": param.name,
+                                            "type": str(param.type.__name__),
+                                            "default": param.default,
+                                            "description": param.description,
+                                        }
+                                        for param in pattern_def.parameters
+                                    ],
+                                }
+                            )
+
+                    # Get current pattern and hardware state with thread safety
+                    with self.pattern_lock:
+                        current_pattern_name = (
+                            self.current_pattern.definition().name
+                            if self.current_pattern
+                            else None
                         )
+
+                    with self.hardware_lock:
+                        hardware_state_copy = copy.deepcopy(self.hardware_state)
+
+                    with self.performance_lock:
+                        performance_state_copy = copy.deepcopy(self.performance_state)
 
                     # Send detailed pattern information
                     self.mqtt_client.publish(
@@ -610,11 +641,9 @@ class PatternManager:
                         json.dumps(
                             {
                                 "patterns": patterns_info,
-                                "current_pattern": self.current_pattern.definition().name
-                                if self.current_pattern
-                                else None,
-                                "hardware_state": self.hardware_state,
-                                "performance": self.performance_state,
+                                "current_pattern": current_pattern_name,
+                                "hardware_state": hardware_state_copy,
+                                "performance": performance_state_copy,
                             }
                         ),
                         retain=True,
@@ -781,49 +810,56 @@ class PatternManager:
             )
 
             # 2. Synchronize current pattern and parameters
-            if self.current_pattern:
-                # Get the pattern definition for parameter metadata
-                pattern_def = self.current_pattern.definition()
+            with self.pattern_lock:
+                current_pattern = self.current_pattern
+                current_params = copy.deepcopy(self.current_params)
 
-                # Log detailed information about the pattern parameters
-                print(f"Current pattern: {pattern_def.name}")
-                print(f"Pattern parameters: {self.current_params}")
+                if current_pattern:
+                    # Get the pattern definition for parameter metadata
+                    pattern_def = current_pattern.definition()
 
-                # Send current pattern information
-                self.mqtt_client.publish(
-                    "led/status/pattern/current",
-                    json.dumps({"name": pattern_def.name}),
-                    retain=True,
-                )
+                    # Log detailed information about the pattern parameters
+                    print(f"Current pattern: {pattern_def.name}")
+                    print(f"Pattern parameters: {current_params}")
 
-                # Send current parameters
-                self.mqtt_client.publish(
-                    "led/status/pattern/params",
-                    json.dumps({"params": self.current_params}),
-                    retain=True,
-                )
-            else:
-                print("No current pattern to synchronize")
-                # Clear current pattern
-                self.mqtt_client.publish(
-                    "led/status/pattern/current",
-                    json.dumps({"name": ""}),
-                    retain=True,
-                )
+                    # Send current pattern information
+                    self.mqtt_client.publish(
+                        "led/status/pattern/current",
+                        json.dumps({"name": pattern_def.name}),
+                        retain=True,
+                    )
+
+                    # Send current parameters
+                    self.mqtt_client.publish(
+                        "led/status/pattern/params",
+                        json.dumps({"params": current_params}),
+                        retain=True,
+                    )
+                else:
+                    print("No current pattern to synchronize")
+                    # Clear current pattern
+                    self.mqtt_client.publish(
+                        "led/status/pattern/current",
+                        json.dumps({"name": ""}),
+                        retain=True,
+                    )
 
             # 3. Synchronize hardware state
-            self.mqtt_client.publish(
-                "led/status/hardware",
-                json.dumps(self.hardware_state),
-                retain=True,
-            )
+            with self.hardware_lock:
+                hardware_state_copy = copy.deepcopy(self.hardware_state)
+                self.mqtt_client.publish(
+                    "led/status/hardware",
+                    json.dumps(hardware_state_copy),
+                    retain=True,
+                )
             print("Synchronized hardware state")
 
             # 4. Synchronize performance metrics
             with self.performance_lock:
+                performance_state_copy = copy.deepcopy(self.performance_state)
                 self.mqtt_client.publish(
                     "led/status/performance",
-                    json.dumps(self.performance_state),
+                    json.dumps(performance_state_copy),
                     retain=True,
                 )
             print("Synchronized performance metrics")
