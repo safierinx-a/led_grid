@@ -14,7 +14,7 @@ from server.patterns.color_cycle import ColorCycle
 from server.patterns.emoji import Emoji
 from server.patterns.fire import Fire
 from server.patterns.game_of_life import GameOfLife
-from server.patterns.generative import Generative
+from server.patterns.generative import GenerativeArt
 from server.patterns.matrix_rain import MatrixRain
 from server.patterns.particle_system import ParticleSystem
 from server.patterns.perlin_landscape import PerlinLandscape
@@ -40,7 +40,7 @@ __all__ = [
     "Emoji",
     "Fire",
     "GameOfLife",
-    "Generative",
+    "GenerativeArt",
     "MatrixRain",
     "ParticleSystem",
     "PerlinLandscape",
