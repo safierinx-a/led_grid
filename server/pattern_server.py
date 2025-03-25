@@ -31,6 +31,7 @@ print("\n=== Importing Pattern Modules ===")
 # Function to import a pattern module with detailed error reporting
 def import_pattern_module(module_name):
     try:
+        print(f"\nLoading pattern: {module_name}")
         module = __import__(f"server.patterns.{module_name}", fromlist=["*"])
         print(f"✓ Imported {module_name} pattern")
 
@@ -45,31 +46,27 @@ def import_pattern_module(module_name):
                 and issubclass(attr, Pattern)  # Check if it's a Pattern subclass
                 and attr != Pattern  # Exclude the base Pattern class
             ):
-                print(f"  - Found Pattern subclass: {attr.__name__}")
+                print(f"  - Found pattern class: {attr.__name__}")
 
-                # Check if this class is in the PatternRegistry
-                if hasattr(PatternRegistry, "_patterns") and PatternRegistry._patterns:
-                    for (
-                        pattern_name,
-                        pattern_class,
-                    ) in PatternRegistry._patterns.items():
-                        if pattern_class == attr:
-                            module_has_registered_patterns = True
-                            print(
-                                f"  - Confirmed registered in PatternRegistry: {pattern_name}"
-                            )
+                try:
+                    # Create instance with error handling
+                    print(f"  - Creating instance of {attr.__name__}")
+                    instance = attr(DEFAULT_CONFIG)
+                    print(f"  - Successfully created instance")
 
-                # Check if it has a definition method
-                if hasattr(attr, "definition"):
-                    try:
-                        definition = attr.definition()
-                        print(f"  - Pattern definition: {definition.name}")
-                    except Exception as e:
-                        print(f"  - Error getting pattern definition: {e}")
-                else:
-                    print(
-                        f"  - Warning: Pattern class {attr.__name__} has no definition method"
-                    )
+                    # Add to patterns list
+                    if hasattr(PatternRegistry, "_patterns"):
+                        PatternRegistry._patterns[module_name] = attr
+                        print(f"  - Added to patterns list")
+                        module_has_registered_patterns = True
+                        print(f"Successfully loaded pattern: {module_name}")
+                    else:
+                        print(f"  ! Warning: PatternRegistry._patterns not initialized")
+                except Exception as e:
+                    print(f"  ! Error creating pattern instance: {e}")
+                    print("  ! Traceback:")
+                    traceback.print_exc()
+                    continue
 
         if not module_has_registered_patterns:
             print(
@@ -92,34 +89,33 @@ if not hasattr(PatternRegistry, "_patterns") or PatternRegistry._patterns is Non
     print("Initializing PatternRegistry._patterns as it was not initialized")
     PatternRegistry._patterns = {}
 
-# Import patterns
-patterns_to_import = [
-    "test_pattern",  # Import test pattern first
-    "plasma",
-    "rainbow_wave",
-    "fire",
-    "matrix_rain",
-    "game_of_life",
-    "starfield",
-    "particle_system",
-    "waves",
-    "polyhedra3d",
-    "color_cycle",
-    "emoji",
-    "perlin_landscape",
-    "sine_wave",
-    "swarm_system",
-    "generative",
+# Import patterns in smaller batches to avoid memory issues
+pattern_batches = [
+    ["test_pattern"],  # Test pattern first
+    ["plasma", "rainbow_wave"],  # Simple patterns
+    ["fire", "matrix_rain"],  # Complex patterns
+    ["game_of_life", "starfield"],  # More complex patterns
+    ["particle_system", "waves"],  # Physics-based patterns
+    ["polyhedra3d", "color_cycle"],  # 3D patterns
+    ["emoji", "perlin_landscape"],  # Image-based patterns
+    ["sine_wave", "swarm_system"],  # Wave patterns
+    ["generative"],  # Most complex patterns
 ]
 
 successful_imports = 0
-for pattern_name in patterns_to_import:
-    if import_pattern_module(pattern_name):
-        successful_imports += 1
+total_patterns = sum(len(batch) for batch in pattern_batches)
+
+for batch in pattern_batches:
+    print(f"\n=== Loading Pattern Batch ===")
+    for pattern_name in batch:
+        if import_pattern_module(pattern_name):
+            successful_imports += 1
+    # Add a small delay between batches to allow memory to stabilize
+    time.sleep(0.5)
 
 print(f"\n=== Pattern Import Summary ===")
 print(
-    f"Successfully imported {successful_imports} out of {len(patterns_to_import)} pattern modules"
+    f"Successfully imported {successful_imports} out of {total_patterns} pattern modules"
 )
 
 # Import modifiers
