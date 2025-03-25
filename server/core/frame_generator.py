@@ -252,9 +252,12 @@ class FrameGenerator:
                 # Wait for frame request
                 try:
                     # Receive the READY message
-                    identity = self.frame_socket.recv(flags=zmq.NOBLOCK)
-                    msg = self.frame_socket.recv(flags=zmq.NOBLOCK)
+                    parts = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
+                    if len(parts) != 2:
+                        print(f"Received invalid request format: {len(parts)} parts")
+                        continue
 
+                    identity, msg = parts
                     if msg == b"READY":
                         # Get frame from buffer
                         try:
@@ -275,16 +278,14 @@ class FrameGenerator:
                                         "params": frame.metadata.get("params", {}),
                                     }
                                     # Send all parts of the message
-                                    self.frame_socket.send(
-                                        identity, zmq.SNDMORE
-                                    )  # Client identity
-                                    self.frame_socket.send(
-                                        b"frame", zmq.SNDMORE
-                                    )  # Message type
-                                    self.frame_socket.send(
-                                        json.dumps(metadata).encode(), zmq.SNDMORE
-                                    )  # Metadata
-                                    self.frame_socket.send(frame.data)  # Frame data
+                                    self.frame_socket.send_multipart(
+                                        [
+                                            identity,  # Client identity
+                                            b"frame",  # Message type
+                                            json.dumps(metadata).encode(),  # Metadata
+                                            frame.data,  # Frame data
+                                        ]
+                                    )
 
                                     self.delivered_count += 1
                                     delivery_errors = 0
@@ -313,16 +314,14 @@ class FrameGenerator:
                                     "params": {},
                                 }
                                 # Send all parts of the empty message
-                                self.frame_socket.send(
-                                    identity, zmq.SNDMORE
-                                )  # Client identity
-                                self.frame_socket.send(
-                                    b"frame", zmq.SNDMORE
-                                )  # Message type
-                                self.frame_socket.send(
-                                    json.dumps(metadata).encode(), zmq.SNDMORE
-                                )  # Metadata
-                                self.frame_socket.send(bytearray())  # Empty frame data
+                                self.frame_socket.send_multipart(
+                                    [
+                                        identity,  # Client identity
+                                        b"frame",  # Message type
+                                        json.dumps(metadata).encode(),  # Metadata
+                                        bytearray(),  # Empty frame data
+                                    ]
+                                )
                             except Exception as e:
                                 print(f"Error sending empty frame: {e}")
 
