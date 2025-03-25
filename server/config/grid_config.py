@@ -17,9 +17,9 @@ class RowDirection(Enum):
 class GridConfig:
     width: int = 25
     height: int = 24
-    start_corner: Tuple[int, int] = (24, 25)  # (row, col) - bottom right
+    start_corner: Tuple[int, int] = (24, 0)  # (row, col) - bottom right
     first_row_direction: GridDirection = GridDirection.RIGHT_TO_LEFT
-    row_progression: RowDirection = RowDirection.TOP_TO_BOTTOM
+    row_progression: RowDirection = RowDirection.BOTTOM_TO_TOP
     serpentine: bool = True
 
     @property
