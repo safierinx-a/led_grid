@@ -251,13 +251,21 @@ class FrameGenerator:
             try:
                 # Wait for frame request
                 try:
-                    # Receive the READY message
+                    # ROUTER socket automatically adds client identity as first frame
+                    # The second frame is the empty delimiter that DEALER adds
+                    # Third frame is the actual message
                     parts = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
-                    if len(parts) != 2:  # Expect 2 parts: identity and message
-                        print(f"Received invalid request format: {len(parts)} parts")
+
+                    # For DEALER->ROUTER pattern, expect identity + empty delimiter + message
+                    if len(parts) != 3:
+                        print(
+                            f"Received invalid request format: {len(parts)} parts, expected 3"
+                        )
                         continue
 
-                    identity, msg = parts
+                    identity, delimiter, msg = parts
+
+                    # Confirm the message is READY
                     if msg == b"READY":
                         # Get frame from buffer
                         try:
@@ -277,12 +285,20 @@ class FrameGenerator:
                                         ),
                                         "params": frame.metadata.get("params", {}),
                                     }
-                                    # Send all parts of the message
+
+                                    # Send multipart message back to client
+                                    # When sending from ROUTER to DEALER:
+                                    # 1. First frame must be client identity (routing frame)
+                                    # 2. Second frame should be message type
+                                    # 3. Third frame is metadata
+                                    # 4. Fourth frame is actual data
                                     self.frame_socket.send_multipart(
                                         [
-                                            identity,  # Client identity
+                                            identity,  # Client identity for routing
                                             b"frame",  # Message type
-                                            json.dumps(metadata).encode(),  # Metadata
+                                            json.dumps(
+                                                metadata
+                                            ).encode(),  # Metadata as JSON
                                             frame.data,  # Frame data
                                         ]
                                     )
@@ -313,12 +329,14 @@ class FrameGenerator:
                                     "pattern_name": "",
                                     "params": {},
                                 }
-                                # Send all parts of the empty message
+                                # Send empty frame with same format
                                 self.frame_socket.send_multipart(
                                     [
-                                        identity,  # Client identity
+                                        identity,  # Client identity for routing
                                         b"frame",  # Message type
-                                        json.dumps(metadata).encode(),  # Metadata
+                                        json.dumps(
+                                            metadata
+                                        ).encode(),  # Metadata as JSON
                                         bytearray(),  # Empty frame data
                                     ]
                                 )
