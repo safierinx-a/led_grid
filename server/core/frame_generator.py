@@ -253,13 +253,11 @@ class FrameGenerator:
                 try:
                     # Receive the READY message
                     parts = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
-                    if (
-                        len(parts) != 4
-                    ):  # Expect 4 parts: identity, empty delimiter, empty delimiter, message
+                    if len(parts) != 2:  # Expect 2 parts: identity and message
                         print(f"Received invalid request format: {len(parts)} parts")
                         continue
 
-                    identity, delimiter1, delimiter2, msg = parts
+                    identity, msg = parts
                     if msg == b"READY":
                         # Get frame from buffer
                         try:
@@ -283,8 +281,6 @@ class FrameGenerator:
                                     self.frame_socket.send_multipart(
                                         [
                                             identity,  # Client identity
-                                            b"",  # Empty delimiter
-                                            b"",  # Empty delimiter
                                             b"frame",  # Message type
                                             json.dumps(metadata).encode(),  # Metadata
                                             frame.data,  # Frame data
@@ -321,8 +317,6 @@ class FrameGenerator:
                                 self.frame_socket.send_multipart(
                                     [
                                         identity,  # Client identity
-                                        b"",  # Empty delimiter
-                                        b"",  # Empty delimiter
                                         b"frame",  # Message type
                                         json.dumps(metadata).encode(),  # Metadata
                                         bytearray(),  # Empty frame data
