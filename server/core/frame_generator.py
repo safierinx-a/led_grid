@@ -57,10 +57,16 @@ class FrameGenerator:
         self.frame_socket = self.zmq_context.socket(zmq.ROUTER)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
-        # Set socket options
-        self.frame_socket.setsockopt(zmq.LINGER, 0)
+        # Set socket options for reliability
+        self.frame_socket.setsockopt(zmq.LINGER, 0)  # Don't wait for pending messages
         self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms timeout
         self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms timeout
+        self.frame_socket.setsockopt(zmq.RCVHWM, 10)  # High water mark for receiving
+        self.frame_socket.setsockopt(zmq.SNDHWM, 10)  # High water mark for sending
+        self.frame_socket.setsockopt(zmq.RECONNECT_IVL, 100)  # Reconnect interval
+        self.frame_socket.setsockopt(
+            zmq.RECONNECT_IVL_MAX, 5000
+        )  # Max reconnect interval
 
         # Threading control
         self.is_running = False
@@ -335,6 +341,10 @@ class FrameGenerator:
             self.frame_socket.setsockopt(zmq.LINGER, 0)
             self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)
             self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)
+            self.frame_socket.setsockopt(zmq.RCVHWM, 10)
+            self.frame_socket.setsockopt(zmq.SNDHWM, 10)
+            self.frame_socket.setsockopt(zmq.RECONNECT_IVL, 100)
+            self.frame_socket.setsockopt(zmq.RECONNECT_IVL_MAX, 5000)
 
             # Rebind
             zmq_address = f"tcp://*:{self.zmq_port}"
