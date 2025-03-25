@@ -56,6 +56,9 @@ class LEDController:
         self.last_fps_print = time.time()
         self.last_frame_time = time.time()
         self.frame_timeout = 5.0  # seconds
+        self.performance_log_interval = (
+            5.0  # Log every 5 seconds instead of every second
+        )
 
         # Frame rate limiting
         self.target_fps = 60.0
@@ -180,7 +183,10 @@ class LEDController:
                     self.next_frame_time = current_time + self.target_frame_time
 
                     # Performance reporting
-                    if current_time - self.last_fps_print >= 1.0:
+                    if (
+                        current_time - self.last_fps_print
+                        >= self.performance_log_interval
+                    ):
                         if self.frame_count > 0 and self.frame_times:
                             avg_frame_time = sum(self.frame_times) / len(
                                 self.frame_times
@@ -189,7 +195,7 @@ class LEDController:
                                 current_time - self.last_fps_print
                             )
                             print(
-                                f"Display FPS: {fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
+                                f"Display: FPS={fps:.1f}, Frame={avg_frame_time * 1000:.1f}ms"
                             )
                         self.frame_count = 0
                         self.last_fps_print = current_time

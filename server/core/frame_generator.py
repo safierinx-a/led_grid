@@ -72,6 +72,9 @@ class FrameGenerator:
         self.last_fps_print = time.time()
         self.frame_count = 0
         self.delivered_count = 0
+        self.performance_log_interval = (
+            5.0  # Log every 5 seconds instead of every second
+        )
 
         # Target frame rate
         self.target_frame_time = 1.0 / 60  # 60 FPS
@@ -201,8 +204,8 @@ class FrameGenerator:
                 if len(self.frame_times) > 100:
                     self.frame_times.pop(0)
 
-                # Print FPS every second
-                if current_time - self.last_fps_print >= 1.0:
+                # Print FPS every 5 seconds
+                if current_time - self.last_fps_print >= self.performance_log_interval:
                     if self.frame_count > 0:
                         fps = self.frame_count / (current_time - self.last_fps_print)
                         delivered_fps = self.delivered_count / (
@@ -210,7 +213,7 @@ class FrameGenerator:
                         )
                         avg_frame_time = sum(self.frame_times) / len(self.frame_times)
                         print(
-                            f"Generation FPS: {fps:.1f}, Delivery FPS: {delivered_fps:.1f}, Frame time: {avg_frame_time * 1000:.1f}ms"
+                            f"Performance: FPS={fps:.1f}, Delivery={delivered_fps:.1f}, Frame={avg_frame_time * 1000:.1f}ms"
                         )
                     self.frame_count = 0
                     self.delivered_count = 0
@@ -305,7 +308,6 @@ class FrameGenerator:
 
             except Exception as e:
                 print(f"Error in delivery loop: {e}")
-                traceback.print_exc()
                 delivery_errors += 1
 
                 if delivery_errors >= max_delivery_errors:
