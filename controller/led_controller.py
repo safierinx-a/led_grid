@@ -93,6 +93,21 @@ class LEDController:
     def connect_zmq(self):
         """Connect to ZMQ server for frame data"""
         try:
+            # Set socket options for reliability
+            self.frame_socket.setsockopt(
+                zmq.LINGER, 0
+            )  # Don't wait for pending messages
+            self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms timeout
+            self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms timeout
+            self.frame_socket.setsockopt(
+                zmq.RCVHWM, 10
+            )  # High water mark for receiving
+            self.frame_socket.setsockopt(zmq.SNDHWM, 10)  # High water mark for sending
+            self.frame_socket.setsockopt(zmq.RECONNECT_IVL, 100)  # Reconnect interval
+            self.frame_socket.setsockopt(
+                zmq.RECONNECT_IVL_MAX, 5000
+            )  # Max reconnect interval
+
             zmq_address = f"tcp://{self.zmq_host}:{self.zmq_port}"
             print(f"Connecting to ZMQ server at {zmq_address}")
             self.frame_socket.connect(zmq_address)
@@ -163,6 +178,14 @@ class LEDController:
         frame_count = 0
         frame_times = []
 
+        # Connect to ZMQ server
+        if not self.connect_zmq():
+            print("Failed to connect to ZMQ server. Exiting...")
+            self.is_running = False
+            return
+
+        print(f"Connected to ZMQ server at tcp://{self.zmq_host}:{self.zmq_port}")
+
         while self.is_running:
             try:
                 current_time = time.time()
@@ -174,6 +197,13 @@ class LEDController:
                     except zmq.error.Again:
                         # If send fails, wait a bit before retrying
                         time.sleep(0.001)
+                        continue
+                    except zmq.error.ZMQError as e:
+                        print(f"ZMQ send error: {e}")
+                        # Try to reconnect
+                        if not self.connect_zmq():
+                            print("Failed to reconnect to ZMQ server")
+                            time.sleep(1)
                         continue
 
                 # Handle incoming frame
@@ -199,6 +229,13 @@ class LEDController:
                     sleep_time = self.next_frame_time - time.time()
                     if sleep_time > 0:
                         time.sleep(min(0.01, sleep_time))
+                    continue
+                except zmq.error.ZMQError as e:
+                    print(f"ZMQ receive error: {e}")
+                    # Try to reconnect
+                    if not self.connect_zmq():
+                        print("Failed to reconnect to ZMQ server")
+                        time.sleep(1)
                     continue
 
                 # Performance reporting
