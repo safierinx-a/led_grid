@@ -7,6 +7,7 @@ import paho.mqtt.client as mqtt
 import json
 import traceback
 import copy
+import uuid
 
 from server.config.grid_config import GridConfig
 from server.patterns.base import Pattern, PatternRegistry
@@ -135,42 +136,52 @@ class PatternManager:
         """Register callback for pattern changes"""
         self.on_pattern_change = callback
 
-    def _notify_pattern_change(self):
-        """Notify callback of pattern changes with thread safety"""
-        with self.pattern_lock:
-            if self.on_pattern_change:
-                pattern_id = str(time.time_ns()) if self.current_pattern else None
-                self.on_pattern_change(
-                    self.current_pattern, self.current_params, pattern_id
+    def _notify_pattern_change(self, prev_pattern=None, prev_params=None):
+        """Notify observers of pattern change with transition info"""
+        for observer in self.observers:
+            try:
+                observer.on_pattern_change(
+                    self.current_pattern,
+                    self.current_params,
+                    self.pattern_id,
+                    prev_pattern,
+                    prev_params,
                 )
+            except Exception as e:
+                print(f"Error notifying observer: {e}")
 
     def _handle_pattern_select(self, msg):
-        """Handle pattern selection with thread safety"""
+        """Handle pattern selection message"""
         try:
-            pattern_name = msg.decode()
-            print(f"Pattern selection request: {pattern_name}")
+            data = json.loads(msg.decode())
+            pattern_name = data.get("pattern")
+            params = data.get("params", {})
+            pattern_id = data.get("pattern_id", str(uuid.uuid4()))
 
-            with self.pattern_lock:
-                pattern = next(
-                    (p for p in self.patterns if p.definition().name == pattern_name),
-                    None,
-                )
-                if pattern:
-                    print(f"Found pattern: {pattern.definition().name}")
-                    self.current_pattern = pattern
+            if pattern_name:
+                with self.pattern_lock:
+                    # Store previous pattern for transition
+                    prev_pattern = self.current_pattern
+                    prev_params = self.current_params.copy()
 
-                    # Notify callback (this will acquire pattern_lock again, but RLock allows this)
-                    self._notify_pattern_change()
+                    # Initialize new pattern
+                    pattern_class = self.pattern_registry.get_pattern(pattern_name)
+                    if pattern_class:
+                        self.current_pattern = pattern_class(self.grid_config)
+                        self.current_params = params.copy()
+                        self.pattern_id = pattern_id
 
-                    print(f"Pattern selection complete: {pattern.definition().name}")
-                else:
-                    print(f"Pattern not found: {pattern_name}")
-                    print(
-                        f"Available patterns: {[p.definition().name for p in self.patterns]}"
-                    )
+                        # If we have a previous pattern, ensure smooth transition
+                        if prev_pattern:
+                            # Send transition signal to frame generator
+                            self._notify_pattern_change(prev_pattern, prev_params)
+
+                        # Notify observers of pattern change
+                        self._notify_pattern_change()
+                    else:
+                        print(f"Pattern not found: {pattern_name}")
         except Exception as e:
             print(f"Error handling pattern select: {e}")
-            traceback.print_exc()
 
     def _handle_numeric_param(self, param_name: str, msg):
         """Handle numeric parameter updates with thread safety"""
@@ -245,17 +256,27 @@ class PatternManager:
             print(f"Error handling reset control: {e}")
 
     def _handle_clear(self, msg):
-        """Handle clear command with thread safety"""
+        """Handle clear message"""
         try:
             if msg.decode() == "CLEAR":
-                # Clear pattern and update state with thread safety
                 with self.pattern_lock:
+                    # Store previous pattern for transition
+                    prev_pattern = self.current_pattern
+                    prev_params = self.current_params.copy()
+
+                    # Clear current pattern
                     self.current_pattern = None
                     self.current_params = {}
-                    # Notify pattern change after clearing
+                    self.pattern_id = None
+
+                    # Send transition signal to frame generator
+                    if prev_pattern:
+                        self._notify_pattern_change(prev_pattern, prev_params)
+
+                    # Notify observers of pattern change
                     self._notify_pattern_change()
         except Exception as e:
-            print(f"Error handling clear command: {e}")
+            print(f"Error handling clear: {e}")
 
     def _handle_stop(self, msg):
         """Handle stop command with thread safety"""

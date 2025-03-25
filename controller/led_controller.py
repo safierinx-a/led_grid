@@ -115,15 +115,30 @@ class LEDController:
         try:
             frame_start = time.time()
 
-            # Update LED strip
+            # Check if this is an empty frame (keep-alive)
+            if metadata.get("frame_size", 0) == 0:
+                return True
+
+            # Verify frame data length
+            expected_size = LED_COUNT * 3
+            if len(frame_data) != expected_size:
+                print(
+                    f"Invalid frame size: got {len(frame_data)}, expected {expected_size}"
+                )
+                return False
+
+            # Batch update LED strip
+            pixels = []
             for i in range(LED_COUNT):
                 idx = i * 3
-                if idx + 2 < len(frame_data):
-                    r = frame_data[idx]
-                    g = frame_data[idx + 1]
-                    b = frame_data[idx + 2]
-                    self.strip.setPixelColor(i, Color(r, g, b))
+                r = frame_data[idx]
+                g = frame_data[idx + 1]
+                b = frame_data[idx + 2]
+                pixels.append(Color(r, g, b))
 
+            # Update strip in one operation
+            for i, color in enumerate(pixels):
+                self.strip.setPixelColor(i, color)
             self.strip.show()
 
             # Performance tracking
@@ -145,78 +160,74 @@ class LEDController:
             return False
 
     def run(self):
-        """Main run loop"""
-        try:
-            # Initial connection
-            if not self.connect_zmq():
-                print("Failed to connect to ZMQ server")
-                return
+        """Main controller loop"""
+        print("Starting LED controller...")
+        self.is_running = True
+        last_performance_report = time.time()
+        frame_count = 0
+        frame_times = []
+        min_sleep = 0.001  # Minimum sleep time
+        max_sleep = 0.016  # Maximum sleep time (1/60th of a second)
+        frame_interval = 1.0 / self.target_fps
+        last_frame_time = time.time()
 
-            print("Starting frame reception loop...")
-            while True:
-                try:
-                    # Wait until it's time for the next frame
-                    current_time = time.time()
-                    if current_time < self.next_frame_time:
-                        time.sleep(0.001)  # Small sleep to prevent busy waiting
+        while self.is_running:
+            try:
+                current_time = time.time()
+                elapsed = current_time - last_frame_time
+
+                # Request frame if enough time has passed
+                if elapsed >= frame_interval:
+                    try:
+                        self.frame_socket.send_multipart([b"READY"])
+                    except zmq.error.Again:
+                        # If send fails, wait a bit before retrying
+                        time.sleep(min_sleep)
                         continue
 
-                    # Request new frame
-                    self.frame_socket.send(b"READY")
-
-                    # Receive frame
-                    topic, metadata_bytes, frame_data = (
-                        self.frame_socket.recv_multipart()
+                # Handle incoming frame
+                try:
+                    identity, msg, metadata, frame_data = (
+                        self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
                     )
-                    metadata = json.loads(metadata_bytes.decode())
+                    if msg == b"frame":
+                        frame_start = time.time()
+                        if self.handle_frame(frame_data, metadata):
+                            frame_time = time.time() - frame_start
+                            frame_times.append(frame_time)
+                            frame_count += 1
+                            last_frame_time = current_time
 
-                    # Handle frame
-                    if not self.handle_frame(frame_data, metadata):
-                        if self.consecutive_errors >= self.max_consecutive_errors:
-                            print("Too many consecutive errors, reinitializing...")
-                            if not self.init_strip():
-                                print("Failed to reinitialize strip")
-                                break
-                            self.consecutive_errors = 0
-
-                    # Update next frame time
-                    self.next_frame_time = current_time + self.target_frame_time
-
-                    # Performance reporting
-                    if (
-                        current_time - self.last_fps_print
-                        >= self.performance_log_interval
-                    ):
-                        if self.frame_count > 0 and self.frame_times:
-                            avg_frame_time = sum(self.frame_times) / len(
-                                self.frame_times
+                            # Update next frame time based on actual frame processing time
+                            self.next_frame_time = current_time + max(
+                                0.001, frame_interval - frame_time
                             )
-                            fps = self.frame_count / (
-                                current_time - self.last_fps_print
-                            )
-                            print(
-                                f"Display: FPS={fps:.1f}, Frame={avg_frame_time * 1000:.1f}ms"
-                            )
-                        self.frame_count = 0
-                        self.last_fps_print = current_time
-
-                except zmq.Again:
-                    # Handle timeout
-                    if time.time() - self.last_frame_time > self.frame_timeout:
-                        print("Frame timeout - server may be down")
-                        self.clear_strip()
-                        time.sleep(1)
+                    else:
+                        print(f"Received unknown message type: {msg}")
+                except zmq.error.Again:
+                    # No frame available, sleep until next frame time
+                    sleep_time = self.next_frame_time - time.time()
+                    if sleep_time > 0:
+                        time.sleep(min(max_sleep, sleep_time))
                     continue
 
-                except Exception as e:
-                    print(f"Error in main loop: {e}")
-                    traceback.print_exc()
-                    time.sleep(0.1)
+                # Performance reporting
+                if (
+                    current_time - last_performance_report >= 5.0
+                ):  # Report every 5 seconds
+                    if frame_times:
+                        avg_frame_time = sum(frame_times) / len(frame_times)
+                        fps = frame_count / (current_time - last_performance_report)
+                        print(
+                            f"Performance: FPS={fps:.1f}, Frame={avg_frame_time * 1000:.1f}ms"
+                        )
+                        frame_times.clear()
+                        frame_count = 0
+                        last_performance_report = current_time
 
-        except KeyboardInterrupt:
-            print("\nShutdown requested...")
-        finally:
-            self.shutdown()
+            except Exception as e:
+                print(f"Error in main loop: {e}")
+                time.sleep(min_sleep)  # Prevent tight error loop
 
     def shutdown(self):
         """Clean shutdown"""
