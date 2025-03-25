@@ -193,8 +193,8 @@ class LEDController:
                 # Request frame if ready
                 if current_time >= self.next_frame_time:
                     try:
-                        # Send READY message with empty identity
-                        self.frame_socket.send_multipart([b"", b"READY"])
+                        # Send READY message with empty identity and delimiter
+                        self.frame_socket.send_multipart([b"", b"", b"READY"])
                     except zmq.error.Again:
                         # If send fails, wait a bit before retrying
                         time.sleep(0.001)
@@ -211,11 +211,13 @@ class LEDController:
                 try:
                     # Receive all parts of the message
                     parts = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
-                    if len(parts) != 4:
+                    if (
+                        len(parts) != 5
+                    ):  # Expect 5 parts: identity, delimiter, msg_type, metadata, frame_data
                         print(f"Received invalid message format: {len(parts)} parts")
                         continue
 
-                    identity, msg_type, metadata_json, frame_data = parts
+                    identity, delimiter, msg_type, metadata_json, frame_data = parts
                     if msg_type == b"frame":
                         frame_start = time.time()
                         metadata = json.loads(metadata_json.decode())
