@@ -266,13 +266,17 @@ class FrameGenerator:
                                         "pattern_id": frame.pattern_id,
                                         "timestamp": frame.timestamp,
                                         "frame_size": len(frame.data),
+                                        "pattern_name": frame.metadata.get(
+                                            "pattern_name", ""
+                                        ),
+                                        "params": frame.metadata.get("params", {}),
                                     }
                                     self.frame_socket.send_multipart(
                                         [
-                                            identity,
-                                            b"frame",
-                                            json.dumps(metadata).encode(),
-                                            frame.data,
+                                            identity,  # Client identity
+                                            b"frame",  # Message type
+                                            json.dumps(metadata).encode(),  # Metadata
+                                            frame.data,  # Frame data
                                         ]
                                     )
                                     self.delivered_count += 1
@@ -298,13 +302,15 @@ class FrameGenerator:
                                     "pattern_id": None,
                                     "timestamp": time.time_ns(),
                                     "frame_size": 0,
+                                    "pattern_name": "",
+                                    "params": {},
                                 }
                                 self.frame_socket.send_multipart(
                                     [
-                                        identity,
-                                        b"frame",
-                                        json.dumps(metadata).encode(),
-                                        bytearray(),
+                                        identity,  # Client identity
+                                        b"frame",  # Message type
+                                        json.dumps(metadata).encode(),  # Metadata
+                                        bytearray(),  # Empty frame data
                                     ]
                                 )
                             except Exception as e:
