@@ -31,7 +31,6 @@ print("\n=== Importing Pattern Modules ===")
 # Function to import a pattern module with detailed error reporting
 def import_pattern_module(module_name):
     try:
-        print(f"\nLoading pattern: {module_name}")
         module = __import__(f"server.patterns.{module_name}", fromlist=["*"])
         print(f"✓ Imported {module_name} pattern")
 
@@ -46,27 +45,31 @@ def import_pattern_module(module_name):
                 and issubclass(attr, Pattern)  # Check if it's a Pattern subclass
                 and attr != Pattern  # Exclude the base Pattern class
             ):
-                print(f"  - Found pattern class: {attr.__name__}")
+                print(f"  - Found Pattern subclass: {attr.__name__}")
 
-                try:
-                    # Create instance with error handling
-                    print(f"  - Creating instance of {attr.__name__}")
-                    instance = attr(DEFAULT_CONFIG)
-                    print(f"  - Successfully created instance")
+                # Check if this class is in the PatternRegistry
+                if hasattr(PatternRegistry, "_patterns") and PatternRegistry._patterns:
+                    for (
+                        pattern_name,
+                        pattern_class,
+                    ) in PatternRegistry._patterns.items():
+                        if pattern_class == attr:
+                            module_has_registered_patterns = True
+                            print(
+                                f"  - Confirmed registered in PatternRegistry: {pattern_name}"
+                            )
 
-                    # Add to patterns list
-                    if hasattr(PatternRegistry, "_patterns"):
-                        PatternRegistry._patterns[module_name] = attr
-                        print(f"  - Added to patterns list")
-                        module_has_registered_patterns = True
-                        print(f"Successfully loaded pattern: {module_name}")
-                    else:
-                        print(f"  ! Warning: PatternRegistry._patterns not initialized")
-                except Exception as e:
-                    print(f"  ! Error creating pattern instance: {e}")
-                    print("  ! Traceback:")
-                    traceback.print_exc()
-                    continue
+                # Check if it has a definition method
+                if hasattr(attr, "definition"):
+                    try:
+                        definition = attr.definition()
+                        print(f"  - Pattern definition: {definition.name}")
+                    except Exception as e:
+                        print(f"  - Error getting pattern definition: {e}")
+                else:
+                    print(
+                        f"  - Warning: Pattern class {attr.__name__} has no definition method"
+                    )
 
         if not module_has_registered_patterns:
             print(
@@ -89,33 +92,34 @@ if not hasattr(PatternRegistry, "_patterns") or PatternRegistry._patterns is Non
     print("Initializing PatternRegistry._patterns as it was not initialized")
     PatternRegistry._patterns = {}
 
-# Import patterns in smaller batches to avoid memory issues
-pattern_batches = [
-    ["test_pattern"],  # Test pattern first
-    ["plasma", "rainbow_wave"],  # Simple patterns
-    ["fire", "matrix_rain"],  # Complex patterns
-    ["game_of_life", "starfield"],  # More complex patterns
-    ["particle_system", "waves"],  # Physics-based patterns
-    ["polyhedra3d", "color_cycle"],  # 3D patterns
-    ["emoji", "perlin_landscape"],  # Image-based patterns
-    ["sine_wave", "swarm_system"],  # Wave patterns
-    ["generative"],  # Most complex patterns
+# Import patterns
+patterns_to_import = [
+    "test_pattern",  # Import test pattern first
+    "plasma",
+    "rainbow_wave",
+    "fire",
+    "matrix_rain",
+    "game_of_life",
+    "starfield",
+    "particle_system",
+    "waves",
+    "polyhedra3d",
+    "color_cycle",
+    "emoji",
+    "perlin_landscape",
+    "sine_wave",
+    "swarm_system",
+    "generative",
 ]
 
 successful_imports = 0
-total_patterns = sum(len(batch) for batch in pattern_batches)
-
-for batch in pattern_batches:
-    print(f"\n=== Loading Pattern Batch ===")
-    for pattern_name in batch:
-        if import_pattern_module(pattern_name):
-            successful_imports += 1
-    # Add a small delay between batches to allow memory to stabilize
-    time.sleep(0.5)
+for pattern_name in patterns_to_import:
+    if import_pattern_module(pattern_name):
+        successful_imports += 1
 
 print(f"\n=== Pattern Import Summary ===")
 print(
-    f"Successfully imported {successful_imports} out of {total_patterns} pattern modules"
+    f"Successfully imported {successful_imports} out of {len(patterns_to_import)} pattern modules"
 )
 
 # Import modifiers
@@ -164,40 +168,90 @@ else:
 # Create and run the server
 def main():
     """Main entry point"""
+    # Load environment variables
+    load_dotenv()
+
+    # Create server
+    server = LEDServer(DEFAULT_CONFIG)
+
+    # Print server configuration
+    print("\n=== Server Configuration ===")
+    print(f"Grid dimensions: {server.grid_config.width}x{server.grid_config.height}")
+    print(f"Pattern manager: {server.pattern_manager}")
+    print(
+        f"Available patterns: {[p.definition().name for p in server.pattern_manager.patterns]}"
+    )
+
+    # Start the web server in a separate thread
+    web_thread = None
     try:
-        # Load environment variables
-        load_dotenv()
+        from server.web import create_app, socketio
 
-        # Create MQTT config from environment variables
-        mqtt_config = {
-            "host": os.getenv("MQTT_BROKER", "localhost"),
-            "port": int(os.getenv("MQTT_PORT", "1883")),
-            "username": os.getenv("MQTT_USER"),
-            "password": os.getenv("MQTT_PASSWORD"),
-        }
+        print("\n=== Starting Web Server ===")
+        app = create_app(server)
 
-        # Create server with both configs
-        server = LEDServer(DEFAULT_CONFIG, mqtt_config)
+        # Get port from environment or use default
+        port = int(os.environ.get("WEB_PORT", 5001))
 
-        # Start server
-        if not server.start():
-            print("Failed to start server")
-            return 1
+        # Get SSL configuration from environment
+        ssl_cert = os.environ.get("SSL_CERT")
+        ssl_key = os.environ.get("SSL_KEY")
+        use_https = (
+            ssl_cert
+            and ssl_key
+            and os.path.exists(ssl_cert)
+            and os.path.exists(ssl_key)
+        )
 
-        # Keep main thread alive
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nShutting down...")
-            server.stop()
-            return 0
+        # Configure SSL context if using HTTPS
+        ssl_context = None
+        if use_https:
+            print(f"HTTPS enabled with certificate: {ssl_cert}")
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(ssl_cert, ssl_key)
+        else:
+            print("HTTPS not enabled. Using HTTP only.")
+            print("To enable HTTPS, set SSL_CERT and SSL_KEY environment variables.")
 
+        # Define a function to run the web server
+        def run_web_server():
+            print(
+                f"Starting {'HTTPS' if use_https else 'HTTP'} web server on port {port}..."
+            )
+            socketio.run(
+                app,
+                host="0.0.0.0",
+                port=port,
+                debug=False,
+                use_reloader=False,
+                allow_unsafe_werkzeug=True,
+                ssl_context=ssl_context,
+            )
+
+        # Start the web server in a separate thread
+        web_thread = threading.Thread(target=run_web_server)
+        web_thread.daemon = True
+        web_thread.start()
+        print("Web server thread started")
     except Exception as e:
-        print(f"Error in main: {e}")
+        print(f"Error starting web server: {e}")
         traceback.print_exc()
-        return 1
+        print("Continuing without web server...")
+
+    # Run server
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("\nReceived shutdown signal")
+    finally:
+        print("Shutting down...")
+        server.stop()
+
+        # Wait for web thread to terminate
+        if web_thread and web_thread.is_alive():
+            print("Waiting for web server to terminate...")
+            web_thread.join(timeout=5)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
