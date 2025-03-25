@@ -193,7 +193,7 @@ class LEDController:
                 # Request frame if ready
                 if current_time >= self.next_frame_time:
                     try:
-                        self.frame_socket.send_multipart([b"READY"])
+                        self.frame_socket.send(b"READY")
                     except zmq.error.Again:
                         # If send fails, wait a bit before retrying
                         time.sleep(0.001)
@@ -208,11 +208,17 @@ class LEDController:
 
                 # Handle incoming frame
                 try:
-                    identity, msg, metadata, frame_data = (
-                        self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
-                    )
-                    if msg == b"frame":
+                    # Receive all parts of the message
+                    parts = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
+                    if len(parts) != 4:
+                        print(f"Received invalid message format: {len(parts)} parts")
+                        continue
+
+                    msg_type = parts[1]
+                    if msg_type == b"frame":
                         frame_start = time.time()
+                        metadata = json.loads(parts[2].decode())
+                        frame_data = parts[3]
                         self.handle_frame(frame_data, metadata)
                         frame_time = time.time() - frame_start
                         frame_times.append(frame_time)
@@ -223,7 +229,7 @@ class LEDController:
                             0.001, 1.0 / self.target_fps - frame_time
                         )
                     else:
-                        print(f"Received unknown message type: {msg}")
+                        print(f"Received unknown message type: {msg_type}")
                 except zmq.error.Again:
                     # No frame available, sleep until next frame time
                     sleep_time = self.next_frame_time - time.time()
@@ -236,6 +242,9 @@ class LEDController:
                     if not self.connect_zmq():
                         print("Failed to reconnect to ZMQ server")
                         time.sleep(1)
+                    continue
+                except json.JSONDecodeError as e:
+                    print(f"Error decoding metadata: {e}")
                     continue
 
                 # Performance reporting
