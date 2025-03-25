@@ -32,20 +32,10 @@ class PatternManager:
         self.pattern_id: Optional[str] = None
         self.pattern_lock = threading.RLock()
 
-        # Observer management
-        self.observers: List[
-            Callable[
-                [
-                    Optional[Pattern],
-                    Dict[str, Any],
-                    str,
-                    Optional[Pattern],
-                    Optional[Dict[str, Any]],
-                ],
-                None,
-            ]
-        ] = []
-        self.observer_lock = threading.RLock()
+        # Callback for pattern changes
+        self.on_pattern_change: Optional[
+            Callable[[Optional[Pattern], Dict[str, Any], str], None]
+        ] = None
 
         # Hardware state
         self.hardware_state = {
@@ -146,60 +136,19 @@ class PatternManager:
         """Register callback for pattern changes"""
         self.on_pattern_change = callback
 
-    def add_observer(
-        self,
-        observer: Callable[
-            [
-                Optional[Pattern],
-                Dict[str, Any],
-                str,
-                Optional[Pattern],
-                Optional[Dict[str, Any]],
-            ],
-            None,
-        ],
-    ) -> None:
-        """Add an observer for pattern changes"""
-        with self.observer_lock:
-            if observer not in self.observers:
-                self.observers.append(observer)
-                print(f"Added pattern observer, total observers: {len(self.observers)}")
-
-    def remove_observer(
-        self,
-        observer: Callable[
-            [
-                Optional[Pattern],
-                Dict[str, Any],
-                str,
-                Optional[Pattern],
-                Optional[Dict[str, Any]],
-            ],
-            None,
-        ],
-    ) -> None:
-        """Remove an observer for pattern changes"""
-        with self.observer_lock:
-            if observer in self.observers:
-                self.observers.remove(observer)
-                print(
-                    f"Removed pattern observer, remaining observers: {len(self.observers)}"
-                )
-
     def _notify_pattern_change(self, prev_pattern=None, prev_params=None):
         """Notify observers of pattern change with transition info"""
-        with self.observer_lock:
-            for observer in self.observers:
-                try:
-                    observer(
-                        self.current_pattern,
-                        self.current_params,
-                        self.pattern_id,
-                        prev_pattern,
-                        prev_params,
-                    )
-                except Exception as e:
-                    print(f"Error notifying observer: {e}")
+        for observer in self.observers:
+            try:
+                observer.on_pattern_change(
+                    self.current_pattern,
+                    self.current_params,
+                    self.pattern_id,
+                    prev_pattern,
+                    prev_params,
+                )
+            except Exception as e:
+                print(f"Error notifying observer: {e}")
 
     def _handle_pattern_select(self, msg):
         """Handle pattern selection message"""

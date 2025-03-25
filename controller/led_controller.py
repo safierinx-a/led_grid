@@ -127,18 +127,14 @@ class LEDController:
                 )
                 return False
 
-            # Batch update LED strip
-            pixels = []
+            # Update LED strip
             for i in range(LED_COUNT):
                 idx = i * 3
                 r = frame_data[idx]
                 g = frame_data[idx + 1]
                 b = frame_data[idx + 2]
-                pixels.append(Color(r, g, b))
+                self.strip.setPixelColor(i, Color(r, g, b))
 
-            # Update strip in one operation
-            for i, color in enumerate(pixels):
-                self.strip.setPixelColor(i, color)
             self.strip.show()
 
             # Performance tracking
@@ -166,23 +162,18 @@ class LEDController:
         last_performance_report = time.time()
         frame_count = 0
         frame_times = []
-        min_sleep = 0.001  # Minimum sleep time
-        max_sleep = 0.016  # Maximum sleep time (1/60th of a second)
-        frame_interval = 1.0 / self.target_fps
-        last_frame_time = time.time()
 
         while self.is_running:
             try:
                 current_time = time.time()
-                elapsed = current_time - last_frame_time
 
-                # Request frame if enough time has passed
-                if elapsed >= frame_interval:
+                # Request frame if ready
+                if current_time >= self.next_frame_time:
                     try:
                         self.frame_socket.send_multipart([b"READY"])
                     except zmq.error.Again:
                         # If send fails, wait a bit before retrying
-                        time.sleep(min_sleep)
+                        time.sleep(0.001)
                         continue
 
                 # Handle incoming frame
@@ -192,23 +183,22 @@ class LEDController:
                     )
                     if msg == b"frame":
                         frame_start = time.time()
-                        if self.handle_frame(frame_data, metadata):
-                            frame_time = time.time() - frame_start
-                            frame_times.append(frame_time)
-                            frame_count += 1
-                            last_frame_time = current_time
+                        self.handle_frame(frame_data, metadata)
+                        frame_time = time.time() - frame_start
+                        frame_times.append(frame_time)
+                        frame_count += 1
 
-                            # Update next frame time based on actual frame processing time
-                            self.next_frame_time = current_time + max(
-                                0.001, frame_interval - frame_time
-                            )
+                        # Update next frame time based on actual frame processing time
+                        self.next_frame_time = current_time + max(
+                            0.001, 1.0 / self.target_fps - frame_time
+                        )
                     else:
                         print(f"Received unknown message type: {msg}")
                 except zmq.error.Again:
                     # No frame available, sleep until next frame time
                     sleep_time = self.next_frame_time - time.time()
                     if sleep_time > 0:
-                        time.sleep(min(max_sleep, sleep_time))
+                        time.sleep(min(0.01, sleep_time))
                     continue
 
                 # Performance reporting
@@ -227,7 +217,7 @@ class LEDController:
 
             except Exception as e:
                 print(f"Error in main loop: {e}")
-                time.sleep(min_sleep)  # Prevent tight error loop
+                time.sleep(0.1)  # Prevent tight error loop
 
     def shutdown(self):
         """Clean shutdown"""
