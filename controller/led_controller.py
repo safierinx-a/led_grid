@@ -57,6 +57,11 @@ class LEDController:
         self.last_frame_time = time.time()
         self.frame_timeout = 5.0  # seconds
 
+        # Frame rate limiting
+        self.target_fps = 60.0
+        self.target_frame_time = 1.0 / self.target_fps
+        self.next_frame_time = time.time()
+
         # Error handling
         self.consecutive_errors = 0
         self.max_consecutive_errors = 3
@@ -147,6 +152,12 @@ class LEDController:
             print("Starting frame reception loop...")
             while True:
                 try:
+                    # Wait until it's time for the next frame
+                    current_time = time.time()
+                    if current_time < self.next_frame_time:
+                        time.sleep(0.001)  # Small sleep to prevent busy waiting
+                        continue
+
                     # Request new frame
                     self.frame_socket.send(b"READY")
 
@@ -165,8 +176,10 @@ class LEDController:
                                 break
                             self.consecutive_errors = 0
 
+                    # Update next frame time
+                    self.next_frame_time = current_time + self.target_frame_time
+
                     # Performance reporting
-                    current_time = time.time()
                     if current_time - self.last_fps_print >= 1.0:
                         if self.frame_count > 0 and self.frame_times:
                             avg_frame_time = sum(self.frame_times) / len(
