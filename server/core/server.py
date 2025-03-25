@@ -6,6 +6,7 @@ import zmq
 from typing import Dict, Any, Optional
 import os
 from dotenv import load_dotenv
+import json
 
 from server.config.grid_config import GridConfig, DEFAULT_CONFIG
 from server.patterns.base import Pattern
@@ -16,37 +17,53 @@ from server.core.frame_generator import FrameGenerator, Frame
 class LEDServer:
     """Main server that coordinates pattern management and frame generation"""
 
-    def __init__(self, grid_config: GridConfig = DEFAULT_CONFIG):
+    def __init__(self, grid_config: GridConfig, mqtt_config: Dict[str, Any]):
         # Load environment variables
         load_dotenv()
 
-        # Configuration
+        # Store configuration
         self.grid_config = grid_config
-        self.grid_config_lock = (
-            threading.RLock()
-        )  # Lock for thread-safe grid config access
-        self.mqtt_config = {
-            "host": os.getenv("MQTT_BROKER", "localhost"),
-            "port": int(os.getenv("MQTT_PORT", "1883")),
-            "username": os.getenv("MQTT_USER"),
-            "password": os.getenv("MQTT_PASSWORD"),
-        }
+        self.mqtt_config = mqtt_config
+        self.grid_config_lock = threading.RLock()
 
-        # Components
-        self.pattern_manager = PatternManager(grid_config, self.mqtt_config)
+        # Initialize components
+        self.pattern_manager = PatternManager(grid_config, mqtt_config)
         self.frame_generator = FrameGenerator(grid_config)
+        self.web_server = None
 
-        # Connect components
-        self.pattern_manager.register_pattern_change_callback(self._on_pattern_change)
+        # Set up pattern change observer
+        self.pattern_manager.add_observer(self._on_pattern_change)
 
         # Server state
         self.is_running = False
 
     def _on_pattern_change(
-        self, pattern: Optional[Pattern], params: Dict[str, Any], pattern_id: str
+        self,
+        pattern: Optional[Pattern],
+        params: Dict[str, Any],
+        pattern_id: str,
+        prev_pattern: Optional[Pattern] = None,
+        prev_params: Optional[Dict[str, Any]] = None,
     ):
-        """Handle pattern changes from pattern manager"""
-        self.frame_generator.set_pattern(pattern, params, pattern_id)
+        """Handle pattern changes"""
+        try:
+            # Update frame generator with new pattern
+            self.frame_generator.set_pattern(pattern, params, pattern_id)
+
+            # Publish pattern change to MQTT
+            if self.pattern_manager.mqtt_client:
+                self.pattern_manager.mqtt_client.publish(
+                    "led/pattern/current",
+                    json.dumps(
+                        {
+                            "pattern": pattern.definition().name if pattern else None,
+                            "params": params,
+                            "pattern_id": pattern_id,
+                        }
+                    ),
+                )
+        except Exception as e:
+            print(f"Error handling pattern change: {e}")
 
     def start(self):
         """Start all components"""
@@ -112,5 +129,13 @@ class LEDServer:
 
 
 if __name__ == "__main__":
-    server = LEDServer()
+    server = LEDServer(
+        DEFAULT_CONFIG,
+        {
+            "host": os.getenv("MQTT_BROKER", "localhost"),
+            "port": int(os.getenv("MQTT_PORT", "1883")),
+            "username": os.getenv("MQTT_USER"),
+            "password": os.getenv("MQTT_PASSWORD"),
+        },
+    )
     server.run()
