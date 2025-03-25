@@ -183,39 +183,32 @@ class FrameGenerator:
 
     def _generation_loop(self):
         """Main frame generation loop"""
-        last_frame_time = time.time()
-        frame_interval = 1.0 / 60.0  # Target 60 FPS
-        min_sleep = 0.001  # Minimum sleep time to prevent busy waiting
-        max_sleep = 0.016  # Maximum sleep time (1/60th of a second)
-
         while self.is_running:
-            try:
-                current_time = time.time()
-                elapsed = current_time - last_frame_time
+            loop_start = time.time()
 
-                # Generate frame if enough time has passed
-                if elapsed >= frame_interval:
-                    frame = self._generate_frame()
-                    if frame:
-                        # Try to add frame to buffer with priority based on sequence
+            try:
+                # Generate frame
+                frame = self._generate_frame()
+
+                if frame:
+                    # Try to add frame to buffer with priority based on sequence
+                    try:
+                        self.frame_buffer.put_nowait((frame.sequence, frame))
+                        self.frame_count += 1
+                    except queue.Full:
+                        # If buffer is full, drop the oldest frame
                         try:
+                            self.frame_buffer.get_nowait()  # Remove oldest frame
                             self.frame_buffer.put_nowait((frame.sequence, frame))
-                            self.frame_count += 1
-                            last_frame_time = current_time
-                        except queue.Full:
-                            # If buffer is full, drop the oldest frame
-                            try:
-                                self.frame_buffer.get_nowait()  # Remove oldest frame
-                                self.frame_buffer.put_nowait((frame.sequence, frame))
-                            except queue.Empty:
-                                pass  # If we can't remove old frame, skip new one
+                        except queue.Empty:
+                            pass  # If we can't remove old frame, skip new one
 
                 # Performance tracking
-                if frame:
-                    frame_time = time.time() - current_time
-                    self.frame_times.append(frame_time)
-                    if len(self.frame_times) > 100:
-                        self.frame_times.pop(0)
+                current_time = time.time()
+                frame_time = current_time - loop_start
+                self.frame_times.append(frame_time)
+                if len(self.frame_times) > 100:
+                    self.frame_times.pop(0)
 
                 # Print FPS every 5 seconds
                 if current_time - self.last_fps_print >= self.performance_log_interval:
@@ -224,11 +217,7 @@ class FrameGenerator:
                         delivered_fps = self.delivered_count / (
                             current_time - self.last_fps_print
                         )
-                        avg_frame_time = (
-                            sum(self.frame_times) / len(self.frame_times)
-                            if self.frame_times
-                            else 0
-                        )
+                        avg_frame_time = sum(self.frame_times) / len(self.frame_times)
                         print(
                             f"Performance: FPS={fps:.1f}, Delivery={delivered_fps:.1f}, Frame={avg_frame_time * 1000:.1f}ms"
                         )
@@ -236,14 +225,14 @@ class FrameGenerator:
                     self.delivered_count = 0
                     self.last_fps_print = current_time
 
-                # Adaptive sleep based on frame generation time
-                sleep_time = max(0, min(max_sleep, frame_interval - elapsed))
-                if sleep_time > min_sleep:
-                    time.sleep(sleep_time)
+                # Maintain target frame rate
+                elapsed = time.time() - loop_start
+                if elapsed < self.target_frame_time:
+                    time.sleep(self.target_frame_time - elapsed)
 
             except Exception as e:
                 print(f"Error in generation loop: {e}")
-                time.sleep(min_sleep)  # Brief sleep on error
+                time.sleep(0.001)  # Brief sleep on error
 
     def _delivery_loop(self):
         """Frame delivery loop"""
@@ -251,14 +240,10 @@ class FrameGenerator:
         max_delivery_errors = 3
         error_reset_interval = 60.0
         last_error_time = time.time()
-        min_sleep = 0.001  # Minimum sleep time
-        max_sleep = 0.016  # Maximum sleep time (1/60th of a second)
-        empty_frame_count = 0
-        max_empty_frames = 3  # Maximum number of empty frames to send before waiting
 
         while self.is_running:
             try:
-                # Wait for frame request with timeout
+                # Wait for frame request
                 try:
                     identity, msg = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
                     if msg == b"READY":
@@ -287,7 +272,6 @@ class FrameGenerator:
                                     self.delivered_count += 1
                                     delivery_errors = 0
                                     last_error_time = time.time()
-                                    empty_frame_count = 0  # Reset empty frame counter
                                 except zmq.error.Again:
                                     print("Frame send timeout - client may be slow")
                                     continue
@@ -301,35 +285,27 @@ class FrameGenerator:
                                         self._rebind_socket()
                                         delivery_errors = 0
                         except queue.Empty:
-                            # Handle empty buffer
-                            if empty_frame_count < max_empty_frames:
-                                # Send empty frame to keep client alive
-                                try:
-                                    metadata = {
-                                        "seq": -1,
-                                        "pattern_id": None,
-                                        "timestamp": time.time_ns(),
-                                        "frame_size": 0,
-                                    }
-                                    self.frame_socket.send_multipart(
-                                        [
-                                            identity,
-                                            b"frame",
-                                            json.dumps(metadata).encode(),
-                                            bytearray(),
-                                        ]
-                                    )
-                                    empty_frame_count += 1
-                                except Exception as e:
-                                    print(f"Error sending empty frame: {e}")
-                            else:
-                                # Wait a bit longer if we've sent too many empty frames
-                                time.sleep(max_sleep)
-                                empty_frame_count = 0
+                            # No frames available, send empty frame to keep client alive
+                            try:
+                                metadata = {
+                                    "seq": -1,
+                                    "pattern_id": None,
+                                    "timestamp": time.time_ns(),
+                                    "frame_size": 0,
+                                }
+                                self.frame_socket.send_multipart(
+                                    [
+                                        identity,
+                                        b"frame",
+                                        json.dumps(metadata).encode(),
+                                        bytearray(),
+                                    ]
+                                )
+                            except Exception as e:
+                                print(f"Error sending empty frame: {e}")
 
                 except zmq.Again:
-                    # No requests, sleep briefly
-                    time.sleep(min_sleep)
+                    time.sleep(0.001)  # Small sleep when no requests
                     continue
 
                 # Reset error count if enough time has passed
@@ -345,7 +321,7 @@ class FrameGenerator:
                     self._rebind_socket()
                     delivery_errors = 0
 
-                time.sleep(min_sleep)  # Brief sleep on error
+                time.sleep(0.1)  # Brief sleep on error
 
     def _rebind_socket(self):
         """Rebind ZMQ socket after errors"""
