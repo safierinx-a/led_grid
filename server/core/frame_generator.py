@@ -251,21 +251,13 @@ class FrameGenerator:
             try:
                 # Wait for frame request
                 try:
-                    # ROUTER socket automatically adds client identity as first frame
-                    # The second frame is the empty delimiter that DEALER adds
-                    # Third frame is the actual message
-                    parts = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
+                    # Receive the message with identity frame from DEALER
+                    identity = self.frame_socket.recv(flags=zmq.NOBLOCK)
 
-                    # For DEALER->ROUTER pattern, expect identity + empty delimiter + message
-                    if len(parts) != 3:
-                        print(
-                            f"Received invalid request format: {len(parts)} parts, expected 3"
-                        )
-                        continue
+                    # Receive the actual READY message
+                    msg = self.frame_socket.recv(flags=zmq.NOBLOCK)
 
-                    identity, delimiter, msg = parts
-
-                    # Confirm the message is READY
+                    # Check if the message is a frame request
                     if msg == b"READY":
                         # Get frame from buffer
                         try:
@@ -274,7 +266,7 @@ class FrameGenerator:
                             )  # Get frame with highest priority
                             if frame:
                                 try:
-                                    # Send frame with metadata
+                                    # Prepare metadata
                                     metadata = {
                                         "seq": frame.sequence,
                                         "pattern_id": frame.pattern_id,
@@ -286,22 +278,15 @@ class FrameGenerator:
                                         "params": frame.metadata.get("params", {}),
                                     }
 
-                                    # Send multipart message back to client
-                                    # When sending from ROUTER to DEALER:
-                                    # 1. First frame must be client identity (routing frame)
-                                    # 2. Second frame should be message type
-                                    # 3. Third frame is metadata
-                                    # 4. Fourth frame is actual data
-                                    self.frame_socket.send_multipart(
-                                        [
-                                            identity,  # Client identity for routing
-                                            b"frame",  # Message type
-                                            json.dumps(
-                                                metadata
-                                            ).encode(),  # Metadata as JSON
-                                            frame.data,  # Frame data
-                                        ]
+                                    # Send frame back to the client
+                                    # First frame must be client identity for routing
+                                    self.frame_socket.send(identity, zmq.SNDMORE)
+                                    # Then actual message parts
+                                    self.frame_socket.send(b"frame", zmq.SNDMORE)
+                                    self.frame_socket.send(
+                                        json.dumps(metadata).encode(), zmq.SNDMORE
                                     )
+                                    self.frame_socket.send(frame.data)
 
                                     self.delivered_count += 1
                                     delivery_errors = 0
@@ -330,22 +315,17 @@ class FrameGenerator:
                                     "params": {},
                                 }
                                 # Send empty frame with same format
-                                self.frame_socket.send_multipart(
-                                    [
-                                        identity,  # Client identity for routing
-                                        b"frame",  # Message type
-                                        json.dumps(
-                                            metadata
-                                        ).encode(),  # Metadata as JSON
-                                        bytearray(),  # Empty frame data
-                                    ]
+                                self.frame_socket.send(identity, zmq.SNDMORE)
+                                self.frame_socket.send(b"frame", zmq.SNDMORE)
+                                self.frame_socket.send(
+                                    json.dumps(metadata).encode(), zmq.SNDMORE
                                 )
+                                self.frame_socket.send(bytearray())
                             except Exception as e:
                                 print(f"Error sending empty frame: {e}")
-
-                except zmq.Again:
-                    time.sleep(0.001)  # Small sleep when no requests
-                    continue
+                except zmq.error.Again:
+                    # No requests available, sleep briefly
+                    time.sleep(0.001)
 
                 # Reset error count if enough time has passed
                 if time.time() - last_error_time > error_reset_interval:

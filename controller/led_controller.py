@@ -193,7 +193,7 @@ class LEDController:
                 # Request frame if ready
                 if current_time >= self.next_frame_time:
                     try:
-                        # With DEALER socket, just send a simple message
+                        # Simple READY message - DEALER socket handles the rest
                         self.frame_socket.send(b"READY")
                     except zmq.error.Again:
                         # If send fails, wait a bit before retrying
@@ -209,17 +209,10 @@ class LEDController:
 
                 # Handle incoming frame
                 try:
-                    # Receive message parts - DEALER automatically prefixes with empty frame
-                    parts = self.frame_socket.recv_multipart(flags=zmq.NOBLOCK)
-
-                    # DEALER socket adds empty delimiter as first part, so we expect 4 parts total
-                    if len(parts) != 3:
-                        print(
-                            f"Received invalid message format: {len(parts)} parts, expected 3"
-                        )
-                        continue
-
-                    msg_type, metadata_json, frame_data = parts
+                    # Receive message parts
+                    msg_type = self.frame_socket.recv(flags=zmq.NOBLOCK)
+                    metadata_json = self.frame_socket.recv(flags=zmq.NOBLOCK)
+                    frame_data = self.frame_socket.recv(flags=zmq.NOBLOCK)
 
                     if msg_type == b"frame":
                         frame_start = time.time()
