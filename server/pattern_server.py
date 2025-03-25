@@ -168,90 +168,40 @@ else:
 # Create and run the server
 def main():
     """Main entry point"""
-    # Load environment variables
-    load_dotenv()
-
-    # Create server
-    server = LEDServer(DEFAULT_CONFIG)
-
-    # Print server configuration
-    print("\n=== Server Configuration ===")
-    print(f"Grid dimensions: {server.grid_config.width}x{server.grid_config.height}")
-    print(f"Pattern manager: {server.pattern_manager}")
-    print(
-        f"Available patterns: {[p.definition().name for p in server.pattern_manager.patterns]}"
-    )
-
-    # Start the web server in a separate thread
-    web_thread = None
     try:
-        from server.web import create_app, socketio
+        # Load environment variables
+        load_dotenv()
 
-        print("\n=== Starting Web Server ===")
-        app = create_app(server)
+        # Create MQTT config from environment variables
+        mqtt_config = {
+            "host": os.getenv("MQTT_BROKER", "localhost"),
+            "port": int(os.getenv("MQTT_PORT", "1883")),
+            "username": os.getenv("MQTT_USER"),
+            "password": os.getenv("MQTT_PASSWORD"),
+        }
 
-        # Get port from environment or use default
-        port = int(os.environ.get("WEB_PORT", 5001))
+        # Create server with both configs
+        server = LEDServer(DEFAULT_CONFIG, mqtt_config)
 
-        # Get SSL configuration from environment
-        ssl_cert = os.environ.get("SSL_CERT")
-        ssl_key = os.environ.get("SSL_KEY")
-        use_https = (
-            ssl_cert
-            and ssl_key
-            and os.path.exists(ssl_cert)
-            and os.path.exists(ssl_key)
-        )
+        # Start server
+        if not server.start():
+            print("Failed to start server")
+            return 1
 
-        # Configure SSL context if using HTTPS
-        ssl_context = None
-        if use_https:
-            print(f"HTTPS enabled with certificate: {ssl_cert}")
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(ssl_cert, ssl_key)
-        else:
-            print("HTTPS not enabled. Using HTTP only.")
-            print("To enable HTTPS, set SSL_CERT and SSL_KEY environment variables.")
+        # Keep main thread alive
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+            server.stop()
+            return 0
 
-        # Define a function to run the web server
-        def run_web_server():
-            print(
-                f"Starting {'HTTPS' if use_https else 'HTTP'} web server on port {port}..."
-            )
-            socketio.run(
-                app,
-                host="0.0.0.0",
-                port=port,
-                debug=False,
-                use_reloader=False,
-                allow_unsafe_werkzeug=True,
-                ssl_context=ssl_context,
-            )
-
-        # Start the web server in a separate thread
-        web_thread = threading.Thread(target=run_web_server)
-        web_thread.daemon = True
-        web_thread.start()
-        print("Web server thread started")
     except Exception as e:
-        print(f"Error starting web server: {e}")
+        print(f"Error in main: {e}")
         traceback.print_exc()
-        print("Continuing without web server...")
-
-    # Run server
-    try:
-        server.run()
-    except KeyboardInterrupt:
-        print("\nReceived shutdown signal")
-    finally:
-        print("Shutting down...")
-        server.stop()
-
-        # Wait for web thread to terminate
-        if web_thread and web_thread.is_alive():
-            print("Waiting for web server to terminate...")
-            web_thread.join(timeout=5)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
