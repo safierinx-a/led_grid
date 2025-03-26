@@ -189,6 +189,7 @@ class FrameGenerator:
 
     def _generation_loop(self):
         """Main frame generation loop"""
+        last_frame_time = time.time()
         while self.is_running:
             loop_start = time.time()
 
@@ -197,17 +198,36 @@ class FrameGenerator:
                 frame = self._generate_frame()
 
                 if frame:
+                    # Only put a new frame on the buffer if enough time has passed since the last frame
+                    # This ensures smoother pattern transitions by not overwhelming the buffer
+                    current_time = time.time()
+                    elapsed = current_time - last_frame_time
+
                     # Try to add frame to buffer with priority based on sequence
                     try:
-                        self.frame_buffer.put_nowait((frame.sequence, frame))
+                        # Use negative sequence as priority so newest frames have highest priority
+                        self.frame_buffer.put_nowait((-frame.sequence, frame))
                         self.frame_count += 1
+                        last_frame_time = current_time
                     except queue.Full:
-                        # If buffer is full, drop the oldest frame
+                        # If buffer is full, drop the oldest (lowest priority) frame
+                        # and add the new frame
                         try:
-                            self.frame_buffer.get_nowait()  # Remove oldest frame
-                            self.frame_buffer.put_nowait((frame.sequence, frame))
+                            # Get the highest priority item first (which is actually the oldest frame)
+                            old_priority, old_frame = self.frame_buffer.get_nowait()
+                            # Now put the new frame with proper priority
+                            self.frame_buffer.put_nowait((-frame.sequence, frame))
+                            self.frame_count += 1
+                            last_frame_time = current_time
                         except queue.Empty:
-                            pass  # If we can't remove old frame, skip new one
+                            # Queue is empty (shouldn't happen), just try to add the frame directly
+                            try:
+                                self.frame_buffer.put_nowait((-frame.sequence, frame))
+                                self.frame_count += 1
+                                last_frame_time = current_time
+                            except queue.Full:
+                                # If still can't add, just skip this frame
+                                pass
 
                 # Performance tracking
                 current_time = time.time()
@@ -231,13 +251,18 @@ class FrameGenerator:
                     self.delivered_count = 0
                     self.last_fps_print = current_time
 
-                # Maintain target frame rate
+                # Sleep to maintain target frame rate, but ensure at least minimal sleep
                 elapsed = time.time() - loop_start
                 if elapsed < self.target_frame_time:
-                    time.sleep(self.target_frame_time - elapsed)
+                    sleep_time = self.target_frame_time - elapsed
+                    time.sleep(sleep_time)
+                else:
+                    # Always sleep a tiny amount to prevent CPU hogging
+                    time.sleep(0.001)
 
             except Exception as e:
                 print(f"Error in generation loop: {e}")
+                traceback.print_exc()
                 time.sleep(0.001)  # Brief sleep on error
 
     def _delivery_loop(self):
@@ -246,6 +271,8 @@ class FrameGenerator:
         max_delivery_errors = 3
         error_reset_interval = 60.0
         last_error_time = time.time()
+        last_empty_frame_time = 0
+        empty_frame_interval = 1.0  # Send empty frames no more than once per second
 
         while self.is_running:
             try:
@@ -259,11 +286,12 @@ class FrameGenerator:
 
                     # Check if the message is a frame request
                     if msg == b"READY":
+                        current_time = time.time()
                         # Get frame from buffer
                         try:
-                            _, frame = self.frame_buffer.get(
-                                timeout=0.1
-                            )  # Get frame with highest priority
+                            # Try to get newest frame from buffer with a short timeout
+                            priority, frame = self.frame_buffer.get(timeout=0.01)
+
                             if frame:
                                 try:
                                     # Prepare metadata
@@ -304,25 +332,31 @@ class FrameGenerator:
                                         self._rebind_socket()
                                         delivery_errors = 0
                         except queue.Empty:
-                            # No frames available, send empty frame to keep client alive
-                            try:
-                                metadata = {
-                                    "seq": -1,
-                                    "pattern_id": None,
-                                    "timestamp": time.time_ns(),
-                                    "frame_size": 0,
-                                    "pattern_name": "",
-                                    "params": {},
-                                }
-                                # Send empty frame with same format
-                                self.frame_socket.send(identity, zmq.SNDMORE)
-                                self.frame_socket.send(b"frame", zmq.SNDMORE)
-                                self.frame_socket.send(
-                                    json.dumps(metadata).encode(), zmq.SNDMORE
-                                )
-                                self.frame_socket.send(bytearray())
-                            except Exception as e:
-                                print(f"Error sending empty frame: {e}")
+                            # No frames available
+                            # Only send empty frame if enough time has passed since the last one
+                            if (
+                                current_time - last_empty_frame_time
+                                >= empty_frame_interval
+                            ):
+                                try:
+                                    metadata = {
+                                        "seq": -1,
+                                        "pattern_id": None,
+                                        "timestamp": time.time_ns(),
+                                        "frame_size": 0,
+                                        "pattern_name": "",
+                                        "params": {},
+                                    }
+                                    # Send empty frame with same format
+                                    self.frame_socket.send(identity, zmq.SNDMORE)
+                                    self.frame_socket.send(b"frame", zmq.SNDMORE)
+                                    self.frame_socket.send(
+                                        json.dumps(metadata).encode(), zmq.SNDMORE
+                                    )
+                                    self.frame_socket.send(bytearray())
+                                    last_empty_frame_time = current_time
+                                except Exception as e:
+                                    print(f"Error sending empty frame: {e}")
                 except zmq.error.Again:
                     # No requests available, sleep briefly
                     time.sleep(0.001)
