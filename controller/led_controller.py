@@ -177,6 +177,7 @@ class LEDController:
         last_performance_report = time.time()
         frame_count = 0
         frame_times = []
+        last_frame_requested = 0
 
         # Connect to ZMQ server
         if not self.connect_zmq():
@@ -186,15 +187,20 @@ class LEDController:
 
         print(f"Connected to ZMQ server at tcp://{self.zmq_host}:{self.zmq_port}")
 
+        # Clear the strip initially to prevent stale data
+        self.clear_strip()
+
         while self.is_running:
             try:
                 current_time = time.time()
 
-                # Request frame if ready
-                if current_time >= self.next_frame_time:
+                # Request frame if enough time has passed since last frame
+                # This avoids frame rate limiting issues by requesting as soon as we're done processing
+                if current_time - last_frame_requested >= (1.0 / self.target_fps):
                     try:
                         # Simple READY message - DEALER socket handles the rest
                         self.frame_socket.send(b"READY")
+                        last_frame_requested = current_time
                     except zmq.error.Again:
                         # If send fails, wait a bit before retrying
                         time.sleep(0.001)
@@ -207,43 +213,52 @@ class LEDController:
                             time.sleep(1)
                         continue
 
-                # Handle incoming frame
+                # Handle incoming frame - use a minimal blocking timeout
                 try:
-                    # Receive message parts
-                    msg_type = self.frame_socket.recv(flags=zmq.NOBLOCK)
-                    metadata_json = self.frame_socket.recv(flags=zmq.NOBLOCK)
-                    frame_data = self.frame_socket.recv(flags=zmq.NOBLOCK)
+                    # Use poll with a short timeout to avoid busy-waiting
+                    if self.frame_socket.poll(10):  # 10ms timeout
+                        # Receive message parts
+                        msg_type = self.frame_socket.recv()
+                        metadata_json = self.frame_socket.recv()
+                        frame_data = self.frame_socket.recv()
 
-                    if msg_type == b"frame":
-                        frame_start = time.time()
-                        metadata = json.loads(metadata_json.decode())
-                        self.handle_frame(frame_data, metadata)
-                        frame_time = time.time() - frame_start
-                        frame_times.append(frame_time)
-                        frame_count += 1
+                        if msg_type == b"frame":
+                            frame_start = time.time()
+                            try:
+                                metadata = json.loads(metadata_json.decode())
 
-                        # Update next frame time based on actual frame processing time
-                        self.next_frame_time = current_time + max(
-                            0.001, 1.0 / self.target_fps - frame_time
-                        )
+                                # Only process the frame if it has data
+                                if len(frame_data) > 0:
+                                    success = self.handle_frame(frame_data, metadata)
+                                    if not success:
+                                        # On frame handling error, clear the strip to prevent partial updates
+                                        self.clear_strip()
+                                else:
+                                    # Empty frame is a heartbeat, not an error
+                                    pass
+
+                                frame_time = time.time() - frame_start
+                                frame_times.append(frame_time)
+                                frame_count += 1
+                            except json.JSONDecodeError as e:
+                                print(f"Error decoding metadata: {e}")
                     else:
-                        print(f"Received unknown message type: {msg_type}")
-                except zmq.error.Again:
-                    # No frame available, sleep until next frame time
-                    sleep_time = self.next_frame_time - time.time()
-                    if sleep_time > 0:
-                        time.sleep(min(0.01, sleep_time))
-                    continue
+                        # No data available, short sleep to prevent CPU hogging
+                        time.sleep(0.001)
+                        continue
+
                 except zmq.error.ZMQError as e:
-                    print(f"ZMQ receive error: {e}")
-                    # Try to reconnect
-                    if not self.connect_zmq():
-                        print("Failed to reconnect to ZMQ server")
-                        time.sleep(1)
-                    continue
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding metadata: {e}")
-                    continue
+                    if e.errno == zmq.EAGAIN:
+                        # No message available, not an error
+                        time.sleep(0.001)
+                        continue
+                    else:
+                        print(f"ZMQ receive error: {e}")
+                        # Try to reconnect
+                        if not self.connect_zmq():
+                            print("Failed to reconnect to ZMQ server")
+                            time.sleep(1)
+                        continue
 
                 # Performance reporting
                 if (
@@ -261,6 +276,9 @@ class LEDController:
 
             except Exception as e:
                 print(f"Error in main loop: {e}")
+                traceback.print_exc()
+                # Clear strip on errors to prevent hanging LEDs
+                self.clear_strip()
                 time.sleep(0.1)  # Prevent tight error loop
 
     def shutdown(self):
