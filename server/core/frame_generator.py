@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from server.patterns.base import Pattern
 from server.config.grid_config import GridConfig
-from server.patterns.pattern_manager import PatternManager
+from server.core.pattern_manager import PatternManager
 
 
 @dataclass
