@@ -307,6 +307,9 @@ class FrameGenerator:
                                             "pattern_name", ""
                                         ),
                                         "params": frame.metadata.get("params", {}),
+                                        "display_state": frame.metadata.get(
+                                            "display_state", {}
+                                        ),
                                     }
 
                                     # Send frame back to the client
