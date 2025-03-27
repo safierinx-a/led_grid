@@ -148,9 +148,6 @@ class LEDController:
                     brightness = display_state.get("brightness", 1.0)
                     brightness = max(0.0, min(1.0, brightness))
 
-                    print(f"LED Controller received brightness: {brightness}")
-                    print(f"Display state: {display_state}")
-
                     # Update each pixel with brightness adjustment
                     for i in range(LED_COUNT):
                         r = int(frame_data[i * 3] * brightness)

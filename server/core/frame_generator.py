@@ -182,7 +182,6 @@ class FrameGenerator:
                 # Get current display state
                 with self.pattern_manager.display_lock:
                     display_state = self.pattern_manager.display_state.copy()
-                    print(f"Frame Generator display state: {display_state}")
 
                 # Create frame object
                 frame = Frame(

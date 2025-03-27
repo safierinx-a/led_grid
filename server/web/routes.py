@@ -218,7 +218,6 @@ def get_status():
         with led_server.pattern_manager.display_lock:
             display_state = led_server.pattern_manager.display_state.copy()
             brightness = display_state.get("brightness", 1.0)
-            print(f"Current brightness from display_state: {brightness}")
 
         status = {
             "power": led_server.pattern_manager.hardware_state.get("power", True),
