@@ -231,26 +231,24 @@ class FrameGenerator:
                         # Calculate next frame time based on target FPS
                         self.next_frame_time = current_time + self.frame_interval
 
-                        # Try to add frame to buffer with priority based on sequence
+                        # Clear any old frames from the buffer
+                        while not self.frame_buffer.empty():
+                            try:
+                                self.frame_buffer.get_nowait()
+                            except queue.Empty:
+                                break
+
+                        # Add the new frame
                         try:
-                            # Use negative sequence as priority so newest frames have highest priority
                             self.frame_buffer.put_nowait((-frame.sequence, frame))
                         except queue.Full:
-                            # If buffer is full, drop the oldest frame and add the new one
-                            try:
-                                # Get the highest priority item first (which is actually the oldest frame)
-                                old_priority, old_frame = self.frame_buffer.get_nowait()
-                                # Now put the new frame with proper priority
-                                self.frame_buffer.put_nowait((-frame.sequence, frame))
-                            except queue.Empty:
-                                # Queue is empty (shouldn't happen), just try to add the frame directly
+                            # If buffer is full, clear it and try again
+                            while not self.frame_buffer.empty():
                                 try:
-                                    self.frame_buffer.put_nowait(
-                                        (-frame.sequence, frame)
-                                    )
-                                except queue.Full:
-                                    # If still can't add, just skip this frame
-                                    pass
+                                    self.frame_buffer.get_nowait()
+                                except queue.Empty:
+                                    break
+                            self.frame_buffer.put_nowait((-frame.sequence, frame))
 
                         # Report frame generation time to pattern manager
                         frame_time = time.time() - frame_start
@@ -275,6 +273,8 @@ class FrameGenerator:
         last_error_time = time.time()
         last_empty_frame_time = 0
         empty_frame_interval = 1.0  # Send empty frames no more than once per second
+        last_frame_sequence = -1  # Track last delivered frame sequence
+        last_frame_time = time.time()  # Track last frame delivery time
 
         while self.is_running:
             try:
@@ -289,18 +289,31 @@ class FrameGenerator:
                     # Check if the message is a frame request
                     if msg == b"READY":
                         current_time = time.time()
+
+                        # Ensure we maintain target frame rate
+                        if current_time - last_frame_time < self.target_frame_time:
+                            time.sleep(
+                                self.target_frame_time
+                                - (current_time - last_frame_time)
+                            )
+                            continue
+
                         # Get frame from buffer with minimal timeout
                         try:
                             # Try to get newest frame from buffer with a very short timeout
                             priority, frame = self.frame_buffer.get(timeout=0.001)
 
                             if frame:
+                                # Skip frames that are older than the last delivered frame
+                                if frame.sequence <= last_frame_sequence:
+                                    continue
+
                                 try:
                                     # Prepare metadata
                                     metadata = {
                                         "seq": frame.sequence,
                                         "pattern_id": frame.pattern_id,
-                                        "timestamp": frame.timestamp,
+                                        "timestamp": time.time_ns(),
                                         "frame_size": len(frame.data),
                                         "pattern_name": frame.metadata.get(
                                             "pattern_name", ""
@@ -321,9 +334,12 @@ class FrameGenerator:
                                     )
                                     self.frame_socket.send(frame.data)
 
+                                    last_frame_sequence = frame.sequence
+                                    last_frame_time = time.time()
                                     self.frame_count += 1
                                     delivery_errors = 0
                                     last_error_time = time.time()
+
                                 except zmq.error.Again:
                                     print("Frame send timeout - client may be slow")
                                     continue
@@ -351,6 +367,7 @@ class FrameGenerator:
                                         "frame_size": 0,
                                         "pattern_name": "",
                                         "params": {},
+                                        "display_state": {},  # Include empty display state
                                     }
                                     # Send empty frame with same format
                                     self.frame_socket.send(identity, zmq.SNDMORE)

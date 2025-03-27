@@ -174,6 +174,8 @@ class LEDController:
         frame_times = []
         last_frame_requested = 0
         self.last_pattern_id = None  # Track last pattern ID
+        last_frame_sequence = -1  # Track last processed frame sequence
+        last_frame_time = time.time()  # Track last frame processing time
 
         # Connect to ZMQ server
         if not self.connect_zmq():
@@ -190,8 +192,14 @@ class LEDController:
             try:
                 current_time = time.time()
 
+                # Ensure we maintain target frame rate
+                if current_time - last_frame_time < self.target_frame_time:
+                    time.sleep(
+                        self.target_frame_time - (current_time - last_frame_time)
+                    )
+                    continue
+
                 # Request frame if enough time has passed since last frame
-                # This avoids frame rate limiting issues by requesting as soon as we're done processing
                 if current_time - last_frame_requested >= (1.0 / self.target_fps):
                     try:
                         # Simple READY message - DEALER socket handles the rest
@@ -222,6 +230,11 @@ class LEDController:
                             frame_start = time.time()
                             try:
                                 metadata = json.loads(metadata_json.decode())
+                                frame_sequence = metadata.get("seq", -1)
+
+                                # Skip frames that are older than the last processed frame
+                                if frame_sequence <= last_frame_sequence:
+                                    continue
 
                                 # Only process the frame if it has data
                                 if len(frame_data) > 0:
@@ -233,6 +246,8 @@ class LEDController:
                                     # Empty frame is a heartbeat, not an error
                                     pass
 
+                                last_frame_sequence = frame_sequence
+                                last_frame_time = time.time()
                                 frame_time = time.time() - frame_start
                                 frame_times.append(frame_time)
                                 frame_count += 1
