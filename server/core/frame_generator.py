@@ -135,12 +135,30 @@ class FrameGenerator:
             self.pattern_id = pattern_id
             self.frame_sequence = 0  # Reset sequence for new pattern
 
-            # Clear frame buffer
+            # Clear frame buffer immediately
             while not self.frame_buffer.empty():
                 try:
                     self.frame_buffer.get_nowait()
                 except queue.Empty:
                     break
+
+            # Generate and send an immediate frame for pattern change
+            if pattern:
+                frame = self._generate_frame()
+                if frame:
+                    try:
+                        # Force this frame to be the next one sent
+                        self.frame_buffer.put_nowait(
+                            (-1, frame)
+                        )  # Use -1 as priority to ensure it's next
+                    except queue.Full:
+                        # If buffer is full, clear it and try again
+                        while not self.frame_buffer.empty():
+                            try:
+                                self.frame_buffer.get_nowait()
+                            except queue.Empty:
+                                break
+                        self.frame_buffer.put_nowait((-1, frame))
 
     def _generate_frame(self) -> Optional[Frame]:
         """Generate a single frame with error handling"""
@@ -198,10 +216,13 @@ class FrameGenerator:
                 frame = self._generate_frame()
 
                 if frame:
-                    # Only put a new frame on the buffer if enough time has passed since the last frame
-                    # This ensures smoother pattern transitions by not overwhelming the buffer
+                    # Only add frame if we're not too far behind
                     current_time = time.time()
                     elapsed = current_time - last_frame_time
+
+                    # If we're generating frames too quickly, skip this one
+                    if elapsed < self.target_frame_time * 0.8:  # 80% of target time
+                        continue
 
                     # Try to add frame to buffer with priority based on sequence
                     try:
@@ -210,8 +231,7 @@ class FrameGenerator:
                         self.frame_count += 1
                         last_frame_time = current_time
                     except queue.Full:
-                        # If buffer is full, drop the oldest (lowest priority) frame
-                        # and add the new frame
+                        # If buffer is full, drop the oldest frame and add the new one
                         try:
                             # Get the highest priority item first (which is actually the oldest frame)
                             old_priority, old_frame = self.frame_buffer.get_nowait()
@@ -287,10 +307,10 @@ class FrameGenerator:
                     # Check if the message is a frame request
                     if msg == b"READY":
                         current_time = time.time()
-                        # Get frame from buffer
+                        # Get frame from buffer with minimal timeout
                         try:
-                            # Try to get newest frame from buffer with a short timeout
-                            priority, frame = self.frame_buffer.get(timeout=0.01)
+                            # Try to get newest frame from buffer with a very short timeout
+                            priority, frame = self.frame_buffer.get(timeout=0.001)
 
                             if frame:
                                 try:
