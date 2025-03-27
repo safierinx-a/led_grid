@@ -50,13 +50,18 @@ class PatternManager:
         ] = []
         self.observer_lock = threading.RLock()
 
-        # Hardware state
+        # Hardware state (actual hardware settings)
         self.hardware_state = {
-            "brightness": 255,
             "power": True,
             "last_reset": 0,
         }
         self.hardware_lock = threading.RLock()
+
+        # Display state (software-level controls)
+        self.display_state = {
+            "brightness": 1.0,  # Normalized to 0.0-1.0 range
+        }
+        self.display_lock = threading.RLock()
 
         # Performance tracking
         self.performance_state = {
@@ -189,30 +194,63 @@ class PatternManager:
                     f"Removed pattern observer, remaining observers: {len(self.observers)}"
                 )
 
-    def _notify_pattern_change(self, prev_pattern=None, prev_params=None):
-        """Notify observers of pattern change with transition info"""
-        # First notify the callback if it exists
+    def _notify_pattern_change(
+        self,
+        prev_pattern: Optional[Pattern] = None,
+        prev_params: Optional[Dict[str, Any]] = None,
+    ):
+        """Notify observers of pattern change with thread safety"""
+        with self.pattern_lock:
+            current_pattern = self.current_pattern
+            current_params = self.current_params.copy()
+            pattern_id = self.pattern_id
+
+        # Get current display state
+        with self.display_lock:
+            display_state = self.display_state.copy()
+
+        # Notify pattern change callback
         if self.on_pattern_change:
             try:
-                self.on_pattern_change(
-                    self.current_pattern, self.current_params, self.pattern_id
-                )
+                self.on_pattern_change(current_pattern, current_params, pattern_id)
             except Exception as e:
                 print(f"Error in pattern change callback: {e}")
+                traceback.print_exc()
 
-        # Then notify all observers
+        # Notify observers
         with self.observer_lock:
             for observer in self.observers:
                 try:
                     observer(
-                        self.current_pattern,
-                        self.current_params,
-                        self.pattern_id,
+                        current_pattern,
+                        current_params,
+                        pattern_id,
                         prev_pattern,
                         prev_params,
                     )
                 except Exception as e:
-                    print(f"Error notifying observer: {e}")
+                    print(f"Error in pattern observer: {e}")
+                    traceback.print_exc()
+
+        # Publish pattern change event with display state
+        if self.mqtt_client:
+            try:
+                event_data = {
+                    "pattern": current_pattern.definition().name
+                    if current_pattern
+                    else None,
+                    "params": current_params,
+                    "pattern_id": pattern_id,
+                    "display_state": display_state,
+                }
+                self.mqtt_client.publish(
+                    "led/event/pattern_change",
+                    json.dumps(event_data),
+                    retain=False,
+                )
+            except Exception as e:
+                print(f"Error publishing pattern change event: {e}")
+                traceback.print_exc()
 
     def _handle_pattern_select(self, msg):
         """Handle pattern selection message"""
@@ -228,8 +266,8 @@ class PatternManager:
                     prev_pattern = self.current_pattern
                     prev_params = self.current_params.copy()
 
-                    # Initialize new pattern
-                    pattern_class = self.pattern_registry.get_pattern(pattern_name)
+                    # Initialize new pattern using global PatternRegistry
+                    pattern_class = PatternRegistry.get_pattern(pattern_name)
                     if pattern_class:
                         self.current_pattern = pattern_class(self.grid_config)
                         self.current_params = params.copy()
@@ -246,6 +284,7 @@ class PatternManager:
                         print(f"Pattern not found: {pattern_name}")
         except Exception as e:
             print(f"Error handling pattern select: {e}")
+            traceback.print_exc()
 
     def _handle_numeric_param(self, param_name: str, msg):
         """Handle numeric parameter updates with thread safety"""
@@ -286,12 +325,15 @@ class PatternManager:
                 # Clamp to valid range
                 brightness = max(0.0, min(1.0, brightness))
 
-            # Update hardware state with thread safety
-            with self.hardware_lock:
-                self.hardware_state["brightness"] = brightness
+            # Update display state with thread safety
+            with self.display_lock:
+                self.display_state["brightness"] = brightness
 
             # Log the change
             print(f"Brightness set to {brightness:.2f} ({int(brightness * 255)}/255)")
+
+            # Notify pattern change to update frame generator
+            self._notify_pattern_change()
 
         except Exception as e:
             print(f"Error handling brightness control: {e}")
@@ -510,7 +552,6 @@ class PatternManager:
         print(f"Available patterns: {pattern_names}")
 
         # Initialize hardware state
-        self.hardware_state["brightness"] = 255
         self.hardware_state["power"] = True
         self.hardware_state["last_reset"] = 0
 
@@ -853,11 +894,11 @@ class PatternManager:
 
             # Update hardware state
             if self.current_pattern:
-                self.hardware_state["brightness"] = 255
+                # Preserve current hardware state when changing patterns
                 self.hardware_state["power"] = True
                 self.hardware_state["last_reset"] = 0
             else:
-                self.hardware_state["brightness"] = 255
+                # Reset to default values when no pattern
                 self.hardware_state["power"] = True
                 self.hardware_state["last_reset"] = 0
 
@@ -939,7 +980,17 @@ class PatternManager:
                 )
             print("Synchronized hardware state")
 
-            # 4. Synchronize performance metrics
+            # 4. Synchronize display state
+            with self.display_lock:
+                display_state_copy = copy.deepcopy(self.display_state)
+                self.mqtt_client.publish(
+                    "led/status/display",
+                    json.dumps(display_state_copy),
+                    retain=True,
+                )
+            print("Synchronized display state")
+
+            # 5. Synchronize performance metrics
             with self.performance_lock:
                 performance_state_copy = copy.deepcopy(self.performance_state)
                 self.mqtt_client.publish(

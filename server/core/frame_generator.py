@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from server.patterns.base import Pattern
 from server.config.grid_config import GridConfig
+from server.patterns.pattern_manager import PatternManager
 
 
 @dataclass
@@ -29,18 +30,18 @@ class Frame:
 class FrameGenerator:
     """Handles frame generation and delivery to LED controllers"""
 
-    def __init__(self, grid_config: GridConfig, buffer_size: int = 4):
+    def __init__(
+        self,
+        grid_config: GridConfig,
+        pattern_manager: PatternManager,
+        buffer_size: int = 4,
+    ):
         # Load environment variables
         load_dotenv()
 
         self.grid_config = grid_config
+        self.pattern_manager = pattern_manager
         self.buffer_size = buffer_size
-
-        # Frame generation state
-        self.current_pattern: Optional[Pattern] = None
-        self.current_params: Dict[str, Any] = {}
-        self.pattern_id: Optional[str] = None
-        self.frame_sequence = 0
 
         # Frame buffer with priority queue
         self.frame_buffer = queue.PriorityQueue(maxsize=buffer_size)
@@ -48,9 +49,7 @@ class FrameGenerator:
 
         # Frame observers list for external components
         self.frame_observers: List[Callable[[Frame], None]] = []
-        self.observer_lock = (
-            threading.RLock()
-        )  # Lock for thread-safe observer management
+        self.observer_lock = threading.RLock()
 
         # ZMQ setup for frame delivery
         self.zmq_context = zmq.Context()
@@ -58,15 +57,13 @@ class FrameGenerator:
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
         # Set socket options for reliability
-        self.frame_socket.setsockopt(zmq.LINGER, 0)  # Don't wait for pending messages
-        self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms timeout
-        self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)  # 100ms timeout
-        self.frame_socket.setsockopt(zmq.RCVHWM, 10)  # High water mark for receiving
-        self.frame_socket.setsockopt(zmq.SNDHWM, 10)  # High water mark for sending
-        self.frame_socket.setsockopt(zmq.RECONNECT_IVL, 100)  # Reconnect interval
-        self.frame_socket.setsockopt(
-            zmq.RECONNECT_IVL_MAX, 5000
-        )  # Max reconnect interval
+        self.frame_socket.setsockopt(zmq.LINGER, 0)
+        self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)
+        self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)
+        self.frame_socket.setsockopt(zmq.RCVHWM, 10)
+        self.frame_socket.setsockopt(zmq.SNDHWM, 10)
+        self.frame_socket.setsockopt(zmq.RECONNECT_IVL, 100)
+        self.frame_socket.setsockopt(zmq.RECONNECT_IVL_MAX, 5000)
 
         # Threading control
         self.is_running = False
@@ -74,17 +71,12 @@ class FrameGenerator:
         self.delivery_thread = None
         self.generation_lock = threading.RLock()
 
-        # Performance tracking
-        self.frame_times: List[float] = []
-        self.last_fps_print = time.time()
-        self.frame_count = 0
-        self.delivered_count = 0
-        self.performance_log_interval = (
-            5.0  # Log every 5 seconds instead of every second
-        )
-
-        # Target frame rate
-        self.target_frame_time = 1.0 / 60  # 60 FPS
+        # Target frame rate - reduced to 24 FPS for LED animations
+        self.target_fps = 24
+        self.target_frame_time = 1.0 / self.target_fps
+        self.last_frame_time = time.time()
+        self.frame_interval = 1.0 / self.target_fps  # Time between frames
+        self.next_frame_time = time.time()  # When to generate next frame
 
     def add_frame_observer(self, observer_func: Callable[[Frame], None]) -> None:
         """Add a function to be called with each new frame
@@ -164,31 +156,42 @@ class FrameGenerator:
         """Generate a single frame with error handling"""
         try:
             with self.generation_lock:
-                if not self.current_pattern:
+                # Get current pattern state from pattern manager
+                pattern = self.pattern_manager.current_pattern
+                params = self.pattern_manager.current_params.copy()
+                pattern_id = self.pattern_manager.pattern_id
+
+                if not pattern:
                     return None
 
                 # Generate frame
-                pixels = self.current_pattern.generate_frame(self.current_params)
+                pixels = pattern.generate_frame(params)
 
                 # Convert to bytes
                 frame_data = bytearray()
                 for pixel in pixels:
                     frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
 
+                # Get current display state
+                with self.pattern_manager.display_lock:
+                    display_state = self.pattern_manager.display_state.copy()
+
                 # Create frame object
                 frame = Frame(
-                    sequence=self.frame_sequence,
-                    pattern_id=self.pattern_id,
+                    sequence=self.pattern_manager.frame_sequence,
+                    pattern_id=pattern_id,
                     timestamp=time.time_ns(),
                     data=frame_data,
                     metadata={
                         "frame_size": len(frame_data),
-                        "pattern_name": self.current_pattern.definition().name,
-                        "params": self.current_params,
+                        "pattern_name": pattern.definition().name,
+                        "params": params,
+                        "display_state": display_state,
                     },
                 )
 
-                self.frame_sequence += 1
+                # Increment frame sequence in pattern manager
+                self.pattern_manager.frame_sequence += 1
 
                 # Notify observers with the new frame
                 with self.observer_lock:
@@ -207,83 +210,55 @@ class FrameGenerator:
 
     def _generation_loop(self):
         """Main frame generation loop"""
-        last_frame_time = time.time()
         while self.is_running:
-            loop_start = time.time()
+            current_time = time.time()
 
-            try:
-                # Generate frame
-                frame = self._generate_frame()
+            # Only generate a new frame if it's time
+            if current_time >= self.next_frame_time:
+                try:
+                    # Generate frame
+                    frame_start = time.time()
+                    frame = self._generate_frame()
 
-                if frame:
-                    # Only add frame if we're not too far behind
-                    current_time = time.time()
-                    elapsed = current_time - last_frame_time
+                    if frame:
+                        # Calculate next frame time based on target FPS
+                        self.next_frame_time = current_time + self.frame_interval
 
-                    # If we're generating frames too quickly, skip this one
-                    if elapsed < self.target_frame_time * 0.8:  # 80% of target time
-                        continue
-
-                    # Try to add frame to buffer with priority based on sequence
-                    try:
-                        # Use negative sequence as priority so newest frames have highest priority
-                        self.frame_buffer.put_nowait((-frame.sequence, frame))
-                        self.frame_count += 1
-                        last_frame_time = current_time
-                    except queue.Full:
-                        # If buffer is full, drop the oldest frame and add the new one
+                        # Try to add frame to buffer with priority based on sequence
                         try:
-                            # Get the highest priority item first (which is actually the oldest frame)
-                            old_priority, old_frame = self.frame_buffer.get_nowait()
-                            # Now put the new frame with proper priority
+                            # Use negative sequence as priority so newest frames have highest priority
                             self.frame_buffer.put_nowait((-frame.sequence, frame))
-                            self.frame_count += 1
-                            last_frame_time = current_time
-                        except queue.Empty:
-                            # Queue is empty (shouldn't happen), just try to add the frame directly
+                        except queue.Full:
+                            # If buffer is full, drop the oldest frame and add the new one
                             try:
+                                # Get the highest priority item first (which is actually the oldest frame)
+                                old_priority, old_frame = self.frame_buffer.get_nowait()
+                                # Now put the new frame with proper priority
                                 self.frame_buffer.put_nowait((-frame.sequence, frame))
-                                self.frame_count += 1
-                                last_frame_time = current_time
-                            except queue.Full:
-                                # If still can't add, just skip this frame
-                                pass
+                            except queue.Empty:
+                                # Queue is empty (shouldn't happen), just try to add the frame directly
+                                try:
+                                    self.frame_buffer.put_nowait(
+                                        (-frame.sequence, frame)
+                                    )
+                                except queue.Full:
+                                    # If still can't add, just skip this frame
+                                    pass
 
-                # Performance tracking
-                current_time = time.time()
-                frame_time = current_time - loop_start
-                self.frame_times.append(frame_time)
-                if len(self.frame_times) > 100:
-                    self.frame_times.pop(0)
+                        # Report frame generation time to pattern manager
+                        frame_time = time.time() - frame_start
+                        self.pattern_manager.update_performance_metrics(frame_time)
 
-                # Print FPS every 5 seconds
-                if current_time - self.last_fps_print >= self.performance_log_interval:
-                    if self.frame_count > 0:
-                        fps = self.frame_count / (current_time - self.last_fps_print)
-                        delivered_fps = self.delivered_count / (
-                            current_time - self.last_fps_print
-                        )
-                        avg_frame_time = sum(self.frame_times) / len(self.frame_times)
-                        print(
-                            f"Performance: FPS={fps:.1f}, Delivery={delivered_fps:.1f}, Frame={avg_frame_time * 1000:.1f}ms"
-                        )
-                    self.frame_count = 0
-                    self.delivered_count = 0
-                    self.last_fps_print = current_time
+                except Exception as e:
+                    print(f"Error in generation loop: {e}")
+                    traceback.print_exc()
 
-                # Sleep to maintain target frame rate, but ensure at least minimal sleep
-                elapsed = time.time() - loop_start
-                if elapsed < self.target_frame_time:
-                    sleep_time = self.target_frame_time - elapsed
-                    time.sleep(sleep_time)
-                else:
-                    # Always sleep a tiny amount to prevent CPU hogging
-                    time.sleep(0.001)
-
-            except Exception as e:
-                print(f"Error in generation loop: {e}")
-                traceback.print_exc()
-                time.sleep(0.001)  # Brief sleep on error
+            # Sleep until next frame time, but ensure at least minimal sleep
+            sleep_time = self.next_frame_time - time.time()
+            if sleep_time > 0:
+                time.sleep(min(sleep_time, 0.001))
+            else:
+                time.sleep(0.001)  # Always sleep a tiny amount to prevent CPU hogging
 
     def _delivery_loop(self):
         """Frame delivery loop"""
@@ -336,7 +311,7 @@ class FrameGenerator:
                                     )
                                     self.frame_socket.send(frame.data)
 
-                                    self.delivered_count += 1
+                                    self.frame_count += 1
                                     delivery_errors = 0
                                     last_error_time = time.time()
                                 except zmq.error.Again:
