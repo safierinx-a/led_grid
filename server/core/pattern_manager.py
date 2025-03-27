@@ -30,6 +30,7 @@ class PatternManager:
         self.current_pattern: Optional[Pattern] = None
         self.current_params: Dict[str, Any] = {}
         self.pattern_id: Optional[str] = None
+        self.frame_sequence = 0  # Add frame sequence counter
         self.pattern_lock = threading.RLock()
 
         # Callback and observers for pattern changes
