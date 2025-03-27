@@ -9,6 +9,7 @@ import os
 from dotenv import load_dotenv
 import traceback
 import paho.mqtt.client as mqtt
+from typing import Dict, Any
 
 # Load environment variables
 load_dotenv()
@@ -61,7 +62,9 @@ class LEDController:
         )
 
         # Frame rate limiting
-        self.target_fps = 60.0
+        self.target_fps = (
+            24.0  # Reduced from 60 to 24 for better LED animation performance
+        )
         self.target_frame_time = 1.0 / self.target_fps
         self.next_frame_time = time.time()
 
@@ -69,6 +72,9 @@ class LEDController:
         self.consecutive_errors = 0
         self.max_consecutive_errors = 3
         self.error_reset_interval = 60.0  # seconds
+
+        # Pattern tracking
+        self.last_pattern_id = None
 
     def init_strip(self):
         """Initialize LED strip with error handling"""
@@ -125,49 +131,39 @@ class LEDController:
         except Exception as e:
             print(f"Error clearing strip: {e}")
 
-    def handle_frame(self, frame_data: bytes, metadata: dict):
-        """Process and display a frame of LED data"""
+    def handle_frame(self, frame_data: bytearray, metadata: Dict[str, Any]) -> bool:
+        """Handle incoming frame data"""
         try:
-            frame_start = time.time()
+            # Clear strip on pattern change
+            if metadata.get("pattern_id") != self.last_pattern_id:
+                self.clear_strip()
+                self.last_pattern_id = metadata.get("pattern_id")
 
-            # Check if this is an empty frame (keep-alive)
-            if metadata.get("frame_size", 0) == 0:
-                return True
+            # Update frame data
+            if len(frame_data) > 0:
+                # Ensure we have enough data for all pixels
+                if len(frame_data) >= LED_COUNT * 3:
+                    # Get brightness from display state
+                    brightness = metadata.get("display_state", {}).get(
+                        "brightness", 1.0
+                    )
+                    brightness = max(0.0, min(1.0, brightness))
 
-            # Verify frame data length
-            expected_size = LED_COUNT * 3
-            if len(frame_data) != expected_size:
-                print(
-                    f"Invalid frame size: got {len(frame_data)}, expected {expected_size}"
-                )
-                return False
-
-            # Update LED strip
-            for i in range(LED_COUNT):
-                idx = i * 3
-                r = frame_data[idx]
-                g = frame_data[idx + 1]
-                b = frame_data[idx + 2]
-                self.strip.setPixelColor(i, Color(r, g, b))
-
-            self.strip.show()
-
-            # Performance tracking
-            self.last_frame_time = time.time()
-            frame_time = self.last_frame_time - frame_start
-            self.frame_times.append(frame_time)
-            if len(self.frame_times) > 100:
-                self.frame_times.pop(0)
-            self.frame_count += 1
-
-            # Reset error counter on successful frame
-            self.consecutive_errors = 0
-
+                    # Update each pixel with brightness adjustment
+                    for i in range(LED_COUNT):
+                        r = int(frame_data[i * 3] * brightness)
+                        g = int(frame_data[i * 3 + 1] * brightness)
+                        b = int(frame_data[i * 3 + 2] * brightness)
+                        self.strip.setPixelColor(i, Color(r, g, b))
+                    self.strip.show()
+                    return True
+                else:
+                    print(f"Invalid frame data length: {len(frame_data)}")
+                    return False
             return True
-
         except Exception as e:
             print(f"Error handling frame: {e}")
-            self.consecutive_errors += 1
+            traceback.print_exc()
             return False
 
     def run(self):
@@ -178,6 +174,7 @@ class LEDController:
         frame_count = 0
         frame_times = []
         last_frame_requested = 0
+        self.last_pattern_id = None  # Track last pattern ID
 
         # Connect to ZMQ server
         if not self.connect_zmq():

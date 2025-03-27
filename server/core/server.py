@@ -34,10 +34,13 @@ class LEDServer:
 
         # Components
         self.pattern_manager = PatternManager(grid_config, self.mqtt_config)
-        self.frame_generator = FrameGenerator(grid_config)
+        self.frame_generator = FrameGenerator(
+            grid_config, pattern_manager=self.pattern_manager
+        )
 
         # Connect components
         self.pattern_manager.register_pattern_change_callback(self._on_pattern_change)
+        self.pattern_manager.add_pattern_observer(self._on_pattern_change)
 
         # Server state
         self.is_running = False
@@ -47,6 +50,18 @@ class LEDServer:
     ):
         """Handle pattern changes from pattern manager"""
         self.frame_generator.set_pattern(pattern, params, pattern_id)
+
+    def _on_display_state_change(self, display_state: Dict[str, Any]):
+        """Handle display state changes from pattern manager"""
+        # Get current pattern and params
+        with self.pattern_manager.pattern_lock:
+            pattern = self.pattern_manager.current_pattern
+            params = self.pattern_manager.current_params.copy()
+            pattern_id = self.pattern_manager.pattern_id
+
+        # Update frame generator with new pattern and display state
+        if pattern:
+            self.frame_generator.set_pattern(pattern, params, pattern_id)
 
     def start(self):
         """Start all components"""
@@ -69,6 +84,11 @@ class LEDServer:
             print("\nInitializing Frame Generator...")
             self.frame_generator.start()
             print("Frame Generator started successfully")
+
+            # Register display state observer
+            self.pattern_manager.add_display_state_observer(
+                self._on_display_state_change
+            )
 
             self.is_running = True
             print("\nLED Server started successfully")
