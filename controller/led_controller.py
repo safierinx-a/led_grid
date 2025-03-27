@@ -144,10 +144,12 @@ class LEDController:
                 # Ensure we have enough data for all pixels
                 if len(frame_data) >= LED_COUNT * 3:
                     # Get brightness from display state
-                    brightness = metadata.get("display_state", {}).get(
-                        "brightness", 1.0
-                    )
+                    display_state = metadata.get("display_state", {})
+                    brightness = display_state.get("brightness", 1.0)
                     brightness = max(0.0, min(1.0, brightness))
+
+                    print(f"LED Controller received brightness: {brightness}")
+                    print(f"Display state: {display_state}")
 
                     # Update each pixel with brightness adjustment
                     for i in range(LED_COUNT):
