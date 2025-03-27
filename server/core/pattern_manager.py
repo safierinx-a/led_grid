@@ -585,14 +585,12 @@ class PatternManager:
     def update_performance_metrics(self, frame_time: float):
         """Update performance metrics with latest frame data"""
         try:
-            now = datetime.now()
+            now = time.time()  # Use time.time() instead of datetime.now()
             self.performance_state["frame_time"] = frame_time
             self.performance_state["frame_count"] += 1
 
             # Update FPS every second
-            time_since_update = (
-                now - self.performance_state["last_update"]
-            ).total_seconds()
+            time_since_update = now - self.performance_state["last_update"]
             if time_since_update >= 1.0:
                 fps = self.performance_state["frame_count"] / time_since_update
                 self.performance_state["fps"] = round(fps, 2)
@@ -609,6 +607,7 @@ class PatternManager:
                 )
         except Exception as e:
             print(f"Error updating performance metrics: {e}")
+            traceback.print_exc()
 
     def _on_mqtt_connect(self, client, userdata, flags, rc):
         """Handle MQTT connection"""
