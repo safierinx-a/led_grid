@@ -51,18 +51,6 @@ class LEDServer:
         """Handle pattern changes from pattern manager"""
         self.frame_generator.set_pattern(pattern, params, pattern_id)
 
-    def _on_display_state_change(self, display_state: Dict[str, Any]):
-        """Handle display state changes from pattern manager"""
-        # Get current pattern and params
-        with self.pattern_manager.pattern_lock:
-            pattern = self.pattern_manager.current_pattern
-            params = self.pattern_manager.current_params.copy()
-            pattern_id = self.pattern_manager.pattern_id
-
-        # Update frame generator with new pattern and display state
-        if pattern:
-            self.frame_generator.set_pattern(pattern, params, pattern_id)
-
     def start(self):
         """Start all components"""
         try:
@@ -84,11 +72,6 @@ class LEDServer:
             print("\nInitializing Frame Generator...")
             self.frame_generator.start()
             print("Frame Generator started successfully")
-
-            # Register display state observer
-            self.pattern_manager.add_display_state_observer(
-                self._on_display_state_change
-            )
 
             self.is_running = True
             print("\nLED Server started successfully")
