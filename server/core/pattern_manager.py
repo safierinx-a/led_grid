@@ -43,8 +43,6 @@ class PatternManager:
                     Optional[Pattern],
                     Dict[str, Any],
                     str,
-                    Optional[Pattern],
-                    Optional[Dict[str, Any]],
                 ],
                 None,
             ]
@@ -158,13 +156,7 @@ class PatternManager:
     def add_pattern_observer(
         self,
         observer: Callable[
-            [
-                Optional[Pattern],
-                Dict[str, Any],
-                str,
-                Optional[Pattern],
-                Optional[Dict[str, Any]],
-            ],
+            [Optional[Pattern], Dict[str, Any], str],
             None,
         ],
     ):
@@ -177,13 +169,7 @@ class PatternManager:
     def remove_pattern_observer(
         self,
         observer: Callable[
-            [
-                Optional[Pattern],
-                Dict[str, Any],
-                str,
-                Optional[Pattern],
-                Optional[Dict[str, Any]],
-            ],
+            [Optional[Pattern], Dict[str, Any], str],
             None,
         ],
     ):
@@ -222,13 +208,7 @@ class PatternManager:
         with self.observer_lock:
             for observer in self.observers:
                 try:
-                    observer(
-                        current_pattern,
-                        current_params,
-                        pattern_id,
-                        prev_pattern,
-                        prev_params,
-                    )
+                    observer(current_pattern, current_params, pattern_id)
                 except Exception as e:
                     print(f"Error in pattern observer: {e}")
                     traceback.print_exc()
