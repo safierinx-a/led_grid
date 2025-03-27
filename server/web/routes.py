@@ -182,8 +182,8 @@ def set_brightness():
         brightness = max(0.0, min(1.0, brightness))
 
         # Update the brightness in the pattern manager with thread safety
-        with led_server.pattern_manager.hardware_lock:
-            led_server.pattern_manager.hardware_state["brightness"] = brightness
+        with led_server.pattern_manager.display_lock:
+            led_server.pattern_manager.display_state["brightness"] = brightness
 
         # Call the brightness control handler
         led_server.pattern_manager._handle_brightness_control(str(brightness).encode())

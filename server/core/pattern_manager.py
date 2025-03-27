@@ -313,8 +313,13 @@ class PatternManager:
             # Log the change
             print(f"Brightness set to {brightness:.2f} ({int(brightness * 255)}/255)")
 
-            # Notify pattern change to update frame generator
-            self._notify_pattern_change()
+            # Publish brightness update event
+            if self.mqtt_client:
+                self.mqtt_client.publish(
+                    "led/event/brightness_change",
+                    json.dumps({"brightness": brightness}),
+                    retain=False,
+                )
 
         except Exception as e:
             print(f"Error handling brightness control: {e}")
