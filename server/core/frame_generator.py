@@ -71,6 +71,13 @@ class FrameGenerator:
         self.delivery_thread = None
         self.generation_lock = threading.RLock()
 
+        # Performance tracking
+        self.frame_times: List[float] = []
+        self.last_fps_print = time.time()
+        self.frame_count = 0  # Add back frame count for delivery tracking
+        self.delivered_count = 0
+        self.performance_log_interval = 5.0
+
         # Target frame rate - reduced to 24 FPS for LED animations
         self.target_fps = 24
         self.target_frame_time = 1.0 / self.target_fps
