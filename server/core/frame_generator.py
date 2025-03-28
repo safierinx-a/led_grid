@@ -315,7 +315,9 @@ class FrameGenerator:
                             # Try to get newest frame from buffer with a very short timeout
                             priority, frame = self.frame_buffer.get(timeout=0.001)
 
-                            if frame:
+                            if (
+                                frame and len(frame.data) > 0
+                            ):  # Only process non-empty frames
                                 try:
                                     # Always compress frame data
                                     compressed_data = self._compress_frame(frame.data)
@@ -391,7 +393,6 @@ class FrameGenerator:
                                     self.frame_count += 1
                                     delivery_errors = 0
                                     last_error_time = time.time()
-
                                 except zmq.error.Again:
                                     print("Frame send timeout - client may be slow")
                                     continue
@@ -404,6 +405,47 @@ class FrameGenerator:
                                         )
                                         self._rebind_socket()
                                         delivery_errors = 0
+                            else:
+                                # No valid frames available
+                                # Only send empty frame if enough time has passed since the last one
+                                if (
+                                    current_time - last_empty_frame_time
+                                    >= empty_frame_interval
+                                ):
+                                    try:
+                                        # Create a minimal valid frame with all pixels black
+                                        empty_frame = bytearray(
+                                            [0]
+                                            * (
+                                                self.grid_config.width
+                                                * self.grid_config.height
+                                                * 3
+                                            )
+                                        )
+                                        compressed_empty = self._compress_frame(
+                                            empty_frame
+                                        )
+
+                                        metadata = {
+                                            "seq": -1,
+                                            "pattern_id": None,
+                                            "timestamp": time.time_ns(),
+                                            "frame_size": len(empty_frame),
+                                            "compressed_size": len(compressed_empty),
+                                            "pattern_name": "",
+                                            "params": {},
+                                            "display_state": {},
+                                        }
+                                        # Send empty frame with same format
+                                        self.frame_socket.send(identity, zmq.SNDMORE)
+                                        self.frame_socket.send(b"frame", zmq.SNDMORE)
+                                        self.frame_socket.send(
+                                            json.dumps(metadata).encode(), zmq.SNDMORE
+                                        )
+                                        self.frame_socket.send(compressed_empty)
+                                        last_empty_frame_time = current_time
+                                    except Exception as e:
+                                        print(f"Error sending empty frame: {e}")
                         except queue.Empty:
                             # No frames available
                             # Only send empty frame if enough time has passed since the last one
@@ -412,15 +454,26 @@ class FrameGenerator:
                                 >= empty_frame_interval
                             ):
                                 try:
+                                    # Create a minimal valid frame with all pixels black
+                                    empty_frame = bytearray(
+                                        [0]
+                                        * (
+                                            self.grid_config.width
+                                            * self.grid_config.height
+                                            * 3
+                                        )
+                                    )
+                                    compressed_empty = self._compress_frame(empty_frame)
+
                                     metadata = {
                                         "seq": -1,
                                         "pattern_id": None,
                                         "timestamp": time.time_ns(),
-                                        "frame_size": 0,
-                                        "compressed_size": 0,
+                                        "frame_size": len(empty_frame),
+                                        "compressed_size": len(compressed_empty),
                                         "pattern_name": "",
                                         "params": {},
-                                        "display_state": {},  # Include empty display state
+                                        "display_state": {},
                                     }
                                     # Send empty frame with same format
                                     self.frame_socket.send(identity, zmq.SNDMORE)
@@ -428,7 +481,7 @@ class FrameGenerator:
                                     self.frame_socket.send(
                                         json.dumps(metadata).encode(), zmq.SNDMORE
                                     )
-                                    self.frame_socket.send(bytearray())
+                                    self.frame_socket.send(compressed_empty)
                                     last_empty_frame_time = current_time
                                 except Exception as e:
                                     print(f"Error sending empty frame: {e}")
