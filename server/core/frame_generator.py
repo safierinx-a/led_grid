@@ -274,14 +274,9 @@ class FrameGenerator:
             else:
                 time.sleep(0.001)  # Always sleep a tiny amount to prevent CPU hogging
 
-    def _compress_frame(self, frame_data: bytearray) -> tuple[bytearray, bool]:
-        """Compress frame data if beneficial"""
-        compressed = zlib.compress(frame_data, level=6)
-        # Only use compression if it saves space
-        if len(compressed) < len(frame_data):
-            return compressed, True
-        # If compression doesn't help, return original data and mark as uncompressed
-        return frame_data, False
+    def _compress_frame(self, frame_data: bytearray) -> bytearray:
+        """Compress frame data"""
+        return zlib.compress(frame_data, level=6)
 
     def _delivery_loop(self):
         """Frame delivery loop"""
@@ -322,10 +317,8 @@ class FrameGenerator:
 
                             if frame:
                                 try:
-                                    # Compress frame data
-                                    compressed_data, is_compressed = (
-                                        self._compress_frame(frame.data)
-                                    )
+                                    # Always compress frame data
+                                    compressed_data = self._compress_frame(frame.data)
 
                                     # Update compression stats
                                     self.compression_stats["total_frames"] += 1
@@ -374,8 +367,7 @@ class FrameGenerator:
                                         "frame_size": len(frame.data),  # Original size
                                         "compressed_size": len(
                                             compressed_data
-                                        ),  # Current size (compressed or not)
-                                        "is_compressed": is_compressed,
+                                        ),  # Compressed size
                                         "pattern_name": frame.metadata.get(
                                             "pattern_name", ""
                                         ),
@@ -426,7 +418,6 @@ class FrameGenerator:
                                         "timestamp": time.time_ns(),
                                         "frame_size": 0,
                                         "compressed_size": 0,
-                                        "is_compressed": False,
                                         "pattern_name": "",
                                         "params": {},
                                         "display_state": {},  # Include empty display state
