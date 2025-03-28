@@ -280,6 +280,7 @@ class FrameGenerator:
         # Only use compression if it saves space
         if len(compressed) < len(frame_data):
             return compressed, True
+        # If compression doesn't help, return original data and mark as uncompressed
         return frame_data, False
 
     def _delivery_loop(self):
@@ -370,8 +371,10 @@ class FrameGenerator:
                                         "seq": frame.sequence,
                                         "pattern_id": frame.pattern_id,
                                         "timestamp": time.time_ns(),
-                                        "frame_size": len(frame.data),
-                                        "compressed_size": len(compressed_data),
+                                        "frame_size": len(frame.data),  # Original size
+                                        "compressed_size": len(
+                                            compressed_data
+                                        ),  # Current size (compressed or not)
                                         "is_compressed": is_compressed,
                                         "pattern_name": frame.metadata.get(
                                             "pattern_name", ""
