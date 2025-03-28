@@ -66,17 +66,15 @@ class LEDController:
         }
 
     def _decompress_frame(
-        self, compressed_data: bytearray, original_size: int, is_compressed: bool
+        self, compressed_data: bytearray, original_size: int
     ) -> bytearray:
-        """Decompress frame data if it was compressed"""
-        if is_compressed:
-            print(
-                f"Decompressing frame: compressed={len(compressed_data)} bytes, original={original_size} bytes"
-            )
-            decompressed = zlib.decompress(compressed_data)
-            print(f"Decompressed size: {len(decompressed)} bytes")
-            return decompressed
-        return compressed_data
+        """Decompress frame data"""
+        print(
+            f"Decompressing frame: compressed={len(compressed_data)} bytes, original={original_size} bytes"
+        )
+        decompressed = zlib.decompress(compressed_data)
+        print(f"Decompressed size: {len(decompressed)} bytes")
+        return decompressed
 
     def _validate_frame_data(
         self, data: bytearray, metadata: Dict[str, Any], is_compressed: bool = False
@@ -127,9 +125,8 @@ class LEDController:
 
             try:
                 metadata = json.loads(metadata_json.decode())
-                is_compressed = metadata.get("is_compressed", False)
                 print(
-                    f"Received frame: compressed={len(frame_data)} bytes, original={metadata.get('frame_size')} bytes, is_compressed={is_compressed}"
+                    f"Received frame: compressed={len(frame_data)} bytes, original={metadata.get('frame_size')} bytes"
                 )
 
                 # Update compression stats
@@ -162,13 +159,8 @@ class LEDController:
                 ):
                     return None
 
-                # Decompress frame data if needed
-                if is_compressed:
-                    frame_data = self._decompress_frame(
-                        frame_data,
-                        metadata["frame_size"],
-                        is_compressed,
-                    )
+                # Decompress frame data
+                frame_data = self._decompress_frame(frame_data, metadata["frame_size"])
 
                 # Validate decompressed data
                 if not self._validate_frame_data(
