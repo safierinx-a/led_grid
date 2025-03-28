@@ -78,29 +78,32 @@ class LEDController:
             return decompressed
         return compressed_data
 
-    def _validate_frame_data(self, data: bytearray, metadata: Dict[str, Any]) -> bool:
+    def _validate_frame_data(
+        self, data: bytearray, metadata: Dict[str, Any], is_compressed: bool = False
+    ) -> bool:
         """Validate frame data length and format"""
-        expected_size = metadata.get("frame_size", 0)
-        if not expected_size:
-            print("Invalid frame size in metadata")
-            return False
-
-        # For compressed frames, we expect the compressed size
-        if metadata.get("is_compressed", False):
+        if is_compressed:
+            # For compressed data, validate against compressed_size
             expected_size = metadata.get("compressed_size", 0)
             if not expected_size:
                 print("Invalid compressed size in metadata")
                 return False
+        else:
+            # For decompressed data, validate against frame_size
+            expected_size = metadata.get("frame_size", 0)
+            if not expected_size:
+                print("Invalid frame size in metadata")
+                return False
 
         print(
-            f"Validating frame: actual={len(data)} bytes, expected={expected_size} bytes"
+            f"Validating {'compressed' if is_compressed else 'decompressed'} frame: actual={len(data)} bytes, expected={expected_size} bytes"
         )
         if len(data) != expected_size:
             print(f"Invalid frame data length: {len(data)}, expected: {expected_size}")
             return False
 
         # Only check RGB format for decompressed data
-        if not metadata.get("is_compressed", False):
+        if not is_compressed:
             if len(data) % 3 != 0:
                 print(f"Invalid frame data length (not multiple of 3): {len(data)}")
                 return False
@@ -124,8 +127,9 @@ class LEDController:
 
             try:
                 metadata = json.loads(metadata_json.decode())
+                is_compressed = metadata.get("is_compressed", False)
                 print(
-                    f"Received frame: compressed={len(frame_data)} bytes, original={metadata.get('frame_size')} bytes, is_compressed={metadata.get('is_compressed', False)}"
+                    f"Received frame: compressed={len(frame_data)} bytes, original={metadata.get('frame_size')} bytes, is_compressed={is_compressed}"
                 )
 
                 # Update compression stats
@@ -152,19 +156,24 @@ class LEDController:
                     )
                     self.compression_stats["last_report_time"] = current_time
 
-                # Validate frame data before decompression
-                if not self._validate_frame_data(frame_data, metadata):
+                # Validate compressed frame data
+                if not self._validate_frame_data(
+                    frame_data, metadata, is_compressed=True
+                ):
                     return None
 
                 # Decompress frame data if needed
-                frame_data = self._decompress_frame(
-                    frame_data,
-                    metadata["frame_size"],
-                    metadata.get("is_compressed", False),
-                )
+                if is_compressed:
+                    frame_data = self._decompress_frame(
+                        frame_data,
+                        metadata["frame_size"],
+                        is_compressed,
+                    )
 
                 # Validate decompressed data
-                if not self._validate_frame_data(frame_data, metadata):
+                if not self._validate_frame_data(
+                    frame_data, metadata, is_compressed=False
+                ):
                     return None
 
                 return Frame(
