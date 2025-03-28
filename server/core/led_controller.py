@@ -85,6 +85,13 @@ class LEDController:
             print("Invalid frame size in metadata")
             return False
 
+        # For compressed frames, we expect the compressed size
+        if metadata.get("is_compressed", False):
+            expected_size = metadata.get("compressed_size", 0)
+            if not expected_size:
+                print("Invalid compressed size in metadata")
+                return False
+
         print(
             f"Validating frame: actual={len(data)} bytes, expected={expected_size} bytes"
         )
@@ -92,10 +99,11 @@ class LEDController:
             print(f"Invalid frame data length: {len(data)}, expected: {expected_size}")
             return False
 
-        # Check if data length is multiple of 3 (RGB)
-        if len(data) % 3 != 0:
-            print(f"Invalid frame data length (not multiple of 3): {len(data)}")
-            return False
+        # Only check RGB format for decompressed data
+        if not metadata.get("is_compressed", False):
+            if len(data) % 3 != 0:
+                print(f"Invalid frame data length (not multiple of 3): {len(data)}")
+                return False
 
         return True
 
@@ -144,6 +152,10 @@ class LEDController:
                     )
                     self.compression_stats["last_report_time"] = current_time
 
+                # Validate frame data before decompression
+                if not self._validate_frame_data(frame_data, metadata):
+                    return None
+
                 # Decompress frame data if needed
                 frame_data = self._decompress_frame(
                     frame_data,
@@ -151,7 +163,7 @@ class LEDController:
                     metadata.get("is_compressed", False),
                 )
 
-                # Validate frame data
+                # Validate decompressed data
                 if not self._validate_frame_data(frame_data, metadata):
                     return None
 
