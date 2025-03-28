@@ -4,7 +4,7 @@ import zmq
 import json
 import time
 import zlib
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
@@ -70,8 +70,34 @@ class LEDController:
     ) -> bytearray:
         """Decompress frame data if it was compressed"""
         if is_compressed:
-            return zlib.decompress(compressed_data)
+            print(
+                f"Decompressing frame: compressed={len(compressed_data)} bytes, original={original_size} bytes"
+            )
+            decompressed = zlib.decompress(compressed_data)
+            print(f"Decompressed size: {len(decompressed)} bytes")
+            return decompressed
         return compressed_data
+
+    def _validate_frame_data(self, data: bytearray, metadata: Dict[str, Any]) -> bool:
+        """Validate frame data length and format"""
+        expected_size = metadata.get("frame_size", 0)
+        if not expected_size:
+            print("Invalid frame size in metadata")
+            return False
+
+        print(
+            f"Validating frame: actual={len(data)} bytes, expected={expected_size} bytes"
+        )
+        if len(data) != expected_size:
+            print(f"Invalid frame data length: {len(data)}, expected: {expected_size}")
+            return False
+
+        # Check if data length is multiple of 3 (RGB)
+        if len(data) % 3 != 0:
+            print(f"Invalid frame data length (not multiple of 3): {len(data)}")
+            return False
+
+        return True
 
     def _receive_frame(self) -> Optional[Frame]:
         """Receive a frame from the server"""
@@ -90,6 +116,9 @@ class LEDController:
 
             try:
                 metadata = json.loads(metadata_json.decode())
+                print(
+                    f"Received frame: compressed={len(frame_data)} bytes, original={metadata.get('frame_size')} bytes, is_compressed={metadata.get('is_compressed', False)}"
+                )
 
                 # Update compression stats
                 self.compression_stats["total_frames"] += 1
@@ -121,6 +150,10 @@ class LEDController:
                     metadata["frame_size"],
                     metadata.get("is_compressed", False),
                 )
+
+                # Validate frame data
+                if not self._validate_frame_data(frame_data, metadata):
+                    return None
 
                 return Frame(
                     sequence=metadata["seq"],
