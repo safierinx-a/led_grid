@@ -6,6 +6,7 @@ import queue
 import json
 import zmq
 import traceback
+import zlib
 from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass
 import os
@@ -74,7 +75,7 @@ class FrameGenerator:
         # Performance tracking
         self.frame_times: List[float] = []
         self.last_fps_print = time.time()
-        self.frame_count = 0  # Add back frame count for delivery tracking
+        self.frame_count = 0
         self.delivered_count = 0
         self.performance_log_interval = 5.0
 
@@ -84,6 +85,14 @@ class FrameGenerator:
         self.last_frame_time = time.time()
         self.frame_interval = 1.0 / self.target_fps  # Time between frames
         self.next_frame_time = time.time()  # When to generate next frame
+
+        # Compression stats
+        self.compression_stats = {
+            "total_frames": 0,
+            "total_original_size": 0,
+            "total_compressed_size": 0,
+            "last_report_time": time.time(),
+        }
 
     def add_frame_observer(self, observer_func: Callable[[Frame], None]) -> None:
         """Add a function to be called with each new frame
@@ -265,6 +274,14 @@ class FrameGenerator:
             else:
                 time.sleep(0.001)  # Always sleep a tiny amount to prevent CPU hogging
 
+    def _compress_frame(self, frame_data: bytearray) -> tuple[bytearray, bool]:
+        """Compress frame data if beneficial"""
+        compressed = zlib.compress(frame_data, level=6)
+        # Only use compression if it saves space
+        if len(compressed) < len(frame_data):
+            return compressed, True
+        return frame_data, False
+
     def _delivery_loop(self):
         """Frame delivery loop"""
         delivery_errors = 0
@@ -273,7 +290,6 @@ class FrameGenerator:
         last_error_time = time.time()
         last_empty_frame_time = 0
         empty_frame_interval = 1.0  # Send empty frames no more than once per second
-        last_frame_sequence = -1  # Track last delivered frame sequence
         last_frame_time = time.time()  # Track last frame delivery time
 
         while self.is_running:
@@ -304,17 +320,59 @@ class FrameGenerator:
                             priority, frame = self.frame_buffer.get(timeout=0.001)
 
                             if frame:
-                                # Skip frames that are older than the last delivered frame
-                                if frame.sequence <= last_frame_sequence:
-                                    continue
-
                                 try:
+                                    # Compress frame data
+                                    compressed_data, is_compressed = (
+                                        self._compress_frame(frame.data)
+                                    )
+
+                                    # Update compression stats
+                                    self.compression_stats["total_frames"] += 1
+                                    self.compression_stats["total_original_size"] += (
+                                        len(frame.data)
+                                    )
+                                    self.compression_stats["total_compressed_size"] += (
+                                        len(compressed_data)
+                                    )
+
+                                    # Log compression stats every 5 seconds
+                                    if (
+                                        current_time
+                                        - self.compression_stats["last_report_time"]
+                                        >= 5.0
+                                    ):
+                                        compression_ratio = (
+                                            (
+                                                self.compression_stats[
+                                                    "total_original_size"
+                                                ]
+                                                - self.compression_stats[
+                                                    "total_compressed_size"
+                                                ]
+                                            )
+                                            / self.compression_stats[
+                                                "total_original_size"
+                                            ]
+                                            * 100
+                                        )
+                                        print(
+                                            f"Compression stats: {self.compression_stats['total_frames']} frames, "
+                                            f"Ratio: {compression_ratio:.1f}%, "
+                                            f"Original: {self.compression_stats['total_original_size'] / 1024:.1f}KB, "
+                                            f"Compressed: {self.compression_stats['total_compressed_size'] / 1024:.1f}KB"
+                                        )
+                                        self.compression_stats["last_report_time"] = (
+                                            current_time
+                                        )
+
                                     # Prepare metadata
                                     metadata = {
                                         "seq": frame.sequence,
                                         "pattern_id": frame.pattern_id,
                                         "timestamp": time.time_ns(),
                                         "frame_size": len(frame.data),
+                                        "compressed_size": len(compressed_data),
+                                        "is_compressed": is_compressed,
                                         "pattern_name": frame.metadata.get(
                                             "pattern_name", ""
                                         ),
@@ -332,9 +390,8 @@ class FrameGenerator:
                                     self.frame_socket.send(
                                         json.dumps(metadata).encode(), zmq.SNDMORE
                                     )
-                                    self.frame_socket.send(frame.data)
+                                    self.frame_socket.send(compressed_data)
 
-                                    last_frame_sequence = frame.sequence
                                     last_frame_time = time.time()
                                     self.frame_count += 1
                                     delivery_errors = 0
@@ -365,6 +422,8 @@ class FrameGenerator:
                                         "pattern_id": None,
                                         "timestamp": time.time_ns(),
                                         "frame_size": 0,
+                                        "compressed_size": 0,
+                                        "is_compressed": False,
                                         "pattern_name": "",
                                         "params": {},
                                         "display_state": {},  # Include empty display state
