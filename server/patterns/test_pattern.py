@@ -4,11 +4,16 @@ Simple test pattern to verify the pattern system is working correctly.
 
 from typing import Dict, Any, List
 from server.patterns.base import Pattern, PatternDefinition, Parameter, PatternRegistry
+from server.patterns.grid_config import GridConfig
 
 
 @PatternRegistry.register
 class TestPattern(Pattern):
     """A simple test pattern that displays a solid color."""
+
+    def __init__(self, grid_config: GridConfig):
+        super().__init__(grid_config)
+        self.id = "test_pattern"  # Add id attribute
 
     @classmethod
     def definition(cls) -> PatternDefinition:
