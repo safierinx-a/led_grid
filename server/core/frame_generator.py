@@ -7,7 +7,7 @@ import json
 import zmq
 import traceback
 import zlib
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List, Callable, Tuple
 from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
@@ -143,8 +143,10 @@ class FrameGenerator:
             "total_frames": 0,
             "total_original_size": 0,
             "total_compressed_size": 0,
-            "last_report_time": time.time(),
+            "last_compression_ratio": 0.0,
         }
+
+        self.frame_sequence = 0
 
     def add_frame_observer(self, observer_func: Callable[[Frame], None]) -> None:
         """Add a function to be called with each new frame
@@ -259,43 +261,58 @@ class FrameGenerator:
     def _generate_frame(self) -> Optional[Frame]:
         """Generate a single frame"""
         try:
-            with self.generation_lock:
-                # Get current pattern and parameters
-                pattern_id = self.pattern_manager.get_current_pattern_id()
-                pattern = self.pattern_manager.get_pattern(pattern_id)
-                params = self.pattern_manager.get_pattern_params(pattern_id)
-                display_state = self.pattern_manager.get_display_state()
+            # Get current pattern ID from pattern manager
+            pattern_id = self.pattern_manager.get_current_pattern_id()
+            if not pattern_id:
+                print("No current pattern ID available")
+                return None
 
-                # Generate frame data
-                pixels = pattern.generate_frame(params, display_state)
-                if not pixels:
-                    return None
+            # Get current pattern from pattern manager
+            pattern = self.pattern_manager.get_pattern(pattern_id)
+            if not pattern:
+                print(f"Pattern not found for ID: {pattern_id}")
+                return None
 
-                # Convert to bytearray
-                frame_data = bytearray()
-                for pixel in pixels:
-                    frame_data.extend([pixel["r"], pixel["g"], pixel["b"]])
+            # Get pattern parameters
+            params = self.pattern_manager.get_pattern_params(pattern_id)
+            if not params:
+                print(f"No parameters available for pattern: {pattern_id}")
+                return None
 
-                # Create frame object
-                frame = Frame(
-                    sequence=self.pattern_manager.get_frame_sequence(),
-                    pattern_id=pattern_id,
-                    timestamp=time.time_ns(),
-                    data=frame_data,
-                    metadata={
-                        "pattern_name": pattern.name,
-                        "params": params,
-                        "display_state": display_state,
-                    },
+            # Generate frame data
+            frame_data = pattern.generate_frame(params)
+            if not frame_data:
+                print(f"Failed to generate frame data for pattern: {pattern_id}")
+                return None
+
+            # Validate frame data size
+            expected_size = self.grid_config.width * self.grid_config.height * 3
+            if len(frame_data) != expected_size:
+                print(
+                    f"Invalid frame data size: {len(frame_data)} (expected: {expected_size})"
                 )
+                return None
 
-                # Update frame sequence
-                self.pattern_manager.increment_frame_sequence()
+            # Create frame with metadata
+            frame = Frame(
+                sequence=self.frame_sequence,
+                pattern_id=pattern_id,
+                timestamp=time.time(),
+                data=frame_data,
+                metadata={
+                    "frame_size": len(frame_data),
+                    "pattern_name": pattern.definition().name,
+                    "params": params,
+                },
+            )
 
-                return frame
+            # Increment frame sequence
+            self.frame_sequence += 1
+            return frame
 
         except Exception as e:
             print(f"Error generating frame: {e}")
+            traceback.print_exc()
             return None
 
     def _handle_buffer_full(self, frame: Frame, buffer: queue.PriorityQueue) -> bool:
@@ -511,134 +528,69 @@ class FrameGenerator:
                 traceback.print_exc()
                 time.sleep(0.1)
 
-    def _compress_frame(self, frame_data: bytearray) -> bytearray:
-        """Compress frame data"""
-        return zlib.compress(frame_data, level=6)
+    def _compress_frame(
+        self, frame_data: bytearray
+    ) -> Tuple[bytearray, Dict[str, Any]]:
+        """Compress frame data and return compressed data with metadata"""
+        try:
+            # Compress frame data
+            compressed_data = zlib.compress(frame_data, level=6)
+
+            # Prepare metadata
+            metadata = {
+                "original_size": len(frame_data),
+                "compressed_size": len(compressed_data),
+                "compression_ratio": len(compressed_data) / len(frame_data)
+                if len(frame_data) > 0
+                else 0.0,
+            }
+
+            return compressed_data, metadata
+
+        except Exception as e:
+            print(f"Error compressing frame: {e}")
+            traceback.print_exc()
+            return frame_data, {
+                "original_size": len(frame_data),
+                "compressed_size": len(frame_data),
+                "compression_ratio": 1.0,
+            }
 
     def _delivery_loop(self):
-        """Enhanced frame delivery loop with better error handling"""
-        delivery_errors = 0
-        max_delivery_errors = 3
-        error_reset_interval = 60.0
-        last_error_time = time.time()
-        last_empty_frame_time = 0
-        empty_frame_interval = 1.0
-        last_frame_time = time.time()
-        consecutive_timeouts = 0
-        max_consecutive_timeouts = 5
-
+        """Main frame delivery loop"""
         while self.is_running:
             try:
-                try:
-                    # Receive the message with identity frame from DEALER
-                    identity = self.frame_socket.recv(flags=zmq.NOBLOCK)
-                    msg = self.frame_socket.recv(flags=zmq.NOBLOCK)
+                # Generate frame
+                frame = self._generate_frame()
+                if not frame:
+                    time.sleep(0.01)  # Prevent tight loop on frame generation failure
+                    continue
 
-                    if msg == b"READY":
-                        current_time = time.time()
+                # Compress frame data
+                compressed_data, metadata = self._compress_frame(frame.data)
 
-                        # Ensure we maintain target frame rate
-                        if current_time - last_frame_time < self.target_frame_time:
-                            time.sleep(
-                                self.target_frame_time
-                                - (current_time - last_frame_time)
-                            )
-                            continue
+                # Update compression stats
+                self.compression_stats["total_frames"] += 1
+                self.compression_stats["total_original_size"] += len(frame.data)
+                self.compression_stats["total_compressed_size"] += len(compressed_data)
+                self.compression_stats["last_compression_ratio"] = metadata[
+                    "compression_ratio"
+                ]
 
-                        try:
-                            with self.buffer_lock:
-                                priority, frame = self.current_buffer.get(timeout=0.001)
+                # Send frame
+                self._send_frame(frame, compressed_data, metadata)
 
-                            if frame:
-                                try:
-                                    # Handle pattern transition
-                                    with self.transition_lock:
-                                        if self.pattern_transition:
-                                            transition_progress = min(
-                                                1.0,
-                                                (
-                                                    current_time
-                                                    - self.transition_start_time
-                                                )
-                                                / self.transition_duration,
-                                            )
-                                            if transition_progress >= 1.0:
-                                                self.pattern_transition = False
-                                            else:
-                                                # Interpolate between patterns
-                                                frame = self._interpolate_frames(
-                                                    self.last_frame,
-                                                    frame,
-                                                    transition_progress,
-                                                )
-
-                                    # Interpolate between frames if needed
-                                    if self.last_frame and self.current_frame:
-                                        self.interpolation_factor += (
-                                            self.interpolation_step
-                                        )
-                                        if self.interpolation_factor >= 1.0:
-                                            self.interpolation_factor = 0.0
-                                        frame = self._interpolate_frames(
-                                            self.last_frame,
-                                            frame,
-                                            self.interpolation_factor,
-                                        )
-
-                                    # Compress and send frame
-                                    compressed_data = self._compress_frame(frame.data)
-                                    self._send_frame(identity, frame, compressed_data)
-
-                                    last_frame_time = time.time()
-                                    self.frame_count += 1
-                                    delivery_errors = 0
-                                    consecutive_timeouts = 0
-                                    last_error_time = time.time()
-
-                                except zmq.error.Again:
-                                    consecutive_timeouts += 1
-                                    if consecutive_timeouts >= max_consecutive_timeouts:
-                                        print(
-                                            "Too many consecutive timeouts, attempting to recover..."
-                                        )
-                                        self._rebind_socket()
-                                        consecutive_timeouts = 0
-                                    continue
-                                except Exception as e:
-                                    print(f"Error sending frame: {e}")
-                                    traceback.print_exc()
-                                    delivery_errors += 1
-                                    if delivery_errors >= max_delivery_errors:
-                                        print(
-                                            "Too many delivery errors, attempting to rebind socket..."
-                                        )
-                                        self._rebind_socket()
-                                        delivery_errors = 0
-
-                        except queue.Empty:
-                            self._handle_empty_buffer(
-                                current_time,
-                                last_empty_frame_time,
-                                identity,
-                                empty_frame_interval,
-                            )
-
-                except zmq.error.Again:
-                    time.sleep(0.001)
-
-                # Reset error count if enough time has passed
-                if time.time() - last_error_time > error_reset_interval:
-                    delivery_errors = 0
+                # Control frame rate
+                current_time = time.time()
+                elapsed = current_time - self.last_frame_time
+                if elapsed < self.frame_interval:
+                    time.sleep(self.frame_interval - elapsed)
+                self.last_frame_time = time.time()
 
             except Exception as e:
                 print(f"Error in delivery loop: {e}")
                 traceback.print_exc()
-                delivery_errors += 1
-                if delivery_errors >= max_delivery_errors:
-                    print("Too many delivery errors, attempting to rebind socket...")
-                    self._rebind_socket()
-                    delivery_errors = 0
-                time.sleep(0.1)
+                time.sleep(0.1)  # Prevent tight error loop
 
     def _send_frame(self, identity: bytes, frame: Frame, compressed_data: bytearray):
         """Send frame with proper error handling"""
@@ -662,70 +614,6 @@ class FrameGenerator:
         except Exception as e:
             print(f"Error sending frame: {e}")
             raise
-
-    def _handle_empty_buffer(
-        self,
-        current_time: float,
-        last_empty_frame_time: float,
-        identity: bytes,
-        empty_frame_interval: float,
-    ):
-        """Handle empty buffer situation"""
-        if current_time - last_empty_frame_time >= empty_frame_interval:
-            try:
-                empty_frame = bytearray(
-                    [0] * (self.grid_config.width * self.grid_config.height * 3)
-                )
-                compressed_empty = self._compress_frame(empty_frame)
-
-                metadata = {
-                    "seq": -1,
-                    "pattern_id": None,
-                    "timestamp": time.time_ns(),
-                    "frame_size": len(empty_frame),
-                    "compressed_size": len(compressed_empty),
-                    "pattern_name": "",
-                    "params": {},
-                    "display_state": {},
-                }
-
-                self._send_frame(
-                    identity,
-                    Frame(-1, None, time.time_ns(), empty_frame, metadata),
-                    compressed_empty,
-                )
-                last_empty_frame_time = current_time
-            except Exception as e:
-                print(f"Error sending empty frame: {e}")
-                traceback.print_exc()
-
-    def _rebind_socket(self):
-        """Rebind ZMQ socket after errors"""
-        try:
-            # Close existing socket
-            self.frame_socket.close(linger=0)
-            time.sleep(0.1)  # Give socket time to close
-
-            # Create new socket
-            self.frame_socket = self.zmq_context.socket(zmq.ROUTER)
-            self.frame_socket.setsockopt(zmq.LINGER, 0)
-            self.frame_socket.setsockopt(zmq.RCVTIMEO, 100)
-            self.frame_socket.setsockopt(zmq.SNDTIMEO, 100)
-            self.frame_socket.setsockopt(zmq.RCVHWM, 10)
-            self.frame_socket.setsockopt(zmq.SNDHWM, 10)
-            self.frame_socket.setsockopt(zmq.RECONNECT_IVL, 100)
-            self.frame_socket.setsockopt(zmq.RECONNECT_IVL_MAX, 5000)
-
-            # Rebind
-            zmq_address = f"tcp://*:{self.zmq_port}"
-            print(f"Rebinding frame delivery socket to {zmq_address}")
-            self.frame_socket.bind(zmq_address)
-            print("Socket rebound successfully")
-            return True
-        except Exception as e:
-            print(f"Error rebinding socket: {e}")
-            traceback.print_exc()
-            return False
 
     def start(self):
         """Start frame generation and delivery"""
