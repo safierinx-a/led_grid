@@ -31,66 +31,46 @@ class Frame:
 class FrameGenerator:
     """Handles frame generation and delivery to LED controllers"""
 
-    def __init__(
-        self,
-        grid_config: GridConfig,
-        pattern_manager: PatternManager,
-        buffer_size: int = 4,
-    ):
-        # Load environment variables
-        load_dotenv()
-
+    def __init__(self, grid_config: GridConfig, pattern_manager: PatternManager):
         self.grid_config = grid_config
         self.pattern_manager = pattern_manager
-        self.buffer_size = buffer_size
 
-        # Enhanced timing control
+        # Frame generation state
+        self.frame_sequence = 0
+        self.last_frame_time = 0
         self.target_fps = 24
-        self.target_frame_time = 1.0 / self.target_fps
         self.frame_interval = 1.0 / self.target_fps
         self.next_frame_time = time.time()
-        self.last_frame_time = time.time()
-        self.frame_drop_threshold = 0.1  # Drop frame if generation takes too long
-        self.max_frame_lag = 3  # Maximum frames to lag before forcing catchup
 
-        # Adaptive timing
-        self.frame_times = []
-        self.max_frame_times = 100
-        self.adaptive_interval = self.frame_interval
-        self.min_interval = self.frame_interval * 0.8
-        self.max_interval = self.frame_interval * 1.2
-        self.last_adaptation = time.time()
-        self.adaptation_interval = 1.0  # Adapt every second
+        # Threading control
+        self.running = False
+        self.frame_thread = None
+        self.frame_lock = threading.Lock()
+        self.generation_lock = threading.RLock()
 
-        # Frame synchronization
-        self.sync_window = 0.001  # 1ms sync window
-        self.last_sync_time = time.time()
-        self.sync_offset = 0
-        self.sync_samples = []
-        self.max_sync_samples = 50
-
-        # Enhanced buffer management
-        self.current_buffer = queue.PriorityQueue(maxsize=buffer_size)
-        self.next_buffer = queue.PriorityQueue(maxsize=buffer_size)
+        # Buffer management
+        self.frame_buffer = []
+        self.max_buffer_size = 10
+        self.current_buffer = queue.PriorityQueue(maxsize=self.max_buffer_size)
+        self.next_buffer = queue.PriorityQueue(maxsize=self.max_buffer_size)
         self.buffer_lock = threading.RLock()
-        self.buffer_full_count = 0
-        self.max_buffer_full_count = 3
-        self.buffer_full_reset_interval = 5.0
-        self.last_buffer_full_time = time.time()
 
-        # Smart frame dropping
-        self.drop_count = 0
-        self.last_drop_time = time.time()
-        self.drop_reset_interval = 1.0
-        self.max_drops_per_second = 3
-
-        # Pattern transition state
+        # Pattern state
+        self.current_pattern_id = None
         self.pattern_transition = False
         self.transition_start_time = 0
-        self.transition_duration = 0.5  # 500ms transition
+        self.transition_duration = 0.5
         self.transition_lock = threading.RLock()
 
-        # Performance monitoring
+        # Frame tracking
+        self.last_frame = None
+        self.current_frame = None
+        self.interpolation_factor = 0.0
+        self.interpolation_step = 1.0 / self.target_fps
+
+        # Performance tracking
+        self.frame_times = []
+        self.max_frame_times = 100
         self.frame_generation_times = []
         self.max_generation_times = 100
         self.last_performance_report = time.time()
@@ -103,11 +83,22 @@ class FrameGenerator:
         self.last_network_check = time.time()
         self.network_check_interval = 0.5
 
-        # Frame observers list for external components
-        self.frame_observers: List[Callable[[Frame], None]] = []
-        self.observer_lock = threading.RLock()
+        # Frame dropping control
+        self.drop_count = 0
+        self.last_drop_time = time.time()
+        self.drop_reset_interval = 1.0
+        self.max_drops_per_second = 3
+        self.frame_drop_threshold = 0.1
 
-        # ZMQ setup for frame delivery
+        # Compression stats
+        self.compression_stats = {
+            "total_frames": 0,
+            "total_original_size": 0,
+            "total_compressed_size": 0,
+            "last_compression_ratio": 0.0,
+        }
+
+        # ZMQ setup
         self.zmq_context = zmq.Context()
         self.frame_socket = self.zmq_context.socket(zmq.ROUTER)
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
@@ -120,33 +111,6 @@ class FrameGenerator:
         self.frame_socket.setsockopt(zmq.SNDHWM, 10)
         self.frame_socket.setsockopt(zmq.RECONNECT_IVL, 100)
         self.frame_socket.setsockopt(zmq.RECONNECT_IVL_MAX, 5000)
-
-        # Threading control
-        self.is_running = False
-        self.generation_thread = None
-        self.delivery_thread = None
-        self.generation_lock = threading.RLock()
-
-        # Performance tracking
-        self.frame_count = 0
-        self.delivered_count = 0
-        self.performance_log_interval = 5.0
-
-        # Frame interpolation
-        self.last_frame = None
-        self.current_frame = None
-        self.interpolation_factor = 0.0
-        self.interpolation_step = 1.0 / self.target_fps
-
-        # Compression stats
-        self.compression_stats = {
-            "total_frames": 0,
-            "total_original_size": 0,
-            "total_compressed_size": 0,
-            "last_compression_ratio": 0.0,
-        }
-
-        self.frame_sequence = 0
 
     def add_frame_observer(self, observer_func: Callable[[Frame], None]) -> None:
         """Add a function to be called with each new frame
@@ -259,56 +223,57 @@ class FrameGenerator:
         )
 
     def _generate_frame(self) -> Optional[Frame]:
-        """Generate a single frame"""
+        """Generate a single frame with proper error handling"""
         try:
-            # Get current pattern ID from pattern manager
-            pattern_id = self.pattern_manager.get_current_pattern_id()
-            if not pattern_id:
-                print("No current pattern ID available")
-                return None
+            with self.generation_lock:
+                # Get current pattern ID from pattern manager
+                pattern_id = self.pattern_manager.get_current_pattern_id()
+                if not pattern_id:
+                    print("No current pattern ID available")
+                    return None
 
-            # Get current pattern from pattern manager
-            pattern = self.pattern_manager.get_pattern(pattern_id)
-            if not pattern:
-                print(f"Pattern not found for ID: {pattern_id}")
-                return None
+                # Get current pattern from pattern manager
+                pattern = self.pattern_manager.get_pattern(pattern_id)
+                if not pattern:
+                    print(f"Pattern not found for ID: {pattern_id}")
+                    return None
 
-            # Get pattern parameters
-            params = self.pattern_manager.get_pattern_params(pattern_id)
-            if not params:
-                print(f"No parameters available for pattern: {pattern_id}")
-                return None
+                # Get pattern parameters
+                params = self.pattern_manager.get_pattern_params(pattern_id)
+                if not params:
+                    print(f"No parameters available for pattern: {pattern_id}")
+                    return None
 
-            # Generate frame data
-            frame_data = pattern.generate_frame(params)
-            if not frame_data:
-                print(f"Failed to generate frame data for pattern: {pattern_id}")
-                return None
+                # Generate frame data
+                frame_data = pattern.generate_frame(params)
+                if not frame_data:
+                    print(f"Failed to generate frame data for pattern: {pattern_id}")
+                    return None
 
-            # Validate frame data size
-            expected_size = self.grid_config.width * self.grid_config.height * 3
-            if len(frame_data) != expected_size:
-                print(
-                    f"Invalid frame data size: {len(frame_data)} (expected: {expected_size})"
+                # Validate frame data size
+                expected_size = self.grid_config.width * self.grid_config.height * 3
+                if len(frame_data) != expected_size:
+                    print(
+                        f"Invalid frame data size: {len(frame_data)} (expected: {expected_size})"
+                    )
+                    return None
+
+                # Create frame with metadata
+                frame = Frame(
+                    sequence=self.frame_sequence,
+                    pattern_id=pattern_id,
+                    timestamp=time.time(),
+                    data=frame_data,
+                    metadata={
+                        "frame_size": len(frame_data),
+                        "pattern_name": pattern.definition().name,
+                        "params": params,
+                    },
                 )
-                return None
 
-            # Create frame with metadata
-            frame = Frame(
-                sequence=self.frame_sequence,
-                pattern_id=pattern_id,
-                timestamp=time.time(),
-                data=frame_data,
-                metadata={
-                    "frame_size": len(frame_data),
-                    "pattern_name": pattern.definition().name,
-                    "params": params,
-                },
-            )
-
-            # Increment frame sequence
-            self.frame_sequence += 1
-            return frame
+                # Increment frame sequence
+                self.frame_sequence += 1
+                return frame
 
         except Exception as e:
             print(f"Error generating frame: {e}")
@@ -421,19 +386,10 @@ class FrameGenerator:
 
     def _generation_loop(self):
         """Enhanced frame generation loop with perfect timing"""
-        while self.is_running:
+        while self.running:
             try:
                 current_time = time.time()
                 frame_start_time = current_time
-
-                # Adapt timing based on performance
-                self._adapt_timing()
-
-                # Check network health
-                self._check_network_health()
-
-                # Synchronize frame delivery
-                self._synchronize_frames()
 
                 # Check for pattern changes
                 pattern_id = self.pattern_manager.get_current_pattern_id()
@@ -442,12 +398,6 @@ class FrameGenerator:
                         self.pattern_transition = True
                         self.transition_start_time = current_time
                         self.current_pattern_id = pattern_id
-                        # Clear next buffer
-                        while not self.next_buffer.empty():
-                            try:
-                                self.next_buffer.get_nowait()
-                            except queue.Empty:
-                                break
 
                 # Generate frame if it's time
                 if current_time >= self.next_frame_time:
@@ -556,9 +506,30 @@ class FrameGenerator:
                 "compression_ratio": 1.0,
             }
 
+    def _send_frame(
+        self, frame: Frame, compressed_data: bytearray, metadata: Dict[str, Any]
+    ):
+        """Send frame with proper error handling"""
+        try:
+            # Prepare frame parts
+            identity = b"led_controller"  # Default identity for now
+            msg_type = b"frame"
+            metadata_json = json.dumps(metadata).encode()
+
+            # Send frame parts
+            self.frame_socket.send(identity, zmq.SNDMORE)
+            self.frame_socket.send(msg_type, zmq.SNDMORE)
+            self.frame_socket.send(metadata_json, zmq.SNDMORE)
+            self.frame_socket.send(compressed_data)
+
+        except Exception as e:
+            print(f"Error sending frame: {e}")
+            traceback.print_exc()
+            raise
+
     def _delivery_loop(self):
-        """Main frame delivery loop"""
-        while self.is_running:
+        """Main frame delivery loop with proper timing control"""
+        while self.running:
             try:
                 # Generate frame
                 frame = self._generate_frame()
@@ -592,42 +563,19 @@ class FrameGenerator:
                 traceback.print_exc()
                 time.sleep(0.1)  # Prevent tight error loop
 
-    def _send_frame(self, identity: bytes, frame: Frame, compressed_data: bytearray):
-        """Send frame with proper error handling"""
-        try:
-            metadata = {
-                "seq": frame.sequence,
-                "pattern_id": frame.pattern_id,
-                "timestamp": time.time_ns(),
-                "frame_size": len(frame.data),
-                "compressed_size": len(compressed_data),
-                "pattern_name": frame.metadata.get("pattern_name", ""),
-                "params": frame.metadata.get("params", {}),
-                "display_state": frame.metadata.get("display_state", {}),
-            }
-
-            # Send frame parts
-            self.frame_socket.send(identity, zmq.SNDMORE)
-            self.frame_socket.send(b"frame", zmq.SNDMORE)
-            self.frame_socket.send(json.dumps(metadata).encode(), zmq.SNDMORE)
-            self.frame_socket.send(compressed_data)
-        except Exception as e:
-            print(f"Error sending frame: {e}")
-            raise
-
     def start(self):
         """Start frame generation and delivery"""
-        if not self.is_running:
+        if not self.running:
             # Bind ZMQ socket
             if not self.bind_zmq():
                 return False
 
-            self.is_running = True
+            self.running = True
 
             # Start generation thread
-            self.generation_thread = threading.Thread(target=self._generation_loop)
-            self.generation_thread.daemon = True
-            self.generation_thread.start()
+            self.frame_thread = threading.Thread(target=self._generation_loop)
+            self.frame_thread.daemon = True
+            self.frame_thread.start()
 
             # Start delivery thread
             self.delivery_thread = threading.Thread(target=self._delivery_loop)
@@ -638,11 +586,11 @@ class FrameGenerator:
 
     def stop(self):
         """Stop frame generation and delivery"""
-        self.is_running = False
+        self.running = False
 
         # Stop generation thread
-        if self.generation_thread and self.generation_thread.is_alive():
-            self.generation_thread.join(timeout=1.0)
+        if self.frame_thread and self.frame_thread.is_alive():
+            self.frame_thread.join(timeout=1.0)
 
         # Stop delivery thread
         if self.delivery_thread and self.delivery_thread.is_alive():
