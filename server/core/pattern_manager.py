@@ -991,3 +991,38 @@ class PatternManager:
             print(f"Error in _sync_all_data: {e}")
             traceback.print_exc()
             return False
+
+    def get_current_pattern_id(self) -> Optional[str]:
+        """Get the current pattern ID"""
+        with self.pattern_lock:
+            return self.pattern_id
+
+    def get_pattern(self, pattern_id: str) -> Optional[Pattern]:
+        """Get pattern by ID"""
+        with self.pattern_lock:
+            for pattern in self.patterns:
+                if pattern.id == pattern_id:
+                    return pattern
+            return None
+
+    def get_pattern_params(self, pattern_id: str) -> Dict[str, Any]:
+        """Get parameters for a pattern"""
+        with self.pattern_lock:
+            if pattern_id == self.pattern_id:
+                return self.current_params.copy()
+            return {}
+
+    def get_display_state(self) -> Dict[str, Any]:
+        """Get current display state"""
+        with self.display_lock:
+            return self.display_state.copy()
+
+    def get_frame_sequence(self) -> int:
+        """Get current frame sequence number"""
+        with self.pattern_lock:
+            return self.frame_sequence
+
+    def increment_frame_sequence(self):
+        """Increment frame sequence number"""
+        with self.pattern_lock:
+            self.frame_sequence += 1
