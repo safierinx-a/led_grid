@@ -4,7 +4,7 @@ Simple test pattern to verify the pattern system is working correctly.
 
 from typing import Dict, Any, List
 from server.patterns.base import Pattern, PatternDefinition, Parameter, PatternRegistry
-from server.patterns.grid_config import GridConfig
+from server.config.grid_config import GridConfig
 
 
 @PatternRegistry.register
