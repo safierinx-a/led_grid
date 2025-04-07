@@ -69,6 +69,26 @@ class PatternManager:
         }
         self.performance_lock = threading.RLock()
 
+        # Initialize default pattern
+        self._initialize_default_pattern()
+
+    def _initialize_default_pattern(self):
+        """Initialize with a default pattern"""
+        try:
+            # Get default pattern from registry
+            default_pattern_class = PatternRegistry.get_pattern("solid")
+            if default_pattern_class:
+                default_pattern = default_pattern_class(self.grid_config)
+                self.patterns.append(default_pattern)
+                self.pattern_id = str(time.time_ns())
+                self.current_params = {"color": [255, 255, 255]}  # White
+                print(f"Initialized with default pattern: solid")
+            else:
+                print("Warning: Could not initialize default pattern")
+        except Exception as e:
+            print(f"Error initializing default pattern: {e}")
+            traceback.print_exc()
+
     def connect_mqtt(self):
         """Connect to MQTT broker and set up command handling"""
         try:
