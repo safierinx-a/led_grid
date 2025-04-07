@@ -105,6 +105,10 @@ class FrameGenerator:
             "last_compression_ratio": 0.0,
         }
 
+        # Frame observers
+        self.frame_observers = []
+        self.observer_lock = threading.RLock()
+
         # ZMQ setup
         self.zmq_context = zmq.Context()
         self.frame_socket = self.zmq_context.socket(zmq.ROUTER)
@@ -144,6 +148,20 @@ class FrameGenerator:
                 print(
                     f"Removed frame observer, remaining observers: {len(self.frame_observers)}"
                 )
+
+    def _notify_observers(self, frame: Frame) -> None:
+        """Notify all observers of a new frame
+
+        Args:
+            frame: The Frame object to notify observers about
+        """
+        with self.observer_lock:
+            for observer in self.frame_observers:
+                try:
+                    observer(frame)
+                except Exception as e:
+                    print(f"Error in frame observer: {e}")
+                    traceback.print_exc()
 
     def bind_zmq(self):
         """Bind ZMQ socket for frame delivery"""
@@ -560,6 +578,9 @@ class FrameGenerator:
                 self.compression_stats["last_compression_ratio"] = metadata[
                     "compression_ratio"
                 ]
+
+                # Notify observers of the new frame
+                self._notify_observers(frame)
 
                 # Send frame
                 self._send_frame(frame, compressed_data, metadata)
