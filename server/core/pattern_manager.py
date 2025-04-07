@@ -790,15 +790,21 @@ class PatternManager:
             traceback.print_exc()
 
     def get_current_pattern_id(self) -> Optional[str]:
-        """Get the current pattern ID with thread safety"""
+        """Get the current pattern ID"""
         with self.pattern_lock:
-            return self.pattern_id
+            if not self.patterns:
+                print("No patterns available")
+                return None
+            if not hasattr(self.patterns[0], "id"):
+                print("Pattern does not have an ID")
+                return None
+            return self.patterns[0].id
 
     def get_pattern(self, pattern_id: str) -> Optional[Pattern]:
-        """Get pattern by ID with thread safety"""
+        """Get a pattern instance by ID"""
         with self.pattern_lock:
             for pattern in self.patterns:
-                if pattern.id == pattern_id:
+                if hasattr(pattern, "id") and pattern.id == pattern_id:
                     return pattern
             return None
 
@@ -825,28 +831,23 @@ class PatternManager:
             self.frame_sequence += 1
 
     def set_pattern(self, pattern_id: str, params: Dict[str, Any] = None) -> bool:
-        """Set current pattern with thread safety"""
+        """Set the current pattern with thread safety"""
         try:
             with self.pattern_lock:
-                # Validate pattern exists
                 pattern = self.get_pattern(pattern_id)
                 if not pattern:
                     print(f"Pattern not found: {pattern_id}")
                     return False
 
-                # Validate parameters
-                if params is None:
-                    params = {}
-                if not isinstance(params, dict):
-                    print(f"Invalid parameters type: {type(params)}")
-                    return False
-
                 # Update pattern state
+                self.current_pattern = pattern
+                self.current_params = params or {}
                 self.pattern_id = pattern_id
-                self.current_params = params.copy()
+
+                # Reset frame sequence for new pattern
                 self.frame_sequence = 0
 
-                print(f"Pattern set to: {pattern_id}")
+                print(f"Set pattern to {pattern_id}")
                 return True
 
         except Exception as e:
