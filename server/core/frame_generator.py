@@ -42,6 +42,13 @@ class FrameGenerator:
         self.frame_interval = 1.0 / self.target_fps
         self.next_frame_time = time.time()
 
+        # Adaptive timing
+        self.adaptive_interval = self.frame_interval
+        self.min_interval = self.frame_interval * 0.8
+        self.max_interval = self.frame_interval * 1.2
+        self.last_adaptation = time.time()
+        self.adaptation_interval = 1.0  # Adapt every second
+
         # Threading control
         self.running = False
         self.frame_thread = None
@@ -393,11 +400,17 @@ class FrameGenerator:
 
                 # Check for pattern changes
                 pattern_id = self.pattern_manager.get_current_pattern_id()
+                if not pattern_id:
+                    print("No current pattern ID available, waiting...")
+                    time.sleep(0.1)  # Prevent tight loop when no pattern
+                    continue
+
                 with self.transition_lock:
                     if pattern_id != self.current_pattern_id:
                         self.pattern_transition = True
                         self.transition_start_time = current_time
                         self.current_pattern_id = pattern_id
+                        print(f"Pattern transition detected: {pattern_id}")
 
                 # Generate frame if it's time
                 if current_time >= self.next_frame_time:
@@ -412,7 +425,7 @@ class FrameGenerator:
                         # Smart frame dropping
                         if (
                             generation_time
-                            > self.target_frame_time * self.frame_drop_threshold
+                            > self.frame_interval * self.frame_drop_threshold
                         ):
                             current_time = time.time()
                             if (
