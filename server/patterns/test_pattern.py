@@ -52,13 +52,20 @@ class TestPattern(Pattern):
 
     def generate_frame(self, params: Dict[str, Any]) -> List[Dict[str, int]]:
         """Generate a solid color frame."""
-        # Validate parameters
-        validated_params = self.validate_params(params)
+        # Get default values from pattern definition
+        default_params = {
+            param.name: param.default for param in self.definition().parameters
+        }
 
-        # Get color components
-        r = validated_params.get("red", 255)
-        g = validated_params.get("green", 0)
-        b = validated_params.get("blue", 0)
+        # Merge provided params with defaults
+        merged_params = default_params.copy()
+        if params:
+            merged_params.update(params)
+
+        # Get color components with defaults
+        r = merged_params.get("red", 255)
+        g = merged_params.get("green", 0)
+        b = merged_params.get("blue", 0)
 
         # Create pixels
         pixels = []
