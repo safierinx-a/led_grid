@@ -22,15 +22,19 @@ class PatternManager:
 
         self.grid_config = grid_config
         self.mqtt_config = mqtt_config
+        self.patterns = []
+        self.pattern_id = None
+        self.current_params = {}
+        self.display_state = {}
+        self.frame_sequence = 0
+        self.pattern_lock = threading.RLock()
+        self.display_lock = threading.RLock()
         self.mqtt_client = None
-        self.is_connected = False
+        self.running = False
+        self.mqtt_thread = None
 
         # Pattern state
-        self.patterns = []  # Will be populated in load_patterns()
         self.current_pattern: Optional[Pattern] = None
-        self.current_params: Dict[str, Any] = {}
-        self.pattern_id: Optional[str] = None
-        self.frame_sequence = 0  # Add frame sequence counter
         self.pattern_lock = threading.RLock()
 
         # Callback and observers for pattern changes
@@ -55,12 +59,6 @@ class PatternManager:
             "last_reset": 0,
         }
         self.hardware_lock = threading.RLock()
-
-        # Display state (software-level controls)
-        self.display_state = {
-            "brightness": 1.0,  # Normalized to 0.0-1.0 range
-        }
-        self.display_lock = threading.RLock()
 
         # Performance tracking
         self.performance_state = {
@@ -106,11 +104,11 @@ class PatternManager:
 
             # Wait for connection
             timeout = 10
-            while timeout > 0 and not self.is_connected:
+            while timeout > 0 and not self.running:
                 time.sleep(0.1)
                 timeout -= 0.1
 
-            if not self.is_connected:
+            if not self.running:
                 print(
                     "MQTT connection timeout, but continuing with async connection attempts"
                 )
@@ -598,15 +596,15 @@ class PatternManager:
         """Handle MQTT connection"""
         if rc == 0:
             print("Connected to MQTT broker successfully")
-            self.is_connected = True
+            self.running = True
         else:
             print(f"Failed to connect to MQTT broker with code {rc}")
-            self.is_connected = False
+            self.running = False
 
     def _on_mqtt_disconnect(self, client, userdata, rc):
         """Handle MQTT disconnection"""
         print(f"Disconnected from MQTT broker with code {rc}")
-        self.is_connected = False
+        self.running = False
 
     def _on_mqtt_message(self, client, userdata, msg):
         """Handle incoming MQTT messages with thread safety"""
@@ -639,7 +637,7 @@ class PatternManager:
                     params = data.get("params", {})
                     if params:
                         # update_pattern_params is already thread safe
-                        self.update_pattern_params(params)
+                        self.update_params(params)
                     else:
                         print("No parameters provided in command")
                 except json.JSONDecodeError:
@@ -771,234 +769,13 @@ class PatternManager:
             print(f"Topic: {msg.topic}")
             traceback.print_exc()
 
-    def set_pattern(self, pattern_name: str, params: Dict[str, Any] = None):
-        """Set pattern with immediate effect"""
-        with self.pattern_lock:
-            print(f"\nPattern change requested: {pattern_name}")
-            print(f"Initial params: {params}")
-
-            # Clean up old pattern
-            if self.current_pattern:
-                print(
-                    f"Cleaning up old pattern: {self.current_pattern.definition().name}"
-                )
-
-            # Set new pattern
-            try:
-                # First try to get the pattern directly by name
-                pattern_class = PatternRegistry.get_pattern(pattern_name)
-
-                # If not found, try to find a pattern with a similar name
-                if not pattern_class:
-                    print(f"Pattern {pattern_name} not found directly in registry")
-
-                    # Get all available patterns
-                    all_patterns = PatternRegistry.list_patterns()
-                    all_pattern_names = [p.name for p in all_patterns]
-                    print(f"Available patterns: {all_pattern_names}")
-
-                    # Try to find a case-insensitive match
-                    for p_def in all_patterns:
-                        if p_def.name.lower() == pattern_name.lower():
-                            print(f"Found case-insensitive match: {p_def.name}")
-                            pattern_class = PatternRegistry.get_pattern(p_def.name)
-                            pattern_name = p_def.name  # Update to the correct case
-                            break
-
-                if pattern_class:
-                    print(f"Creating new pattern instance: {pattern_name}")
-                    self.current_pattern = pattern_class(self.grid_config)
-                    self.current_params = params or {}
-                    self.pattern_id = str(time.time_ns())
-
-                    # Notify frame generator
-                    self._notify_pattern_change()
-
-                    # Send success response
-                    self.mqtt_client.publish(
-                        "led/response/pattern",
-                        json.dumps(
-                            {
-                                "success": True,
-                                "pattern": pattern_name,
-                                "params": self.current_params,
-                            }
-                        ),
-                        retain=False,
-                    )
-                else:
-                    print(f"Pattern {pattern_name} not found in registry")
-                    print(
-                        f"Available patterns: {[p.definition().name for p in self.patterns]}"
-                    )
-
-                    self.current_pattern = None
-                    self.current_params = {}
-                    self.pattern_id = None
-                    print("Pattern cleared")
-
-                    # Send error response
-                    self.mqtt_client.publish(
-                        "led/response/pattern",
-                        json.dumps(
-                            {
-                                "success": False,
-                                "error": f"Pattern '{pattern_name}' not found",
-                                "available_patterns": [
-                                    p.definition().name for p in self.patterns
-                                ],
-                            }
-                        ),
-                        retain=False,
-                    )
-            except Exception as e:
-                print(f"ERROR: Failed to set pattern {pattern_name}: {e}")
-                traceback.print_exc()
-
-                self.current_pattern = None
-                self.current_params = {}
-                self.pattern_id = None
-
-                # Send error response
-                self.mqtt_client.publish(
-                    "led/response/pattern",
-                    json.dumps(
-                        {
-                            "success": False,
-                            "error": f"Error setting pattern '{pattern_name}': {str(e)}",
-                            "available_patterns": [
-                                p.definition().name for p in self.patterns
-                            ],
-                        }
-                    ),
-                    retain=False,
-                )
-
-            # Notify frame generator
-            self._notify_pattern_change()
-
-            # Update hardware state
-            if self.current_pattern:
-                # Preserve current hardware state when changing patterns
-                self.hardware_state["power"] = True
-                self.hardware_state["last_reset"] = 0
-            else:
-                # Reset to default values when no pattern
-                self.hardware_state["power"] = True
-                self.hardware_state["last_reset"] = 0
-
-    def update_pattern_params(self, params: Dict[str, Any]):
-        """Update current pattern parameters"""
-        with self.pattern_lock:
-            if self.current_pattern:
-                print(
-                    f"\nUpdating parameters for pattern: {self.current_pattern.definition().name}"
-                )
-                print(f"Current params: {self.current_params}")
-                print(f"New params to merge: {params}")
-                self.current_params.update(params)
-                print(f"Final merged params: {self.current_params}")
-
-                # Notify frame generator
-                self._notify_pattern_change()
-            else:
-                print("No active pattern to update parameters for")
-
-    def _sync_all_data(self):
-        """Synchronize all data with MQTT topics"""
-        try:
-            print("\nPerforming full data synchronization...")
-
-            # 1. Synchronize pattern list
-            pattern_names = [p.definition().name for p in self.patterns]
-            print(f"Synchronized pattern list: {pattern_names}")
-
-            # Send the pattern list
-            self.mqtt_client.publish(
-                "led/status/pattern/list",
-                json.dumps(pattern_names),
-                retain=True,
-            )
-
-            # 2. Synchronize current pattern and parameters
-            with self.pattern_lock:
-                current_pattern = self.current_pattern
-                current_params = copy.deepcopy(self.current_params)
-
-                if current_pattern:
-                    # Get the pattern definition for parameter metadata
-                    pattern_def = current_pattern.definition()
-
-                    # Log detailed information about the pattern parameters
-                    print(f"Current pattern: {pattern_def.name}")
-                    print(f"Pattern parameters: {current_params}")
-
-                    # Send current pattern information
-                    self.mqtt_client.publish(
-                        "led/status/pattern/current",
-                        json.dumps({"name": pattern_def.name}),
-                        retain=True,
-                    )
-
-                    # Send current parameters
-                    self.mqtt_client.publish(
-                        "led/status/pattern/params",
-                        json.dumps({"params": current_params}),
-                        retain=True,
-                    )
-                else:
-                    print("No current pattern to synchronize")
-                    # Clear current pattern
-                    self.mqtt_client.publish(
-                        "led/status/pattern/current",
-                        json.dumps({"name": ""}),
-                        retain=True,
-                    )
-
-            # 3. Synchronize hardware state
-            with self.hardware_lock:
-                hardware_state_copy = copy.deepcopy(self.hardware_state)
-                self.mqtt_client.publish(
-                    "led/status/hardware",
-                    json.dumps(hardware_state_copy),
-                    retain=True,
-                )
-            print("Synchronized hardware state")
-
-            # 4. Synchronize display state
-            with self.display_lock:
-                display_state_copy = copy.deepcopy(self.display_state)
-                self.mqtt_client.publish(
-                    "led/status/display",
-                    json.dumps(display_state_copy),
-                    retain=True,
-                )
-            print("Synchronized display state")
-
-            # 5. Synchronize performance metrics
-            with self.performance_lock:
-                performance_state_copy = copy.deepcopy(self.performance_state)
-                self.mqtt_client.publish(
-                    "led/status/performance",
-                    json.dumps(performance_state_copy),
-                    retain=True,
-                )
-            print("Synchronized performance metrics")
-
-            print("Full data synchronization complete")
-            return True
-        except Exception as e:
-            print(f"Error in _sync_all_data: {e}")
-            traceback.print_exc()
-            return False
-
     def get_current_pattern_id(self) -> Optional[str]:
-        """Get the current pattern ID"""
+        """Get the current pattern ID with thread safety"""
         with self.pattern_lock:
             return self.pattern_id
 
     def get_pattern(self, pattern_id: str) -> Optional[Pattern]:
-        """Get pattern by ID"""
+        """Get pattern by ID with thread safety"""
         with self.pattern_lock:
             for pattern in self.patterns:
                 if pattern.id == pattern_id:
@@ -1006,23 +783,90 @@ class PatternManager:
             return None
 
     def get_pattern_params(self, pattern_id: str) -> Dict[str, Any]:
-        """Get parameters for a pattern"""
+        """Get parameters for a pattern with thread safety"""
         with self.pattern_lock:
             if pattern_id == self.pattern_id:
                 return self.current_params.copy()
             return {}
 
     def get_display_state(self) -> Dict[str, Any]:
-        """Get current display state"""
+        """Get current display state with thread safety"""
         with self.display_lock:
             return self.display_state.copy()
 
     def get_frame_sequence(self) -> int:
-        """Get current frame sequence number"""
+        """Get current frame sequence number with thread safety"""
         with self.pattern_lock:
             return self.frame_sequence
 
     def increment_frame_sequence(self):
-        """Increment frame sequence number"""
+        """Increment frame sequence number with thread safety"""
         with self.pattern_lock:
             self.frame_sequence += 1
+
+    def set_pattern(self, pattern_id: str, params: Dict[str, Any] = None) -> bool:
+        """Set current pattern with thread safety"""
+        try:
+            with self.pattern_lock:
+                # Validate pattern exists
+                pattern = self.get_pattern(pattern_id)
+                if not pattern:
+                    print(f"Pattern not found: {pattern_id}")
+                    return False
+
+                # Validate parameters
+                if params is None:
+                    params = {}
+                if not isinstance(params, dict):
+                    print(f"Invalid parameters type: {type(params)}")
+                    return False
+
+                # Update pattern state
+                self.pattern_id = pattern_id
+                self.current_params = params.copy()
+                self.frame_sequence = 0
+
+                print(f"Pattern set to: {pattern_id}")
+                return True
+
+        except Exception as e:
+            print(f"Error setting pattern: {e}")
+            traceback.print_exc()
+            return False
+
+    def update_params(self, params: Dict[str, Any]) -> bool:
+        """Update current pattern parameters with thread safety"""
+        try:
+            with self.pattern_lock:
+                if not self.pattern_id:
+                    print("No current pattern to update")
+                    return False
+
+                if not isinstance(params, dict):
+                    print(f"Invalid parameters type: {type(params)}")
+                    return False
+
+                # Update parameters
+                self.current_params.update(params)
+                return True
+
+        except Exception as e:
+            print(f"Error updating parameters: {e}")
+            traceback.print_exc()
+            return False
+
+    def update_display_state(self, state: Dict[str, Any]) -> bool:
+        """Update display state with thread safety"""
+        try:
+            with self.display_lock:
+                if not isinstance(state, dict):
+                    print(f"Invalid state type: {type(state)}")
+                    return False
+
+                self.display_state.update(state)
+                return True
+
+        except Exception as e:
+            print(f"Error updating display state: {e}")
+            traceback.print_exc()
+            return False
