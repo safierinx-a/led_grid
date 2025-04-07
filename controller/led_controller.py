@@ -36,20 +36,10 @@ class LEDController:
         self.zmq_host = zmq_host or os.getenv("ZMQ_HOST", "localhost")
         self.zmq_port = int(os.getenv("ZMQ_PORT", "5555"))
 
-        # MQTT setup for status updates
-        self.mqtt_client = mqtt.Client(f"led_controller_{int(time.time())}")
-        self.mqtt_client.username_pw_set(
-            os.getenv("MQTT_USER"), os.getenv("MQTT_PASSWORD")
-        )
-        self.mqtt_client.connect(
-            os.getenv("MQTT_BROKER", "localhost"),
-            int(os.getenv("MQTT_PORT", "1883")),
-            60,
-        )
-        self.mqtt_client.loop_start()
-
-        # Publish initial status
-        self.mqtt_client.publish("led/status/led_controller", "online", retain=True)
+        # MQTT setup for status updates (optional)
+        self.mqtt_enabled = False
+        self.mqtt_client = None
+        self._init_mqtt()
 
         # Performance tracking
         self.frame_count = 0
@@ -57,14 +47,10 @@ class LEDController:
         self.last_fps_print = time.time()
         self.last_frame_time = time.time()
         self.frame_timeout = 5.0  # seconds
-        self.performance_log_interval = (
-            5.0  # Log every 5 seconds instead of every second
-        )
+        self.performance_log_interval = 5.0
 
         # Frame rate limiting
-        self.target_fps = (
-            24.0  # Reduced from 60 to 24 for better LED animation performance
-        )
+        self.target_fps = 24.0
         self.target_frame_time = 1.0 / self.target_fps
         self.next_frame_time = time.time()
 
@@ -75,6 +61,57 @@ class LEDController:
 
         # Pattern tracking
         self.last_pattern_id = None
+
+    def _init_mqtt(self):
+        """Initialize MQTT connection with error handling"""
+        try:
+            mqtt_broker = os.getenv("MQTT_BROKER")
+            mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
+            mqtt_user = os.getenv("MQTT_USER")
+            mqtt_password = os.getenv("MQTT_PASSWORD")
+
+            if not all([mqtt_broker, mqtt_user, mqtt_password]):
+                print("MQTT configuration incomplete, MQTT features disabled")
+                return
+
+            self.mqtt_client = mqtt.Client(f"led_controller_{int(time.time())}")
+            self.mqtt_client.username_pw_set(mqtt_user, mqtt_password)
+
+            # Set connection timeout
+            self.mqtt_client.connect_async(mqtt_broker, mqtt_port, 60)
+            self.mqtt_client.loop_start()
+
+            # Wait for connection
+            for _ in range(5):  # Try for 5 seconds
+                if self.mqtt_client.is_connected():
+                    self.mqtt_enabled = True
+                    print("MQTT connected successfully")
+                    self.mqtt_client.publish(
+                        "led/status/led_controller", "online", retain=True
+                    )
+                    return
+                time.sleep(1)
+
+            print("MQTT connection timeout, MQTT features disabled")
+            self.mqtt_client.loop_stop()
+            self.mqtt_client = None
+
+        except Exception as e:
+            print(f"Error initializing MQTT: {e}")
+            if self.mqtt_client:
+                self.mqtt_client.loop_stop()
+                self.mqtt_client = None
+
+    def publish_status(self, status: str):
+        """Publish status to MQTT if enabled"""
+        if self.mqtt_enabled and self.mqtt_client and self.mqtt_client.is_connected():
+            try:
+                self.mqtt_client.publish(
+                    "led/status/led_controller", status, retain=True
+                )
+            except Exception as e:
+                print(f"Error publishing MQTT status: {e}")
+                self.mqtt_enabled = False
 
     def init_strip(self):
         """Initialize LED strip with error handling"""
@@ -300,7 +337,7 @@ class LEDController:
         self.clear_strip()
 
         # Publish offline status
-        self.mqtt_client.publish("led/status/led_controller", "offline", retain=True)
+        self.publish_status("offline")
 
         # Clean up MQTT
         try:

@@ -81,29 +81,18 @@ class LEDController:
     ) -> bool:
         """Validate frame data length and format"""
         if is_compressed:
-            # For compressed data, validate against compressed_size
-            expected_size = metadata.get("compressed_size", 0)
-            if not expected_size:
-                print("Invalid compressed size in metadata")
+            # For compressed data, just ensure we have some data
+            if len(data) == 0:
+                print("Empty compressed frame")
                 return False
         else:
-            # For decompressed data, validate against frame_size
-            expected_size = metadata.get("frame_size", 0)
-            if not expected_size:
-                print("Invalid frame size in metadata")
+            # For decompressed data, validate against expected size
+            expected_size = self.grid_config.width * self.grid_config.height * 3
+            if len(data) != expected_size:
+                print(f"Invalid frame size: got {len(data)}, expected {expected_size}")
                 return False
-
-        print(
-            f"Validating {'compressed' if is_compressed else 'decompressed'} frame: actual={len(data)} bytes, expected={expected_size} bytes"
-        )
-        if len(data) != expected_size:
-            print(f"Invalid frame data length: {len(data)}, expected: {expected_size}")
-            return False
-
-        # Only check RGB format for decompressed data
-        if not is_compressed:
             if len(data) % 3 != 0:
-                print(f"Invalid frame data length (not multiple of 3): {len(data)}")
+                print(f"Invalid RGB format: {len(data)} not multiple of 3")
                 return False
 
         return True
@@ -125,9 +114,7 @@ class LEDController:
 
             try:
                 metadata = json.loads(metadata_json.decode())
-                print(
-                    f"Received frame: compressed={len(frame_data)} bytes, original={metadata.get('frame_size')} bytes"
-                )
+                print(f"Received frame: {len(frame_data)} bytes")
 
                 # Update compression stats
                 self.compression_stats["total_frames"] += 1
