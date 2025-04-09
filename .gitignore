@@ -1,0 +1,28 @@
+# Node modules
+node_modules/
+*/node_modules/
+
+# Phoenix artifacts
+/legrid/_build/
+/legrid/deps/
+/legrid/cover/
+/legrid/doc/
+/legrid/priv/static/assets/
+/legrid/priv/static/cache_manifest.json
+
+# System files
+.DS_Store
+*.log
+*.pid
+*.seed
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo 
