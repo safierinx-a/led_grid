@@ -17,7 +17,8 @@ defmodule LegridWeb.Router do
   scope "/", LegridWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", HomeLive
+    # Keep these routes for backward compatibility but they're not the main UI
     live "/grid", GridLive
     live "/monitor", MonitorLive
   end

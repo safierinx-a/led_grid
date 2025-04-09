@@ -46,33 +46,72 @@ h3 .material-icons {
   color: var(--accent-color);
 }
 
-/* Grid Visualization Styles */
-.grid-container {
+/* Home layout */
+.home-container {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2rem;
-  padding: 1.5rem;
-  max-width: 1400px;
+  flex-direction: column;
+  min-height: 100vh;
+  max-width: 1600px;
   margin: 0 auto;
+  padding: 1rem;
 }
 
-.grid-section,
-.controls-section {
-  flex: 1;
+.main-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.logo {
+  display: flex;
+  flex-direction: column;
+}
+
+.logo h1 {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--accent-color);
+}
+
+.logo .subtitle {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.content-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.grid-section {
+  flex: 2;
   min-width: 350px;
   background-color: var(--bg-card);
   border-radius: 12px;
   padding: 1.5rem;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  border: 1px solid var(--border-color);
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
-.grid-display {
+.monitoring-container {
+  flex: 1;
+  min-width: 300px;
+}
+
+/* Grid Visualization Styles */
+.grid-container {
   position: relative;
   background-color: #000000;
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  margin-bottom: 1.5rem;
   box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
@@ -85,48 +124,51 @@ h3 .material-icons {
 }
 
 .controller-status {
-  margin-top: 1.5rem;
-  padding: 1rem;
-  border-radius: 8px;
-  background-color: var(--bg-elevated);
-  border: 1px solid var(--border-color);
-}
-
-.status-indicator {
-  padding: 0.75rem;
-  border-radius: 6px;
-  font-weight: 500;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
 }
 
-.status-indicator::before {
-  content: "";
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-}
-
-.status-indicator.connected {
+.controller-status.connected {
   background-color: rgba(16, 185, 129, 0.1);
   color: var(--success-color);
 }
 
-.status-indicator.connected::before {
-  background-color: var(--success-color);
-  box-shadow: 0 0 8px var(--success-color);
-}
-
-.status-indicator.disconnected {
+.controller-status.disconnected {
   background-color: rgba(239, 68, 68, 0.1);
   color: var(--danger-color);
 }
 
-.status-indicator.disconnected::before {
-  background-color: var(--danger-color);
-  box-shadow: 0 0 8px var(--danger-color);
+.controller-status button {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.controller-status button:hover {
+  background-color: var(--accent-color);
+  border-color: var(--accent-hover);
+}
+
+.controller-status button.active {
+  background-color: var(--accent-color);
+  border-color: var(--accent-hover);
+}
+
+.controls-section {
+  background-color: var(--bg-card);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border-color);
 }
 
 .pattern-selector {
