@@ -17,11 +17,11 @@
       <% end %>
     </div>
     
-    <div class="controller-status <%= if @controller_status.connected, do: "connected", else: "disconnected" %>">
+    <div class={"controller-status #{if @controller_status.connected, do: "connected", else: "disconnected"}"}>
       <span>Controller: <%= if @controller_status.connected, do: "Connected", else: "Disconnected" %></span>
       <span>FPS: <%= @stats.fps %></span>
       <span>Frames: <%= @stats.frames_received %></span>
-      <button phx-click="toggle_monitoring" class="<%= if @monitoring_active, do: "active" %>">
+      <button phx-click="toggle_monitoring" class={"#{if @monitoring_active, do: "active", else: ""}"}>
         <%= if @monitoring_active, do: "Hide Stats", else: "Show Stats" %>
       </button>
     </div>
@@ -40,7 +40,7 @@
       </h3>
       <div class="pattern-list">
         <%= for pattern <- @patterns do %>
-          <div class={"pattern-item #{if @current_pattern == pattern.id, do: "selected", else: ""}"} 
+          <div class={"pattern-item #{if @current_pattern == pattern.id, do: "selected", else: ""}"}
                phx-click="select-pattern"
                phx-value-pattern_id={pattern.id}>
             <h4><%= pattern.name %></h4>
