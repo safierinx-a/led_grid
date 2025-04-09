@@ -48,6 +48,7 @@ defmodule LegridWeb.HomeLive do
     |> assign(:detailed_stats, nil)
     |> assign(:stats_history, [])
     |> assign(:monitoring_active, true) # Start with monitoring active
+    |> assign(:controller_enabled, true) # Start with controller enabled
 
     {:ok, socket}
   end
@@ -68,6 +69,11 @@ defmodule LegridWeb.HomeLive do
         |> Enum.map(fn {key, param} -> {key, param.default} end)
         |> Enum.into(%{})
 
+        # Start pattern immediately when selected
+        if socket.assigns.controller_enabled do
+          Runner.start_pattern(pattern_id, default_params)
+        end
+
         {:noreply, assign(socket,
           pattern_params: default_params,
           current_pattern: pattern_id,
@@ -80,28 +86,9 @@ defmodule LegridWeb.HomeLive do
   end
 
   @impl true
-  def handle_event("start-pattern", %{"params" => params}, socket) do
-    pattern_id = socket.assigns.current_pattern
-
-    if pattern_id do
-      Runner.start_pattern(pattern_id, params)
-      {:noreply, socket}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("stop-pattern", _params, socket) do
-    Runner.stop_pattern()
-    {:noreply, socket}
-  end
-
-  @impl true
   def handle_event("update-param", %{"key" => key, "value" => value}, socket) do
     # Convert value to appropriate type
     params = socket.assigns.pattern_params
-
     pattern_id = socket.assigns.current_pattern
     {:ok, metadata} = Registry.get_pattern(pattern_id)
 
@@ -109,6 +96,11 @@ defmodule LegridWeb.HomeLive do
     converted_value = convert_param_value(value, param_def.type)
 
     updated_params = Map.put(params, key, converted_value)
+
+    # Apply parameter changes immediately
+    if socket.assigns.controller_enabled and pattern_id do
+      Runner.update_pattern_params(updated_params)
+    end
 
     {:noreply, assign(socket, pattern_params: updated_params)}
   end
@@ -118,7 +110,6 @@ defmodule LegridWeb.HomeLive do
     # Extract the parameter value from the form params
     value = params[param_name]
     pattern_params = socket.assigns.pattern_params
-
     pattern_id = socket.assigns.current_pattern
     {:ok, metadata} = Registry.get_pattern(pattern_id)
 
@@ -128,7 +119,43 @@ defmodule LegridWeb.HomeLive do
     # Update the parameter value
     updated_params = Map.put(pattern_params, param_name, converted_value)
 
+    # Apply parameter changes immediately
+    if socket.assigns.controller_enabled and pattern_id do
+      Runner.update_pattern_params(updated_params)
+    end
+
     {:noreply, assign(socket, pattern_params: updated_params)}
+  end
+
+  @impl true
+  def handle_event("stop-pattern", _params, socket) do
+    Runner.stop_pattern()
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("toggle-controller", _params, socket) do
+    new_state = !socket.assigns.controller_enabled
+
+    if new_state do
+      # Re-enable controller
+      if socket.assigns.current_pattern do
+        # Restart the current pattern if one is selected
+        Runner.start_pattern(socket.assigns.current_pattern, socket.assigns.pattern_params)
+      end
+    else
+      # Disable controller - stop any running pattern
+      Runner.stop_pattern()
+    end
+
+    {:noreply, assign(socket, controller_enabled: new_state)}
+  end
+
+  @impl true
+  def handle_event("clear-frame", _params, socket) do
+    # Send a blank frame to reset all LEDs
+    Runner.clear_frame()
+    {:noreply, socket}
   end
 
   @impl true

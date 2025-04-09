@@ -4,13 +4,26 @@
       <h1>LEGrid</h1>
       <span class="subtitle">LED Grid Control System</span>
     </div>
-    <div class={"controller-status #{if @controller_status.connected, do: "connected", else: "disconnected"}"}>
-      <span>Controller: <%= if @controller_status.connected, do: "Connected", else: "Disconnected" %></span>
-      <span>FPS: <%= @stats.fps %></span>
-      <span>Frames: <%= @stats.frames_received %></span>
-      <button phx-click="toggle_monitoring" class={"#{if @monitoring_active, do: "active", else: ""}"}>
-        <%= if @monitoring_active, do: "Hide Stats", else: "Show Stats" %>
-      </button>
+    <div class="controller-controls">
+      <div class={"controller-status #{if @controller_status.connected, do: "connected", else: "disconnected"}"}>
+        <span>Controller: <%= if @controller_status.connected, do: "Connected", else: "Disconnected" %></span>
+        <span>FPS: <%= @stats.fps %></span>
+        <span>Frames: <%= @stats.frames_received %></span>
+      </div>
+      <div class="global-controls">
+        <button phx-click="toggle-controller" class={"controller-toggle #{if @controller_enabled, do: "enabled", else: "disabled"}"}>
+          <span class="material-icons"><%= if @controller_enabled, do: "power", else: "power_off" %></span>
+          <%= if @controller_enabled, do: "Disable Controller", else: "Enable Controller" %>
+        </button>
+        <button phx-click="clear-frame" class="clear-frame">
+          <span class="material-icons">delete_sweep</span>
+          Clear Frame
+        </button>
+        <button phx-click="toggle_monitoring" class={"#{if @monitoring_active, do: "active", else: ""}"}>
+          <span class="material-icons"><%= if @monitoring_active, do: "visibility_off", else: "visibility" %></span>
+          <%= if @monitoring_active, do: "Hide Stats", else: "Show Stats" %>
+        </button>
+      </div>
     </div>
   </header>
   
@@ -118,7 +131,7 @@
           <span class="material-icons">settings</span>
           Pattern Parameters
         </h3>
-        <form phx-submit="start-pattern">
+        <div class="param-form">
           <%= for {key, param} <- @pattern_metadata.parameters do %>
             <div class="param-control">
               <label for={key}><%= key %></label>
@@ -158,16 +171,12 @@
           <% end %>
           
           <div class="pattern-controls">
-            <button type="submit" class="btn-start">
-              <span class="material-icons">play_arrow</span>
-              Start Pattern
-            </button>
             <button type="button" class="btn-stop" phx-click="stop-pattern">
               <span class="material-icons">stop</span>
               Stop Pattern
             </button>
           </div>
-        </form>
+        </div>
       </div>
     <% end %>
   </div>

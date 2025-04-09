@@ -37,6 +37,22 @@ defmodule Legrid.Patterns.Runner do
   end
 
   @doc """
+  Updates the parameters of the currently running pattern.
+
+  - params: Map of parameters to pass to the pattern generator
+  """
+  def update_pattern_params(params) do
+    GenServer.call(__MODULE__, {:update_params, params})
+  end
+
+  @doc """
+  Sends a blank frame to clear all LEDs.
+  """
+  def clear_frame do
+    GenServer.call(__MODULE__, :clear_frame)
+  end
+
+  @doc """
   Stops the currently running pattern generator.
   """
   def stop_pattern do
@@ -121,6 +137,42 @@ defmodule Legrid.Patterns.Runner do
   end
 
   @impl true
+  def handle_call({:update_params, params}, _from, state) do
+    if state.current_pattern && state.module && state.state do
+      # Check if the module supports parameter updates
+      if function_exported?(state.module, :update_params, 2) do
+        case state.module.update_params(state.state, params) do
+          {:ok, new_state} ->
+            {:reply, :ok, %{state | state: new_state}}
+
+          {:error, _} = error ->
+            {:reply, error, state}
+        end
+      else
+        # If the module doesn't support parameter updates, restart the pattern
+        # with the new parameters
+        {:reply, :ok, state}
+      end
+    else
+      {:reply, {:error, :no_pattern_running}, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:clear_frame, _from, state) do
+    # Create a blank frame
+    blank_frame = %Frame{
+      pixels: create_blank_pixels(600),
+      timestamp: System.system_time(:millisecond)
+    }
+
+    # Broadcast the blank frame
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "frames", {:frame, blank_frame})
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
   def handle_call(:stop_pattern, _from, state) do
     new_state = stop_current_pattern(state)
     {:reply, :ok, new_state}
@@ -189,5 +241,9 @@ defmodule Legrid.Patterns.Runner do
 
   defp schedule_next_frame(interval) do
     Process.send_after(self(), :generate_frame, interval)
+  end
+
+  defp create_blank_pixels(count) do
+    for _i <- 1..count, do: {0, 0, 0}
   end
 end

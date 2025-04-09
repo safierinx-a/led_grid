@@ -82,6 +82,61 @@ h3 .material-icons {
   color: var(--text-secondary);
 }
 
+.controller-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.global-controls {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.global-controls button {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.global-controls button:hover {
+  background-color: var(--bg-card);
+}
+
+.controller-toggle.enabled {
+  background-color: rgba(16, 185, 129, 0.2);
+  border-color: var(--success-color);
+  color: var(--success-color);
+}
+
+.controller-toggle.disabled {
+  background-color: rgba(239, 68, 68, 0.2);
+  border-color: var(--danger-color);
+  color: var(--danger-color);
+}
+
+.clear-frame {
+  background-color: rgba(245, 158, 11, 0.2) !important;
+  border-color: var(--warning-color) !important;
+  color: var(--warning-color) !important;
+}
+
+.global-controls button.active {
+  background-color: rgba(139, 92, 246, 0.2);
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
 .content-wrapper {
   display: flex;
   flex-wrap: wrap;
