@@ -1,0 +1,20 @@
+<div class="monitor-page">
+  <div class="container">
+    <h1>System Monitoring</h1>
+
+    <.monitoring_panel stats={@stats} detailed_stats={@detailed_stats} stats_history={@stats_history} class="large-panel" />
+    
+    <div class="controller-status">
+      <h3>Controller Status</h3>
+      <div class={"status-indicator #{if @controller_status.connected, do: "connected", else: "disconnected"}"}>
+        <%= if @controller_status.connected do %>
+          <span class="material-icons">wifi</span>
+          Connected to <%= @controller_status.url %>
+        <% else %>
+          <span class="material-icons">wifi_off</span>
+          Disconnected (trying <%= @controller_status.url %>)
+        <% end %>
+      </div>
+    </div>
+  </div>
+</div> 

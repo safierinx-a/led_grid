@@ -1,0 +1,168 @@
+<div class="grid-container">
+  <div class="grid-section">
+    <h2>
+      <span class="material-icons">grid_4x4</span>
+      LED Grid
+    </h2>
+    <div class="grid-display" style={"width: #{@grid_width * @pixel_size}px; height: #{@grid_height * @pixel_size}px"}>
+      <%= for {pixel, idx} <- Enum.with_index(@pixels) do %>
+        <% 
+          x = rem(idx, @grid_width)
+          y = div(idx, @grid_width)
+          left = x * @pixel_size
+          top = y * @pixel_size
+          color = rgb_to_css(pixel)
+        %>
+        <div class="led-pixel" style={"left: #{left}px; top: #{top}px; background-color: #{color}; width: #{@pixel_size-2}px; height: #{@pixel_size-2}px;"}></div>
+      <% end %>
+    </div>
+    
+    <div class="controller-status <%= if @controller_status.connected, do: "connected", else: "disconnected" %>">
+      <span>Controller: <%= if @controller_status.connected, do: "Connected", else: "Disconnected" %></span>
+      <span>FPS: <%= @stats.fps %></span>
+      <span>Frames: <%= @stats.frames_received %></span>
+      <button phx-click="toggle_monitoring" class="<%= if @monitoring_active, do: "active" %>">
+        <%= if @monitoring_active, do: "Hide Stats", else: "Show Stats" %>
+      </button>
+    </div>
+  </div>
+  
+  <div class="controls-section">
+    <h2>
+      <span class="material-icons">tune</span>
+      Pattern Controls
+    </h2>
+    
+    <div class="pattern-selector">
+      <h3>
+        <span class="material-icons">category</span>
+        Select Pattern
+      </h3>
+      <div class="pattern-list">
+        <%= for pattern <- @patterns do %>
+          <div class={"pattern-item #{if @current_pattern == pattern.id, do: "selected", else: ""}"} 
+               phx-click="select-pattern"
+               phx-value-pattern_id={pattern.id}>
+            <h4><%= pattern.name %></h4>
+            <p><%= pattern.description %></p>
+          </div>
+        <% end %>
+      </div>
+    </div>
+    
+    <%= if @current_pattern do %>
+      <div class="pattern-params">
+        <h3>
+          <span class="material-icons">settings</span>
+          Pattern Parameters
+        </h3>
+        <form phx-submit="start-pattern">
+          <%= for {key, param} <- @pattern_metadata.parameters do %>
+            <div class="param-control">
+              <label for={key}><%= key %></label>
+              <p class="param-description"><%= param.description %></p>
+              
+              <%= case param.type do %>
+                <% :integer -> %>
+                  <input type="range" id={key} name={"params[#{key}]"}
+                         min={param.min} max={param.max} step="1"
+                         value={Map.get(@pattern_params, key, param.default)}
+                         phx-change="update-param" phx-value-key={key} />
+                  <span class="param-value"><%= Map.get(@pattern_params, key, param.default) %></span>
+                
+                <% :float -> %>
+                  <input type="range" id={key} name={"params[#{key}]"}
+                         min={param.min} max={param.max} step="0.01"
+                         value={Map.get(@pattern_params, key, param.default)}
+                         phx-change="update-param" phx-value-key={key} />
+                  <span class="param-value"><%= Map.get(@pattern_params, key, param.default) %></span>
+                
+                <% :boolean -> %>
+                  <input type="checkbox" id={key} name={"params[#{key}]"}
+                         checked={Map.get(@pattern_params, key, param.default)}
+                         phx-change="update-param" phx-value-key={key} />
+                
+                <% :string -> %>
+                  <input type="text" id={key} name={"params[#{key}]"}
+                         value={Map.get(@pattern_params, key, param.default)}
+                         phx-change="update-param" phx-value-key={key} />
+                
+                <% _ -> %>
+                  <input type="text" id={key} name={"params[#{key}]"}
+                         value={Map.get(@pattern_params, key, param.default)}
+                         phx-change="update-param" phx-value-key={key} />
+              <% end %>
+            </div>
+          <% end %>
+          
+          <div class="pattern-controls">
+            <button type="submit" class="btn-start">
+              <span class="material-icons">play_arrow</span>
+              Start Pattern
+            </button>
+            <button type="button" class="btn-stop" phx-click="stop-pattern">
+              <span class="material-icons">stop</span>
+              Stop Pattern
+            </button>
+          </div>
+        </form>
+      </div>
+    <% end %>
+  </div>
+</div> 
+
+<%= if @monitoring_active do %>
+<div class="monitoring-panel">
+  <h3>Controller Statistics</h3>
+  <div class="stats-grid">
+    <div class="stat">
+      <div class="stat-value"><%= @stats.fps %></div>
+      <div class="stat-label">FPS</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value"><%= @stats.frames_received %></div>
+      <div class="stat-label">Frames</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value"><%= @stats.frames_dropped %></div>
+      <div class="stat-label">Dropped</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value"><%= format_bandwidth(@stats.bandwidth_in) %></div>
+      <div class="stat-label">IN</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value"><%= format_bandwidth(@stats.bandwidth_out) %></div>
+      <div class="stat-label">OUT</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value"><%= @stats.clients %></div>
+      <div class="stat-label">Clients</div>
+    </div>
+  </div>
+
+  <%= if @detailed_stats do %>
+    <div class="detailed-stats">
+      <h4>Detailed Statistics</h4>
+      <div class="stat-row">
+        <div class="stat-label">Source:</div>
+        <div class="stat-value"><%= @detailed_stats.source || "Unknown" %></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label">Compression:</div>
+        <div class="stat-value"><%= (@detailed_stats.delta_percent || 0) %>% delta frames, <%= @detailed_stats.delta_frames || 0 %> delta / <%= @detailed_stats.full_frames || 0 %> full</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label">Bandwidth savings:</div>
+        <div class="stat-value"><%= (@detailed_stats.bandwidth_savings || 0) %>%</div>
+      </div>
+      <%= if @detailed_stats.memory do %>
+        <div class="stat-row">
+          <div class="stat-label">Memory:</div>
+          <div class="stat-value"><%= format_memory(@detailed_stats.memory.heap_used) %> / <%= format_memory(@detailed_stats.memory.heap_total) %> (<%= format_percent(@detailed_stats.memory.heap_percent) %>)</div>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+</div>
+<% end %> 

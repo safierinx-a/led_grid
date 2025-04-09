@@ -1,0 +1,14 @@
+{
+    "name": "legrid-assets",
+    "version": "1.0.0",
+    "description": "Assets for Legrid LED controller",
+    "main": "js/app.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "dependencies": {
+        "phoenix": "file:../deps/phoenix",
+        "phoenix_html": "file:../deps/phoenix_html",
+        "phoenix_live_view": "file:../deps/phoenix_live_view"
+    }
+}
