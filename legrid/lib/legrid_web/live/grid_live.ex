@@ -218,6 +218,29 @@ defmodule LegridWeb.GridLive do
 
   defp rgb_to_css({r, g, b}), do: "rgb(#{r}, #{g}, #{b})"
 
+  # Format bytes to human-readable string
+  defp format_memory(bytes) when is_integer(bytes) do
+    cond do
+      bytes >= 1_000_000_000 -> "#{Float.round(bytes / 1_000_000_000, 2)} GB"
+      bytes >= 1_000_000 -> "#{Float.round(bytes / 1_000_000, 2)} MB"
+      bytes >= 1_000 -> "#{Float.round(bytes / 1_000, 2)} KB"
+      true -> "#{bytes} B"
+    end
+  end
+  defp format_memory(_), do: "0 B"
+
+  # Format bandwidth bytes per second
+  defp format_bandwidth(bytes_per_sec) when is_integer(bytes_per_sec) do
+    "#{format_memory(bytes_per_sec)}/s"
+  end
+  defp format_bandwidth(_), do: "0 B/s"
+
+  # Format percentage value with % sign
+  defp format_percent(value) when is_number(value) do
+    "#{Float.round(value, 1)}%"
+  end
+  defp format_percent(_), do: "0%"
+
   defp request_stats do
     # Just update the stats in the LiveView
     # We'll rely on the PubSub subscription to get the actual stats
