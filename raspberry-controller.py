@@ -87,7 +87,7 @@ class LegridController:
         self.width = args.width
         self.height = args.height
         self.led_count = args.led_count
-        self.brightness = args.brightness
+        self.brightness = args.led_brightness
         self.server_url = args.server_url
         self.controller_id = str(uuid.uuid4())
 
