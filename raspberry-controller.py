@@ -35,7 +35,7 @@ DEFAULT_HEIGHT = 24
 DEFAULT_LED_COUNT = 600  # DEFAULT_WIDTH * DEFAULT_HEIGHT
 DEFAULT_LED_PIN = 18
 DEFAULT_BRIGHTNESS = 255
-DEFAULT_SERVER_URL = "ws://100.86.122.19:8080"
+DEFAULT_SERVER_URL = "ws://100.86.122.19:4000"
 DEFAULT_LOG_LEVEL = "INFO"
 
 # Global variables
@@ -116,9 +116,20 @@ class LegridController:
         if HARDWARE_AVAILABLE:
             # Initialize the real hardware
             try:
+                # Modified to use the correct neopixel interface
+                # The original code was:
+                # self.strip = neopixel.NeoPixel(
+                #     pin=board.D18,  # Pin 18 (BCM numbering)
+                #     n=self.led_count,
+                #     brightness=self.brightness / 255.0,
+                #     auto_write=False,
+                #     pixel_order=neopixel.GRB,
+                # )
+
+                # Try with Adafruit CircuitPython library format
                 self.strip = neopixel.NeoPixel(
-                    pin=board.D18,  # Pin 18 (BCM numbering)
-                    n=self.led_count,
+                    board.D18,  # Pin 18 (BCM numbering)
+                    self.led_count,
                     brightness=self.brightness / 255.0,
                     auto_write=False,
                     pixel_order=neopixel.GRB,
