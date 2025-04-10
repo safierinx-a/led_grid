@@ -11,13 +11,24 @@ defmodule LegridWeb.MonitorLive do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Legrid.PubSub, "controller_stats")
       # Activate monitoring when this page is mounted
-      Interface.activate_monitor()
-      # Request stats immediately
-      request_stats()
+      try do
+        Interface.activate_monitor()
+        # Request stats immediately
+        request_stats()
+      rescue
+        _ -> :ok # Silently handle errors if the controller isn't available
+      end
+    end
+
+    # Safely get controller status
+    controller_status = try do
+      Interface.status()
+    rescue
+      _ -> %{connected: false, url: nil}
     end
 
     socket = socket
-    |> assign(:controller_status, Interface.status())
+    |> assign(:controller_status, controller_status)
     |> assign(:stats, %{
       fps: 0,
       frames_received: 0,
@@ -25,7 +36,7 @@ defmodule LegridWeb.MonitorLive do
       bandwidth_in: 0,
       bandwidth_out: 0,
       clients: 0,
-      last_updated: nil
+      last_updated: System.system_time(:second)
     })
     |> assign(:detailed_stats, nil)
     |> assign(:stats_history, [])
@@ -36,7 +47,11 @@ defmodule LegridWeb.MonitorLive do
   @impl true
   def terminate(_reason, _socket) do
     # Deactivate monitoring when this page is unmounted
-    Interface.deactivate_monitor()
+    try do
+      Interface.deactivate_monitor()
+    rescue
+      _ -> :ok # Silently handle errors if the controller isn't available
+    end
     :ok
   end
 
@@ -50,7 +65,7 @@ defmodule LegridWeb.MonitorLive do
       bandwidth_in: get_in(stats, ["bandwidth", "in"]) || 0,
       bandwidth_out: get_in(stats, ["bandwidth", "out"]) || 0,
       clients: 0, # Basic stats don't include client count
-      last_updated: DateTime.utc_now()
+      last_updated: System.system_time(:second)
     }
 
     # Add stats to history (keep last 60 entries max)
@@ -104,46 +119,54 @@ defmodule LegridWeb.MonitorLive do
   defp request_stats do
     # Just update the stats in the LiveView
     # We'll rely on the PubSub subscription to get the actual stats
-    status = Interface.status()
-    if status.connected do
-      # We need to check if the function is defined first
-      case function_exported?(Interface, :request_stats, 0) do
-        true -> Interface.request_stats()
-        false ->
-          # Fallback to direct implementation if needed
-          request = %{
-            type: "stats_request"
-          }
-          send_message_to_controller(request)
+    try do
+      status = Interface.status()
+      if status.connected do
+        # We need to check if the function is defined first
+        case function_exported?(Interface, :request_stats, 0) do
+          true -> Interface.request_stats()
+          false ->
+            # Fallback to direct implementation if needed
+            request = %{
+              type: "stats_request"
+            }
+            send_message_to_controller(request)
+        end
       end
+    rescue
+      _ -> :ok # Silently handle errors if the controller isn't available
     end
   end
 
   defp send_simulation_config(options) do
     # Set up simulation config to send to controller
-    config = %{
-      type: "simulation_config"
-    }
+    try do
+      config = %{
+        type: "simulation_config"
+      }
 
-    config = if Keyword.has_key?(options, :latency) do
-      Map.put(config, :simulate_latency, Keyword.get(options, :latency))
-    else
-      config
-    end
-
-    config = if Keyword.has_key?(options, :packet_loss) do
-      Map.put(config, :simulate_packet_loss, Keyword.get(options, :packet_loss))
-    else
-      config
-    end
-
-    # Send through Interface if function is available
-    status = Interface.status()
-    if status.connected do
-      case function_exported?(Interface, :send_simulation_config, 1) do
-        true -> Interface.send_simulation_config(options)
-        false -> send_message_to_controller(config)
+      config = if Keyword.has_key?(options, :latency) do
+        Map.put(config, :simulate_latency, Keyword.get(options, :latency))
+      else
+        config
       end
+
+      config = if Keyword.has_key?(options, :packet_loss) do
+        Map.put(config, :simulate_packet_loss, Keyword.get(options, :packet_loss))
+      else
+        config
+      end
+
+      # Send through Interface if function is available
+      status = Interface.status()
+      if status.connected do
+        case function_exported?(Interface, :send_simulation_config, 1) do
+          true -> Interface.send_simulation_config(options)
+          false -> send_message_to_controller(config)
+        end
+      end
+    rescue
+      _ -> :ok # Silently handle errors if the controller isn't available
     end
   end
 
@@ -151,17 +174,10 @@ defmodule LegridWeb.MonitorLive do
   defp send_message_to_controller(message) do
     # Use GenServer.call to get the WebSocket connection from Interface
     # This avoids trying to access the socket directly
-    GenServer.call(Legrid.Controller.Interface, {:send_message, message})
-  end
-
-  # Format bytes to human-readable
-  defp format_bytes(bytes) when is_integer(bytes) do
-    cond do
-      bytes >= 1_000_000_000 -> "#{Float.round(bytes / 1_000_000_000, 2)} GB"
-      bytes >= 1_000_000 -> "#{Float.round(bytes / 1_000_000, 2)} MB"
-      bytes >= 1_000 -> "#{Float.round(bytes / 1_000, 2)} KB"
-      true -> "#{bytes} B"
+    try do
+      GenServer.call(Legrid.Controller.Interface, {:send_message, message})
+    rescue
+      _ -> {:error, :not_connected} # Silently handle errors if the controller isn't available
     end
   end
-  defp format_bytes(_), do: "0 B"
 end

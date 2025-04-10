@@ -16,6 +16,11 @@ defmodule Legrid.Patterns.PatternBehaviour do
   - name: Human-readable name
   - description: Brief explanation of what the pattern does
   - parameters: Map of parameter names to parameter definitions
+
+  Each pattern should support the following global parameters:
+  - "brightness": Overall brightness adjustment (0.0-1.0)
+  - "color_scheme": Color scheme to use (e.g., "rainbow", "mono", "complementary")
+  - "speed": General speed control for the pattern animation
   """
   @callback metadata() :: %{
     id: String.t(),
@@ -48,6 +53,21 @@ defmodule Legrid.Patterns.PatternBehaviour do
   """
   @callback render(state :: map(), elapsed_ms :: non_neg_integer()) ::
     {:ok, frame :: Frame.t(), new_state :: map()} |
+    {:error, reason :: String.t()}
+
+  @doc """
+  Update pattern parameters during runtime.
+
+  This function allows for real-time parameter adjustments while the pattern is running.
+  It should update the parameters in the state while preserving any animation context.
+
+  - state: The current state of the pattern generator
+  - params: New parameter values to apply
+
+  Returns an updated state to be used for future render calls.
+  """
+  @callback update_params(state :: map(), params :: map()) ::
+    {:ok, new_state :: map()} |
     {:error, reason :: String.t()}
 
   @doc """

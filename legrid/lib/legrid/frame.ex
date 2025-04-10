@@ -18,17 +18,32 @@ defmodule Legrid.Frame do
   @type rgb :: {0..255, 0..255, 0..255}
 
   @type t :: %__MODULE__{
-    id: String.t(),
-    timestamp: DateTime.t(),
-    source: String.t(),
-    width: pos_integer(),
-    height: pos_integer(),
-    pixels: [rgb] | binary(),
-    metadata: map()
+    id: String.t() | nil,
+    timestamp: integer() | DateTime.t() | nil,
+    source: String.t() | nil,
+    width: integer() | nil,
+    height: integer() | nil,
+    pixels: list({integer(), integer(), integer()}),
+    metadata: map() | nil
   }
 
   @doc """
-  Creates a new frame with the given parameters.
+  Creates a new frame with a unique ID and current timestamp.
+  """
+  def new(pixels, source \\ nil, metadata \\ %{}) do
+    %__MODULE__{
+      id: UUID.uuid4(),
+      timestamp: DateTime.utc_now(),
+      source: source,
+      width: nil, # Will be determined by the grid
+      height: nil, # Will be determined by the grid
+      pixels: pixels,
+      metadata: metadata
+    }
+  end
+
+  @doc """
+  Creates a new frame with a specified width and height.
   """
   def new(source, width, height, pixels, metadata \\ %{}) do
     %__MODULE__{
@@ -43,17 +58,17 @@ defmodule Legrid.Frame do
   end
 
   @doc """
-  Converts the frame to a map suitable for JSON encoding.
+  Converts a frame to a JSON-serializable map.
   """
   def to_json(%__MODULE__{} = frame) do
     %{
-      id: frame.id,
-      timestamp: DateTime.to_iso8601(frame.timestamp),
-      source: frame.source,
-      width: frame.width,
-      height: frame.height,
-      pixels: serialize_pixels(frame.pixels),
-      metadata: frame.metadata
+      "id" => frame.id || UUID.uuid4(),
+      "timestamp" => format_timestamp(frame.timestamp),
+      "type" => "frame",
+      "width" => frame.width,
+      "height" => frame.height,
+      "pixels" => serialize_pixels(frame.pixels),
+      "source" => frame.source
     }
   end
 
@@ -97,4 +112,16 @@ defmodule Legrid.Frame do
       _ -> DateTime.utc_now()
     end
   end
+
+  # Helper to safely format timestamps of different types
+  defp format_timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp format_timestamp(nil), do: DateTime.to_iso8601(DateTime.utc_now())
+  defp format_timestamp(timestamp) when is_integer(timestamp) do
+    # Convert integer timestamp to DateTime first
+    case DateTime.from_unix(div(timestamp, 1000)) do
+      {:ok, dt} -> DateTime.to_iso8601(dt)
+      _ -> DateTime.to_iso8601(DateTime.utc_now())
+    end
+  end
+  defp format_timestamp(_), do: DateTime.to_iso8601(DateTime.utc_now())
 end

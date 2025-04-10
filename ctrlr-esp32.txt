@@ -1,0 +1,410 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
+#include <FastLED.h>
+
+// LED Matrix configuration
+#define LED_PIN         5       // Data pin for LEDs (change to your GPIO pin)
+#define COLOR_ORDER     GRB     // Pixel color order
+#define LED_TYPE        WS2812B // LED strip type
+#define MAX_BRIGHTNESS  255     // Maximum brightness
+#define GRID_WIDTH      25      // Matrix width
+#define GRID_HEIGHT     24      // Matrix height
+#define NUM_LEDS        (GRID_WIDTH * GRID_HEIGHT)
+
+// Network configuration - change these to match your network
+const char* ssid = "YourWiFiName";
+const char* password = "YourWiFiPassword";
+const char* serverUrl = "192.168.1.100"; // Your Legrid server IP
+const int serverPort = 8080;             // Server port
+const char* serverPath = "/";            // Server path
+
+// Global objects
+WebSocketsClient webSocket;
+CRGB leds[NUM_LEDS];
+
+// Stats tracking
+unsigned long frameCount = 0;
+unsigned long lastFrameTime = 0;
+float fps = 0;
+unsigned long connectionDrops = 0;
+unsigned long connectionStartTime = 0;
+
+// Unique device ID
+String deviceId;
+
+// Forward declarations
+void hexDump(const void *mem, uint32_t len);
+void handleBinaryMessage(uint8_t* payload, size_t length);
+void sendControllerInfo();
+void sendStats();
+
+void setup() {
+  // Initialize serial for debugging
+  Serial.begin(115200);
+  Serial.println("\nESP32 Legrid Controller starting...");
+  
+  // Generate a unique device ID
+  deviceId = String(ESP.getEfuseMac(), HEX);
+  
+  // Initialize FastLED
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS)
+    .setCorrection(TypicalLEDStrip)
+    .setDither(false);
+  FastLED.setBrightness(MAX_BRIGHTNESS);
+  
+  // Clear LEDs on startup
+  FastLED.clear();
+  FastLED.show();
+  
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("Connected to WiFi, IP address: ");
+  Serial.println(WiFi.localIP());
+  
+  // Setup WebSocket client
+  webSocket.begin(serverUrl, serverPort, serverPath);
+  webSocket.onEvent(webSocketEvent);
+  webSocket.setReconnectInterval(5000); // Try to reconnect every 5 seconds
+  webSocket.enableHeartbeat(15000, 3000, 2); // Enable ping/pong
+  
+  connectionStartTime = millis();
+  Serial.println("WebSocket client started");
+}
+
+void loop() {
+  // Handle WebSocket communication
+  webSocket.loop();
+  
+  // Send stats every 5 seconds
+  static unsigned long lastStatsTime = 0;
+  if (millis() - lastStatsTime > 5000) {
+    sendStats();
+    lastStatsTime = millis();
+  }
+  
+  // Handle any other tasks
+  yield();
+}
+
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+  switch(type) {
+    case WStype_DISCONNECTED:
+      Serial.println("WebSocket disconnected");
+      connectionDrops++;
+      break;
+      
+    case WStype_CONNECTED:
+      Serial.println("WebSocket connected");
+      connectionStartTime = millis();
+      // Send initial controller info
+      sendControllerInfo();
+      break;
+      
+    case WStype_TEXT:
+      {
+        // Convert payload to string
+        String message = String((char *) payload);
+        Serial.println("Received text: " + message);
+        
+        // Parse JSON
+        DynamicJsonDocument doc(1024);
+        DeserializationError error = deserializeJson(doc, message);
+        if (error) {
+          Serial.print("JSON parsing failed: ");
+          Serial.println(error.c_str());
+          return;
+        }
+        
+        // Check message type
+        String type = doc["type"].as<String>();
+        
+        if (type == "frame") {
+          // Handle JSON frame format
+          Serial.println("Received JSON frame");
+          JsonArray pixels = doc["pixels"].as<JsonArray>();
+          int i = 0;
+          
+          for (JsonArray pixel : pixels) {
+            if (i < NUM_LEDS) {
+              leds[i].r = pixel[0];
+              leds[i].g = pixel[1];
+              leds[i].b = pixel[2];
+              i++;
+            }
+          }
+          
+          FastLED.show();
+          frameCount++;
+          updateFps();
+          sendFrameAck(doc["id"].as<String>());
+        }
+        else if (type == "command") {
+          // Handle command messages
+          String command = doc["command"].as<String>();
+          
+          if (command == "clear") {
+            FastLED.clear();
+            FastLED.show();
+            Serial.println("Cleared LEDs");
+          }
+          else if (command == "brightness") {
+            int brightness = doc["value"].as<int>();
+            FastLED.setBrightness(brightness);
+            FastLED.show();
+            Serial.print("Set brightness to: ");
+            Serial.println(brightness);
+          }
+        }
+      }
+      break;
+      
+    case WStype_BIN:
+      // Handle binary frame
+      handleBinaryMessage(payload, length);
+      break;
+      
+    case WStype_ERROR:
+      Serial.println("WebSocket error");
+      break;
+      
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+      // Currently not handling fragmented messages
+      Serial.println("Fragmented message received - not supported");
+      break;
+  }
+}
+
+void handleBinaryMessage(uint8_t* payload, size_t length) {
+  // Check if we have enough data for the header (10 bytes)
+  if (length < 10) {
+    Serial.print("Binary message too short: ");
+    Serial.println(length);
+    return;
+  }
+  
+  // Parse header
+  uint8_t version = payload[0];
+  uint8_t msgType = payload[1];
+  uint32_t frameId = payload[2] | (payload[3] << 8) | (payload[4] << 16) | (payload[5] << 24);
+  uint16_t width = payload[6] | (payload[7] << 8);
+  uint16_t height = payload[8] | (payload[9] << 8);
+  
+  // Convert frameId to hex string
+  char frameIdHex[9];
+  sprintf(frameIdHex, "%08x", frameId);
+  
+  Serial.print("Binary frame: v");
+  Serial.print(version);
+  Serial.print(" type:");
+  Serial.print(msgType);
+  Serial.print(" id:");
+  Serial.print(frameIdHex);
+  Serial.print(" dim:");
+  Serial.print(width);
+  Serial.print("x");
+  Serial.println(height);
+  
+  // Validate header
+  if (version != 1) {
+    Serial.println("Unsupported protocol version");
+    return;
+  }
+  
+  if (msgType != 1 && msgType != 2) {
+    Serial.println("Unknown message type");
+    return;
+  }
+  
+  if (width != GRID_WIDTH || height != GRID_HEIGHT) {
+    Serial.print("Frame dimensions mismatch: ");
+    Serial.print(width);
+    Serial.print("x");
+    Serial.print(height);
+    Serial.print(" (expected ");
+    Serial.print(GRID_WIDTH);
+    Serial.print("x");
+    Serial.print(GRID_HEIGHT);
+    Serial.println(")");
+    return;
+  }
+  
+  // Extract pixel data
+  uint8_t* pixelData = &payload[10];
+  size_t pixelDataLength = length - 10;
+  
+  if (msgType == 1) {  // Full frame
+    // Check if we have enough data
+    if (pixelDataLength < NUM_LEDS * 3) {
+      Serial.print("Not enough pixel data: got ");
+      Serial.print(pixelDataLength);
+      Serial.print(" bytes, expected ");
+      Serial.println(NUM_LEDS * 3);
+      return;
+    }
+    
+    // Update all LEDs
+    for (int i = 0; i < NUM_LEDS; i++) {
+      int offset = i * 3;
+      leds[i].r = pixelData[offset];
+      leds[i].g = pixelData[offset + 1];
+      leds[i].b = pixelData[offset + 2];
+    }
+    
+    FastLED.show();
+    frameCount++;
+    updateFps();
+    sendFrameAck(String(frameIdHex));
+  }
+  else if (msgType == 2) {  // Delta frame
+    // First 2 bytes are the number of deltas
+    if (pixelDataLength < 2) {
+      Serial.println("Delta frame too small");
+      return;
+    }
+    
+    uint16_t numDeltas = pixelData[0] | (pixelData[1] << 8);
+    pixelData += 2;
+    pixelDataLength -= 2;
+    
+    // Check if we have enough data
+    if (pixelDataLength < numDeltas * 5) {
+      Serial.print("Not enough delta data: got ");
+      Serial.print(pixelDataLength);
+      Serial.print(" bytes, expected ");
+      Serial.println(numDeltas * 5);
+      return;
+    }
+    
+    // Apply deltas
+    for (int i = 0; i < numDeltas; i++) {
+      int offset = i * 5;
+      uint16_t pixelIndex = pixelData[offset] | (pixelData[offset + 1] << 8);
+      uint8_t r = pixelData[offset + 2];
+      uint8_t g = pixelData[offset + 3];
+      uint8_t b = pixelData[offset + 4];
+      
+      if (pixelIndex < NUM_LEDS) {
+        leds[pixelIndex].r = r;
+        leds[pixelIndex].g = g;
+        leds[pixelIndex].b = b;
+      }
+    }
+    
+    FastLED.show();
+    frameCount++;
+    updateFps();
+    sendFrameAck(String(frameIdHex));
+  }
+}
+
+void updateFps() {
+  unsigned long now = millis();
+  if (lastFrameTime > 0) {
+    float frameDuration = (now - lastFrameTime) / 1000.0f;
+    if (frameDuration > 0) {
+      // Smooth FPS calculation
+      fps = fps * 0.9f + (1.0f / frameDuration) * 0.1f;
+    }
+  }
+  lastFrameTime = now;
+}
+
+void sendControllerInfo() {
+  DynamicJsonDocument doc(512);
+  doc["type"] = "controller_info";
+  doc["id"] = deviceId;
+  JsonObject config = doc.createNestedObject("config");
+  config["width"] = GRID_WIDTH;
+  config["height"] = GRID_HEIGHT;
+  config["led_count"] = NUM_LEDS;
+  config["brightness"] = FastLED.getBrightness();
+  doc["client_type"] = "esp32";
+  
+  String message;
+  serializeJson(doc, message);
+  webSocket.sendTXT(message);
+  Serial.println("Sent controller info");
+}
+
+void sendFrameAck(String frameId) {
+  DynamicJsonDocument doc(256);
+  doc["type"] = "frame_ack";
+  doc["id"] = String(random(0xFFFFFFFF), HEX);
+  JsonObject stats = doc.createNestedObject("stats");
+  stats["fps"] = round(fps);
+  stats["frames_received"] = frameCount;
+  stats["frames_dropped"] = 0;  // ESP32 doesn't track dropped frames
+  doc["binary_supported"] = true;
+  
+  String message;
+  serializeJson(doc, message);
+  webSocket.sendTXT(message);
+}
+
+void sendStats() {
+  DynamicJsonDocument doc(512);
+  doc["type"] = "controller_stats";
+  doc["id"] = deviceId;
+  
+  JsonObject stats = doc.createNestedObject("stats");
+  stats["frames_received"] = frameCount;
+  stats["frames_displayed"] = frameCount;
+  stats["connection_drops"] = connectionDrops;
+  stats["fps"] = round(fps);
+  stats["connection_uptime"] = (millis() - connectionStartTime) / 1000;
+  stats["free_heap"] = ESP.getFreeHeap();
+  stats["heap_fragmentation"] = ESP.getHeapFragmentation();
+  stats["wifi_rssi"] = WiFi.RSSI();
+  
+  String message;
+  serializeJson(doc, message);
+  webSocket.sendTXT(message);
+  Serial.println("Sent stats");
+}
+
+// Debug utility to print memory contents
+void hexDump(const void *mem, uint32_t len) {
+  const uint8_t *src = (const uint8_t *)mem;
+  Serial.print("Address: 0x");
+  Serial.print((long)src, HEX);
+  Serial.print(" len: ");
+  Serial.println(len, DEC);
+  
+  uint8_t buffer[16];
+  int i, j;
+  
+  for (i = 0; i < len; i += 16) {
+    Serial.print(i, HEX);
+    Serial.print(": ");
+    
+    for (j = 0; j < 16; j++) {
+      if (i + j < len) {
+        Serial.print(src[i + j], HEX);
+        Serial.print(" ");
+        buffer[j] = src[i + j];
+      } else {
+        Serial.print("   ");
+        buffer[j] = ' ';
+      }
+    }
+    
+    Serial.print("  ");
+    for (j = 0; j < 16; j++) {
+      if (i + j < len) {
+        Serial.print((buffer[j] >= 32 && buffer[j] <= 126) ? (char)buffer[j] : '.');
+      }
+    }
+    Serial.println();
+  }
+}

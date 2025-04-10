@@ -138,11 +138,11 @@ defmodule Legrid.Controller.Interface do
   @impl true
   def handle_cast({:send_frame, frame}, state) do
     if state.connected do
-      # Prepare frame data for sending
-      frame_data = Jason.encode!(Frame.to_json(frame))
+      # Convert frame to binary format instead of JSON
+      frame_binary = frame_to_binary(frame)
 
-      # Send the frame data
-      WebSockex.send_frame(state.socket, {:text, frame_data})
+      # Send the binary frame data
+      WebSockex.send_frame(state.socket, {:binary, frame_binary})
 
       {:noreply, %{state | last_frame: frame}}
     else
@@ -200,11 +200,11 @@ defmodule Legrid.Controller.Interface do
   def handle_info({:frame, frame}, state) do
     # When we receive a frame from the pattern runner, send it to the controller
     if state.connected do
-      # Prepare frame data for sending
-      frame_data = Jason.encode!(Frame.to_json(frame))
+      # Convert frame to binary format
+      frame_binary = frame_to_binary(frame)
 
-      # Send the frame data
-      WebSockex.send_frame(state.socket, {:text, frame_data})
+      # Send the binary frame data
+      WebSockex.send_frame(state.socket, {:binary, frame_binary})
 
       {:noreply, %{state | last_frame: frame}}
     else
@@ -361,8 +361,8 @@ defmodule Legrid.Controller.Interface do
 
         # Resend the last frame if we have one
         if state.last_frame do
-          frame_data = Jason.encode!(Frame.to_json(state.last_frame))
-          WebSockex.send_frame(socket, {:text, frame_data})
+          frame_binary = frame_to_binary(state.last_frame)
+          WebSockex.send_frame(socket, {:binary, frame_binary})
         end
 
         # Ensure stats timer is running
@@ -455,5 +455,57 @@ defmodule Legrid.Controller.Interface do
 
   def deactivate_monitor do
     GenServer.call(__MODULE__, {:set_monitor_active, false})
+  end
+
+  # Helper function to convert frame to binary format compatible with mock-controller
+  defp frame_to_binary(frame) do
+    # Mock-controller binary format:
+    # - 1 byte: protocol version (1)
+    # - 1 byte: message type (1 = frame, 2 = delta frame)
+    # - 4 bytes: frame ID (uint32)
+    # - 2 bytes: width (uint16)
+    # - 2 bytes: height (uint16)
+    # - Remaining bytes: RGB pixel data (1 byte per channel)
+
+    # Convert frame ID to integer
+    frame_id = if frame.id do
+      frame.id
+      |> String.replace(~r/[^0-9a-fA-F]/, "")
+      |> String.slice(0, 8)
+      |> String.downcase()
+      |> case do
+        "" -> 0
+        hex -> String.to_integer(hex, 16)
+      end
+    else
+      0
+    end
+
+    # Serialize pixels to raw list of RGB values
+    pixel_data = case frame.pixels do
+      pixels when is_list(pixels) ->
+        # Convert RGB tuples to binary
+        for {r, g, b} <- pixels, byte <- [r, g, b] do
+          <<byte::8>>
+        end
+        |> IO.iodata_to_binary()
+
+      pixels when is_binary(pixels) ->
+        # Already binary, just return
+        pixels
+    end
+
+    # Create binary data in correct format
+    <<
+      # Header (10 bytes)
+      1::8,                           # Protocol version
+      1::8,                           # Message type (1 = frame)
+      frame_id::little-integer-32,    # Frame ID (4 bytes)
+      frame.width::little-integer-16, # Width (2 bytes)
+      frame.height::little-integer-16,# Height (2 bytes)
+
+      # Pixel data
+      pixel_data::binary
+    >>
   end
 end

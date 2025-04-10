@@ -3,7 +3,6 @@ defmodule LegridWeb.GridLive do
 
   alias Legrid.Patterns.{Registry, Runner}
   alias Legrid.Controller.Interface
-  alias Legrid.Frame
 
   import LegridWeb.Components.MonitoringComponent
 
@@ -24,12 +23,19 @@ defmodule LegridWeb.GridLive do
     # Get available patterns
     patterns = Registry.list_patterns()
 
+    # Safely get controller status
+    controller_status = try do
+      Interface.status()
+    rescue
+      _ -> %{connected: false, url: nil, width: @grid_width, height: @grid_height}
+    end
+
     socket = socket
     |> assign(:patterns, patterns)
     |> assign(:current_pattern, nil)
     |> assign(:pattern_metadata, nil)
     |> assign(:pixels, blank_pixels())
-    |> assign(:controller_status, Interface.status())
+    |> assign(:controller_status, controller_status)
     |> assign(:pattern_params, %{})
     |> assign(:grid_width, @grid_width)
     |> assign(:grid_height, @grid_height)
@@ -41,7 +47,7 @@ defmodule LegridWeb.GridLive do
       bandwidth_in: 0,
       bandwidth_out: 0,
       clients: 0,
-      last_updated: nil
+      last_updated: System.system_time(:second)
     })
     |> assign(:detailed_stats, nil)
     |> assign(:stats_history, [])
@@ -153,11 +159,15 @@ defmodule LegridWeb.GridLive do
     monitoring_active = !socket.assigns.monitoring_active
 
     # Activate or deactivate detailed monitoring based on panel visibility
-    if monitoring_active do
-      Interface.activate_monitor()
-      request_stats() # Request stats immediately when panel is shown
-    else
-      Interface.deactivate_monitor()
+    try do
+      if monitoring_active do
+        Interface.activate_monitor()
+        request_stats() # Request stats immediately when panel is shown
+      else
+        Interface.deactivate_monitor()
+      end
+    rescue
+      _ -> :ok # Silently handle errors if the controller isn't available
     end
 
     {:noreply, assign(socket, monitoring_active: monitoring_active)}
@@ -178,7 +188,7 @@ defmodule LegridWeb.GridLive do
       bandwidth_in: get_in(stats, ["bandwidth", "in"]) || 0,
       bandwidth_out: get_in(stats, ["bandwidth", "out"]) || 0,
       clients: socket.assigns.stats.clients, # Preserve client count
-      last_updated: DateTime.utc_now()
+      last_updated: System.system_time(:second)
     }
 
     # Add stats to history (keep last 60 entries max)
@@ -218,55 +228,40 @@ defmodule LegridWeb.GridLive do
 
   defp rgb_to_css({r, g, b}), do: "rgb(#{r}, #{g}, #{b})"
 
-  # Format bytes to human-readable string
-  defp format_memory(bytes) when is_integer(bytes) do
-    cond do
-      bytes >= 1_000_000_000 -> "#{Float.round(bytes / 1_000_000_000, 2)} GB"
-      bytes >= 1_000_000 -> "#{Float.round(bytes / 1_000_000, 2)} MB"
-      bytes >= 1_000 -> "#{Float.round(bytes / 1_000, 2)} KB"
-      true -> "#{bytes} B"
-    end
-  end
-  defp format_memory(_), do: "0 B"
-
-  # Format bandwidth bytes per second
-  defp format_bandwidth(bytes_per_sec) when is_integer(bytes_per_sec) do
-    "#{format_memory(bytes_per_sec)}/s"
-  end
-  defp format_bandwidth(_), do: "0 B/s"
-
-  # Format percentage value with % sign
-  defp format_percent(value) when is_number(value) do
-    "#{Float.round(value, 1)}%"
-  end
-  defp format_percent(_), do: "0%"
-
   defp request_stats do
     # Just update the stats in the LiveView
     # We'll rely on the PubSub subscription to get the actual stats
-    status = Interface.status()
-    if status.connected do
-      # We need to check if the function is defined first
-      case function_exported?(Interface, :request_stats, 0) do
-        true -> Interface.request_stats()
-        false ->
-          # Fallback to old implementation (if any changes were not applied)
-          :ok
+    try do
+      status = Interface.status()
+      if status.connected do
+        # We need to check if the function is defined first
+        case function_exported?(Interface, :request_stats, 0) do
+          true -> Interface.request_stats()
+          false ->
+            # Fallback to old implementation (if any changes were not applied)
+            :ok
+        end
       end
+    rescue
+      _ -> :ok # Silently handle errors if the controller isn't available
     end
   end
 
   defp send_simulation_config(options) do
     # Let the Interface module handle the config sending
-    status = Interface.status()
-    if status.connected do
-      # We need to check if the function is defined first
-      case function_exported?(Interface, :send_simulation_config, 1) do
-        true -> Interface.send_simulation_config(options)
-        false ->
-          # Fallback to old implementation (if any changes were not applied)
-          :ok
+    try do
+      status = Interface.status()
+      if status.connected do
+        # We need to check if the function is defined first
+        case function_exported?(Interface, :send_simulation_config, 1) do
+          true -> Interface.send_simulation_config(options)
+          false ->
+            # Fallback to old implementation (if any changes were not applied)
+            :ok
+        end
       end
+    rescue
+      _ -> :ok # Silently handle errors if the controller isn't available
     end
   end
 end

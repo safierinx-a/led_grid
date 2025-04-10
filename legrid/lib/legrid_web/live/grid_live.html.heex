@@ -19,8 +19,6 @@
     
     <div class={"controller-status #{if @controller_status.connected, do: "connected", else: "disconnected"}"}>
       <span>Controller: <%= if @controller_status.connected, do: "Connected", else: "Disconnected" %></span>
-      <span>FPS: <%= @stats.fps %></span>
-      <span>Frames: <%= @stats.frames_received %></span>
       <button phx-click="toggle_monitoring" class={"#{if @monitoring_active, do: "active", else: ""}"}>
         <%= if @monitoring_active, do: "Hide Stats", else: "Show Stats" %>
       </button>
@@ -112,57 +110,5 @@
 </div> 
 
 <%= if @monitoring_active do %>
-<div class="monitoring-panel">
-  <h3>Controller Statistics</h3>
-  <div class="stats-grid">
-    <div class="stat">
-      <div class="stat-value"><%= @stats.fps %></div>
-      <div class="stat-label">FPS</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value"><%= @stats.frames_received %></div>
-      <div class="stat-label">Frames</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value"><%= @stats.frames_dropped %></div>
-      <div class="stat-label">Dropped</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value"><%= format_bandwidth(@stats.bandwidth_in) %></div>
-      <div class="stat-label">IN</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value"><%= format_bandwidth(@stats.bandwidth_out) %></div>
-      <div class="stat-label">OUT</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value"><%= @stats.clients %></div>
-      <div class="stat-label">Clients</div>
-    </div>
-  </div>
-
-  <%= if @detailed_stats do %>
-    <div class="detailed-stats">
-      <h4>Detailed Statistics</h4>
-      <div class="stat-row">
-        <div class="stat-label">Source:</div>
-        <div class="stat-value"><%= @detailed_stats.source || "Unknown" %></div>
-      </div>
-      <div class="stat-row">
-        <div class="stat-label">Compression:</div>
-        <div class="stat-value"><%= (@detailed_stats.delta_percent || 0) %>% delta frames, <%= @detailed_stats.delta_frames || 0 %> delta / <%= @detailed_stats.full_frames || 0 %> full</div>
-      </div>
-      <div class="stat-row">
-        <div class="stat-label">Bandwidth savings:</div>
-        <div class="stat-value"><%= (@detailed_stats.bandwidth_savings || 0) %>%</div>
-      </div>
-      <%= if @detailed_stats.memory do %>
-        <div class="stat-row">
-          <div class="stat-label">Memory:</div>
-          <div class="stat-value"><%= format_memory(@detailed_stats.memory.heap_used) %> / <%= format_memory(@detailed_stats.memory.heap_total) %> (<%= format_percent(@detailed_stats.memory.heap_percent) %>)</div>
-        </div>
-      <% end %>
-    </div>
-  <% end %>
-</div>
+  <.monitoring_panel stats={@stats} detailed_stats={@detailed_stats} stats_history={@stats_history} />
 <% end %> 

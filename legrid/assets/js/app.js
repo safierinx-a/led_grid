@@ -22,12 +22,30 @@ import { Socket } from "phoenix";
 import { LiveSocket } from "phoenix_live_view";
 import topbar from "../vendor/topbar";
 
+// Define Hooks for LiveView interactions
+const Hooks = {
+  UpdateDisplay: {
+    mounted() {
+      this.el.addEventListener("input", (e) => {
+        const displayId = this.el.getAttribute("data-display-id");
+        if (displayId) {
+          const displayElement = document.getElementById(displayId);
+          if (displayElement) {
+            displayElement.textContent = e.target.value;
+          }
+        }
+      });
+    },
+  },
+};
+
 let csrfToken = document
   .querySelector("meta[name='csrf-token']")
   .getAttribute("content");
 let liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: { _csrf_token: csrfToken },
+  hooks: Hooks,
 });
 
 // Show progress bar on live navigation and form submits
