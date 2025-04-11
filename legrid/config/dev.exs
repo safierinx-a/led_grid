@@ -12,7 +12,7 @@ import Config
 
 # Configure Legrid application settings
 config :legrid,
-  controller_url: "ws://localhost:8080",
+  controller_url: "ws://100.124.195.32:8080",
   grid_width: 25,
   grid_height: 24
 
@@ -25,7 +25,7 @@ config :legrid,
 config :legrid, LegridWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}, port: 4000],
+  http: [ip: {0, 0, 0, 0}, port: 4000],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

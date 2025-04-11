@@ -9,6 +9,7 @@ import struct
 import logging
 import sys
 from datetime import datetime
+import base64
 
 # Try to import the rpi_ws281x library for hardware control
 # If it's not available, we'll use a mock implementation for development
@@ -272,6 +273,24 @@ class LegridController:
         else:
             self.strip.show()
 
+    def on_open(self, ws):
+        """Handle WebSocket connection open"""
+        logger.info("WebSocket connection established")
+
+        # Join the Phoenix channel
+        join_message = {
+            "topic": "controller:lobby",
+            "event": "phx_join",
+            "payload": {"controller_id": self.controller_id},
+            "ref": "1",
+        }
+
+        # Send join message
+        ws.send(json.dumps(join_message))
+
+        # Send controller info after successful connection
+        self.send_controller_info()
+
     def on_message(self, ws, message):
         """Handle incoming WebSocket messages"""
         try:
@@ -280,40 +299,49 @@ class LegridController:
                 # Process binary frame
                 self.update_leds_from_binary(message)
             else:
-                # Process JSON message
+                # Process Phoenix Channel message (JSON)
                 data = json.loads(message)
-                if data.get("type") == "frame":
-                    # JSON frame format
-                    pixels = data.get("pixels", [])
-                    if len(pixels) == self.led_count:
-                        for i, (r, g, b) in enumerate(pixels):
-                            if HARDWARE_AVAILABLE:
-                                self.strip[i] = (r, g, b)
-                            else:
-                                color = (r << 16) | (g << 8) | b
-                                self.strip.setPixelColor(i, color)
 
-                        if HARDWARE_AVAILABLE:
-                            self.strip.show()
-                        else:
-                            self.strip.show()
+                # Extract event and payload from Phoenix message format
+                event = data.get("event")
+                payload = data.get("payload", {})
 
-                        self.stats["frames_received"] += 1
-                        self.stats["frames_displayed"] += 1
-                elif data.get("type") == "command":
-                    # Process command messages
-                    command = data.get("command")
-                    if command == "clear":
-                        self.clear_leds()
-                    elif command == "brightness":
-                        new_brightness = data.get("value", self.brightness)
-                        if 0 <= new_brightness <= 255:
-                            self.brightness = new_brightness
-                            if HARDWARE_AVAILABLE:
-                                self.strip.brightness = new_brightness / 255.0
-                            else:
-                                self.strip.setBrightness(new_brightness)
-                            logger.info(f"Set brightness to {new_brightness}")
+                if event == "phx_reply" and payload.get("status") == "ok":
+                    # Join confirmation
+                    logger.info("Successfully joined channel")
+
+                elif event == "frame":
+                    # Handle frame message - contains binary data in payload["binary"]
+                    if "binary" in payload:
+                        # The binary data is base64 encoded in JSON
+                        binary_data = base64.b64decode(payload["binary"])
+                        self.update_leds_from_binary(binary_data)
+
+                elif event == "request_stats":
+                    # Send stats in response to request
+                    self.send_stats()
+
+                elif event == "request_detailed_stats":
+                    # Send detailed stats
+                    self.send_detailed_stats()
+
+                elif event == "simulation_config":
+                    # Apply simulation config
+                    logger.info(f"Received simulation config: {payload}")
+                    # Apply simulation settings here if needed
+
+                elif event == "ping":
+                    # Respond to ping
+                    self.ws.send(
+                        json.dumps(
+                            {
+                                "topic": "controller:lobby",
+                                "event": "pong",
+                                "payload": {},
+                                "ref": None,
+                            }
+                        )
+                    )
         except Exception as e:
             logger.error(f"Error processing message: {e}")
 
@@ -333,52 +361,28 @@ class LegridController:
 
         self.stats["connection_drops"] += 1
 
-    def on_open(self, ws):
-        """Handle WebSocket connection open"""
-        logger.info("WebSocket connection established")
-        self.stats["connection_start_time"] = time.time()
-
-        # Send initial controller information
-        self.send_controller_info()
-
-    def send_controller_info(self):
-        """Send controller information to the server"""
-        info = {
-            "type": "controller_info",
-            "id": self.controller_id,
-            "config": {
-                "width": self.width,
-                "height": self.height,
-                "led_count": self.led_count,
-                "brightness": self.brightness,
-            },
-            "client_type": "raspberry_pi" if HARDWARE_AVAILABLE else "mock",
-        }
-
-        try:
-            self.ws.send(json.dumps(info))
-            logger.info("Sent controller information")
-        except Exception as e:
-            logger.error(f"Error sending controller info: {e}")
-
     def send_stats(self):
-        """Send stats to the server"""
+        """Send controller statistics"""
+        current_time = time.time()
+        uptime = (
+            current_time - self.stats["connection_start_time"]
+            if self.stats["connection_start_time"] > 0
+            else 0
+        )
+
+        # Create stats message in Phoenix Channel format
         stats_data = {
-            "type": "controller_stats",
-            "id": self.controller_id,
-            "stats": {
+            "topic": "controller:lobby",
+            "event": "stats",
+            "payload": {
                 "frames_received": self.stats["frames_received"],
                 "frames_displayed": self.stats["frames_displayed"],
                 "connection_drops": self.stats["connection_drops"],
                 "fps": self.stats["fps"],
-                "connection_uptime": self.stats["connection_uptime"]
-                + (
-                    (time.time() - self.stats["connection_start_time"])
-                    if self.stats["connection_start_time"] > 0
-                    else 0
-                ),
+                "connection_uptime": uptime,
                 "timestamp": datetime.now().isoformat(),
             },
+            "ref": None,
         }
 
         try:
@@ -387,6 +391,58 @@ class LegridController:
         except Exception as e:
             logger.error(f"Error sending stats: {e}")
 
+    def send_controller_info(self):
+        """Send controller information after connection"""
+        info = {
+            "topic": "controller:lobby",
+            "event": "stats",
+            "payload": {
+                "type": "controller_info",
+                "id": self.controller_id,
+                "width": self.width,
+                "height": self.height,
+                "led_count": self.led_count,
+                "version": "1.0.0",
+                "hardware": "Raspberry Pi" if HARDWARE_AVAILABLE else "Mock",
+            },
+            "ref": None,
+        }
+
+        try:
+            self.ws.send(json.dumps(info))
+            logger.info("Sent controller info")
+        except Exception as e:
+            logger.error(f"Error sending controller info: {e}")
+
+    def send_detailed_stats(self):
+        """Send detailed statistics (in response to a request)"""
+        # Create detailed stats in Phoenix Channel format
+        detailed_stats = {
+            "topic": "controller:lobby",
+            "event": "stats",
+            "payload": {
+                "type": "detailed_stats",
+                "frames_received": self.stats["frames_received"],
+                "frames_displayed": self.stats["frames_displayed"],
+                "connection_drops": self.stats["connection_drops"],
+                "fps": self.stats["fps"],
+                "connection_uptime": self.stats["connection_uptime"],
+                "hardware_info": {
+                    "type": "Raspberry Pi" if HARDWARE_AVAILABLE else "Mock",
+                    "led_count": self.led_count,
+                    "width": self.width,
+                    "height": self.height,
+                },
+            },
+            "ref": None,
+        }
+
+        try:
+            self.ws.send(json.dumps(detailed_stats))
+            logger.info("Sent detailed stats")
+        except Exception as e:
+            logger.error(f"Error sending detailed stats: {e}")
+
     def run(self):
         """Run the controller, connecting to the WebSocket server"""
         global reconnect_delay
@@ -394,6 +450,8 @@ class LegridController:
         while running:
             try:
                 # Create WebSocket connection
+                # Note: For Phoenix channels, use a URL like:
+                # ws://100.86.122.19:4000/controller/websocket
                 self.ws = websocket.WebSocketApp(
                     self.server_url,
                     on_open=self.on_open,
@@ -401,6 +459,9 @@ class LegridController:
                     on_error=self.on_error,
                     on_close=self.on_close,
                 )
+
+                # Set connection start time
+                self.stats["connection_start_time"] = time.time()
 
                 # Start a thread to send stats periodically
                 def stats_sender():

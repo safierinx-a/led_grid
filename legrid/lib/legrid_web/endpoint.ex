@@ -15,6 +15,10 @@ defmodule LegridWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
+  # Add a socket for controllers to connect to
+  socket "/controller", LegridWeb.ControllerSocket,
+    websocket: true
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # You should set gzip to true if you are running phx.digest
