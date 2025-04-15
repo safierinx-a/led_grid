@@ -789,6 +789,10 @@ class LegridController:
                     on_close=self.on_close,
                 )
 
+                # Configure WebSocket to handle binary data properly
+                # This is critical - without this, binary frames can be misinterpreted
+                websocket.enableTrace(False)
+
                 # Set connection start time
                 self.stats["connection_start_time"] = time.time()
 
@@ -809,13 +813,9 @@ class LegridController:
                 logger.info(f"Connecting to {self.server_url}...")
                 # Set ping_interval to keep connection responsive and skip_utf8_validation for performance
                 # Ensure ping_interval > ping_timeout (fix for Error: Ensure ping_interval > ping_timeout)
-                # FIX: Set binary_type=ABNF.OPCODE_BINARY to prevent JSON text encoding issues
                 self.ws.run_forever(
                     ping_interval=10,
                     ping_timeout=5,
-                    skip_utf8_validation=True,
-                    # This is critical - without this, binary frames can be misinterpreted
-                    binary_type=ABNF.OPCODE_BINARY,
                 )
 
                 # If we get here, the connection was closed
