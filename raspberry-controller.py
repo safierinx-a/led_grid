@@ -48,6 +48,12 @@ DEFAULT_FLIP_X = False  # Flip horizontally
 DEFAULT_FLIP_Y = False  # Flip vertically
 DEFAULT_TRANSPOSE = False  # Swap X and Y axes (rotation by 90 degrees)
 
+# Debug options
+DEBUG_FRAMES = False  # Set to True to debug frame processing
+DEBUG_BLACK_PIXELS = False  # Set to True to analyze black pixels specifically
+DEBUG_DELTA_FRAMES = False  # Set to True to debug delta frame details
+FORCE_FULL_UPDATES = False  # Set to True to force updating all pixels on every frame
+
 # Global variables
 running = True
 reconnect_delay = 1.0  # Start with 1 second delay, will increase on failures
@@ -100,6 +106,20 @@ class LegridController:
         self.brightness = args.led_brightness
         self.server_url = args.server_url
         self.controller_id = str(uuid.uuid4())
+
+        # Debug options
+        self.debug_frames = args.debug_frames
+        self.debug_black_pixels = args.debug_black_pixels
+        self.debug_delta_frames = args.debug_delta_frames
+        self.force_full_updates = args.force_full_updates
+
+        # LED state tracking for correct delta frame handling
+        # This represents the current state of the LED display
+        self.current_led_state = [(0, 0, 0) for _ in range(self.led_count)]
+        self.led_state_initialized = False
+
+        # Frame counter for debugging
+        self.frame_counter = 0
 
         # Pattern tracking
         self.last_pattern_id = None
@@ -179,11 +199,16 @@ class LegridController:
                 self.strip[i] = (0, 0, 0)
             else:
                 self.strip.setPixelColor(i, 0)
+            # Also update state tracking
+            self.current_led_state[i] = (0, 0, 0)
 
         if HARDWARE_AVAILABLE:
             self.strip.show()
         else:
             self.strip.show()
+
+        # We've now initialized the LED state
+        self.led_state_initialized = True
 
         logger.info("Cleared all LEDs")
 
@@ -297,14 +322,46 @@ class LegridController:
                 width = min(width, self.width)
                 height = min(height, self.height)
 
+            # Increment frame counter
+            self.frame_counter += 1
+
+            # Force a full clear every X frames if full updates are enabled
+            if self.force_full_updates:
+                priority = True
+                if self.frame_counter % 10 == 0:  # Every 10 frames
+                    logger.debug(f"Forcing full update on frame {self.frame_counter}")
+                    self.clear_leds()
+                    self.led_state_initialized = True
+
             # Extract pixel data based on message type
             pixel_data = data[10:]
+
+            # For full frames, ensure we update the state properly
             if msg_type == 1:  # Full frame
                 self.update_leds_from_pixels(
                     pixel_data, width, height, priority=priority
                 )
+                # A full frame should always initialize the LED state
+                self.led_state_initialized = True
             elif msg_type == 2:  # Delta frame
-                self.apply_delta_frame(pixel_data, priority=priority)
+                if self.force_full_updates:
+                    # Convert delta frame to full frame update
+                    logger.debug(
+                        f"Converting delta frame to full update on frame {self.frame_counter}"
+                    )
+                    self.update_leds_from_pixels(
+                        pixel_data, width, height, priority=True
+                    )
+                    self.led_state_initialized = True
+                else:
+                    # If LED state isn't initialized yet, we should initialize with a full black frame
+                    if not self.led_state_initialized:
+                        logger.info("Initializing LED state before first delta frame")
+                        self.clear_leds()
+                        self.led_state_initialized = True
+
+                    # Now apply the delta frame
+                    self.apply_delta_frame(pixel_data, priority=priority)
 
             # Update stats
             self.stats["frames_received"] += 1
@@ -337,6 +394,12 @@ class LegridController:
             )
             # Still try to update as many pixels as we can
 
+        # For debugging, keep track of which pixels should be black
+        if self.debug_black_pixels:
+            black_pixels_sent = set()
+            black_pixels_updated = set()
+            non_black_pixels = set()
+
         # Clear all LEDs first if this is a priority update (redundant if already cleared by pattern change)
         if priority:
             for i in range(self.led_count):
@@ -344,6 +407,8 @@ class LegridController:
                     self.strip[i] = (0, 0, 0)
                 else:
                     self.strip.setPixelColor(i, 0)
+                self.current_led_state[i] = (0, 0, 0)  # Update state tracking
+            self.led_state_initialized = True
 
         # Update LEDs using the mapping function
         updated_leds = set()
@@ -358,22 +423,64 @@ class LegridController:
                     g = pixel_data[src_idx + 1]
                     b = pixel_data[src_idx + 2]
 
+                    # For black pixel debugging
+                    if self.debug_black_pixels and r == 0 and g == 0 and b == 0:
+                        black_pixels_sent.add((x, y))
+
                     # Map to physical LED position
                     dest_idx = self.map_pixel_index(x, y)
 
                     if 0 <= dest_idx < self.led_count:
                         updated_leds.add(dest_idx)
+
+                        # For black pixel debugging - check if we're turning a pixel off
+                        if self.debug_black_pixels:
+                            if r == 0 and g == 0 and b == 0:
+                                black_pixels_updated.add(dest_idx)
+                            else:
+                                non_black_pixels.add(dest_idx)
+
+                        # Keep track of current state for delta frame handling
+                        old_value = self.current_led_state[dest_idx]
+                        new_value = (r, g, b)
+                        self.current_led_state[dest_idx] = new_value
+
+                        # Debug significant changes
+                        if self.debug_frames and old_value != new_value:
+                            if self.debug_black_pixels and (
+                                old_value == (0, 0, 0) or new_value == (0, 0, 0)
+                            ):
+                                logger.debug(
+                                    f"Pixel at {x},{y} (idx {dest_idx}) changed: {old_value} -> {new_value}"
+                                )
+
                         if HARDWARE_AVAILABLE:
                             self.strip[dest_idx] = (r, g, b)
                         else:
                             color = (r << 16) | (g << 8) | b
                             self.strip.setPixelColor(dest_idx, color)
 
+        # We've now initialized the LED state
+        self.led_state_initialized = True
+
         # Show the strip
         if HARDWARE_AVAILABLE:
             self.strip.show()
         else:
             self.strip.show()
+
+        # Debug black pixel handling
+        if self.debug_black_pixels:
+            if black_pixels_sent:
+                logger.debug(
+                    f"Frame sent {len(black_pixels_sent)} black pixels, updated {len(black_pixels_updated)} LEDs"
+                )
+                if len(black_pixels_sent) > 10:
+                    logger.debug(
+                        f"First 10 black pixels sent (x,y): {list(black_pixels_sent)[:10]}"
+                    )
+            if len(non_black_pixels) > 0:
+                logger.debug(f"Updated {len(non_black_pixels)} non-black pixels")
 
         # Only log detailed info at lower fps or for priority updates
         if priority or self.stats["fps"] < 20:
@@ -385,15 +492,37 @@ class LegridController:
             logger.warning("Delta frame too small")
             return
 
+        # If LED state hasn't been initialized yet, treat this as a full frame priority update
+        if not self.led_state_initialized:
+            logger.warning(
+                "LED state not initialized, treating delta frame as priority full frame"
+            )
+            if delta_data and len(delta_data) >= 2:
+                # First render a full black frame to initialize all LEDs
+                self.clear_leds()
+                # Then apply the deltas as a priority update
+                self.apply_delta_frame(delta_data, priority=True)
+            return
+
         # First 2 bytes are the number of deltas - using little-endian
         num_deltas = struct.unpack("<H", delta_data[0:2])[0]
         delta_data = delta_data[2:]
+
+        # Log delta frame details if debug is enabled
+        if self.debug_delta_frames:
+            logger.debug(f"Processing delta frame with {num_deltas} changes")
 
         if len(delta_data) < num_deltas * 5:
             logger.warning(
                 f"Not enough delta data: got {len(delta_data)} bytes, expected {num_deltas * 5}"
             )
             return
+
+        # For debugging
+        if self.debug_black_pixels:
+            black_pixels_sent = set()
+            black_pixels_updated = set()
+            non_black_pixels = set()
 
         # Track updated LEDs for logging
         updated_leds = set()
@@ -408,13 +537,53 @@ class LegridController:
                 g = delta_data[index + 3]
                 b = delta_data[index + 4]
 
+                # Convert linear index to x,y for mapping and debugging
+                x = pixel_index % self.width
+                y = pixel_index // self.width
+
+                # Debug delta frame details
+                if self.debug_delta_frames:
+                    if i < 10 or i > num_deltas - 10:  # First/last 10 pixels
+                        logger.debug(f"Delta#{i}: Pixel({x},{y}) = RGB({r},{g},{b})")
+
+                # For black pixel debugging
+                if self.debug_black_pixels and r == 0 and g == 0 and b == 0:
+                    black_pixels_sent.add((x, y))
+
                 # Map to physical LED position
-                dest_idx = self.map_pixel_index(
-                    pixel_index % self.width, pixel_index // self.width
-                )
+                dest_idx = self.map_pixel_index(x, y)
 
                 if 0 <= dest_idx < self.led_count:
                     updated_leds.add(dest_idx)
+
+                    # For black pixel debugging
+                    if self.debug_black_pixels:
+                        if r == 0 and g == 0 and b == 0:
+                            black_pixels_updated.add(dest_idx)
+                        else:
+                            non_black_pixels.add(dest_idx)
+
+                    # Keep track of current state for delta frame handling
+                    old_value = self.current_led_state[dest_idx]
+                    new_value = (r, g, b)
+
+                    # Debug delta frame changes
+                    if self.debug_delta_frames and old_value != new_value:
+                        logger.debug(
+                            f"Updating LED {dest_idx} from {old_value} to {new_value}"
+                        )
+
+                    self.current_led_state[dest_idx] = new_value
+
+                    # Debug significant changes
+                    if self.debug_frames and old_value != new_value:
+                        if self.debug_black_pixels and (
+                            old_value == (0, 0, 0) or new_value == (0, 0, 0)
+                        ):
+                            logger.debug(
+                                f"Delta pixel at {x},{y} (idx {dest_idx}) changed: {old_value} -> {new_value}"
+                            )
+
                     if HARDWARE_AVAILABLE:
                         self.strip[dest_idx] = (r, g, b)
                     else:
@@ -426,6 +595,28 @@ class LegridController:
             self.strip.show()
         else:
             self.strip.show()
+
+        # Debug black pixel handling for delta frames
+        if self.debug_black_pixels:
+            if black_pixels_sent:
+                logger.debug(
+                    f"Delta frame sent {len(black_pixels_sent)} black pixels, updated {len(black_pixels_updated)} LEDs"
+                )
+                if len(black_pixels_sent) > 10:
+                    logger.debug(
+                        f"First 10 black pixels in delta (x,y): {list(black_pixels_sent)[:10]}"
+                    )
+            if len(non_black_pixels) > 0:
+                logger.debug(
+                    f"Delta frame updated {len(non_black_pixels)} non-black pixels"
+                )
+
+        # Additional debugging for how much of the frame actually changed
+        if self.debug_delta_frames:
+            percent_changed = 100 * num_deltas / (self.width * self.height)
+            logger.debug(
+                f"Delta frame updated {num_deltas}/{self.width * self.height} pixels ({percent_changed:.1f}%)"
+            )
 
         # Only log detailed info at lower fps or for priority updates
         if priority or self.stats["fps"] < 20:
@@ -532,6 +723,8 @@ class LegridController:
                                 logger.info(
                                     f"New pattern detected (ID: {self.last_pattern_id}). Clearing LEDs."
                                 )
+                                # Force reinitialization of LED state when pattern changes
+                                self.led_state_initialized = False
 
                         # Check for parameter changes
                         if "parameters" in payload:
@@ -557,10 +750,33 @@ class LegridController:
                             logger.info(
                                 f"Pattern parameters changed.{param_diff} Clearing LEDs."
                             )
+                            # Also reinitialize LED state on parameter changes
+                            self.led_state_initialized = False
 
-                        # Clear LEDs if needed before applying new frame
-                        if clear_needed:
+                        # Increment frame counter
+                        self.frame_counter += 1
+
+                        # Handle frame clearing logic
+                        # Force a full clear periodically if full updates are enabled
+                        if self.force_full_updates:
+                            # Always treat as priority update which ensures full clearing
+                            priority_update = True
+                            force_clear = (
+                                self.frame_counter % 10 == 0
+                            )  # Every 10 frames
+                            if force_clear:
+                                logger.debug(
+                                    f"Forcing full clear on frame {self.frame_counter}"
+                                )
+                                self.clear_leds()
+                                self.led_state_initialized = True
+                        # If not already cleared by force_full_updates, check if clear is needed from pattern/params
+                        elif clear_needed:
+                            logger.debug(
+                                "Clearing LEDs due to pattern/parameter change"
+                            )
                             self.clear_leds()
+                            self.led_state_initialized = True
 
                         # Record time of frame receipt for latency measurements
                         receipt_time = time.time()
@@ -1022,6 +1238,32 @@ def parse_args():
         action="store_true",
         default=DEFAULT_TRANSPOSE,
         help="Transpose grid (swap X and Y axes)",
+    )
+
+    # Debugging options
+    parser.add_argument(
+        "--debug-frames",
+        action="store_true",
+        default=DEBUG_FRAMES,
+        help="Enable detailed frame debugging",
+    )
+    parser.add_argument(
+        "--debug-black-pixels",
+        action="store_true",
+        default=DEBUG_BLACK_PIXELS,
+        help="Debug black pixel handling specifically",
+    )
+    parser.add_argument(
+        "--debug-delta-frames",
+        action="store_true",
+        default=DEBUG_DELTA_FRAMES,
+        help="Debug delta frame details",
+    )
+    parser.add_argument(
+        "--force-full-updates",
+        action="store_true",
+        default=FORCE_FULL_UPDATES,
+        help="Force updating all pixels on every frame (may help with black pixel issues)",
     )
 
     return parser.parse_args()
