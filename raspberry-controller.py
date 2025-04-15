@@ -36,10 +36,14 @@ DEFAULT_HEIGHT = 24
 DEFAULT_LED_COUNT = 600  # DEFAULT_WIDTH * DEFAULT_HEIGHT
 DEFAULT_LED_PIN = 18
 DEFAULT_BRIGHTNESS = 255
-DEFAULT_SERVER_URL = (
-    "ws://192.168.1.11:4000/controller/websocket"  # Updated with correct websocket path
-)
+DEFAULT_SERVER_URL = "ws://192.168.1.11:4000/controller/websocket"
 DEFAULT_LOG_LEVEL = "INFO"
+
+# Grid layout and orientation options
+DEFAULT_LAYOUT = "serpentine"  # Could be "linear" or "serpentine"
+DEFAULT_FLIP_X = False  # Flip horizontally
+DEFAULT_FLIP_Y = False  # Flip vertically
+DEFAULT_TRANSPOSE = False  # Swap X and Y axes (rotation by 90 degrees)
 
 # Global variables
 running = True
@@ -94,6 +98,20 @@ class LegridController:
         self.server_url = args.server_url
         self.controller_id = str(uuid.uuid4())
 
+        # Grid layout options
+        self.layout = args.layout
+        self.flip_x = args.flip_x
+        self.flip_y = args.flip_y
+        self.transpose = args.transpose
+
+        # Log grid configuration
+        logger.info(
+            f"Grid configuration: {self.width}x{self.height}, layout={self.layout}"
+        )
+        logger.info(
+            f"Grid orientation: flip_x={self.flip_x}, flip_y={self.flip_y}, transpose={self.transpose}"
+        )
+
         # Statistics
         self.stats = {
             "frames_received": 0,
@@ -119,17 +137,6 @@ class LegridController:
         if HARDWARE_AVAILABLE:
             # Initialize the real hardware
             try:
-                # Modified to use the correct neopixel interface
-                # The original code was:
-                # self.strip = neopixel.NeoPixel(
-                #     pin=board.D18,  # Pin 18 (BCM numbering)
-                #     n=self.led_count,
-                #     brightness=self.brightness / 255.0,
-                #     auto_write=False,
-                #     pixel_order=neopixel.GRB,
-                # )
-
-                # Try with Adafruit CircuitPython library format
                 self.strip = neopixel.NeoPixel(
                     board.D18,  # Pin 18 (BCM numbering)
                     self.led_count,
@@ -166,6 +173,38 @@ class LegridController:
 
         logger.info("Cleared all LEDs")
 
+    def map_pixel_index(self, x, y):
+        """
+        Map x,y grid coordinates to the physical LED index.
+        Accounts for serpentine layout and orientation options.
+
+        Args:
+            x: x-coordinate (0 to width-1)
+            y: y-coordinate (0 to height-1)
+
+        Returns:
+            int: The physical LED index
+        """
+        # Apply transformations based on orientation options
+        if self.transpose:
+            x, y = y, x
+
+        # Apply flips
+        if self.flip_x:
+            x = self.width - 1 - x
+
+        if self.flip_y:
+            y = self.height - 1 - y
+
+        # Apply layout pattern
+        if self.layout == "serpentine":
+            # In serpentine layout, even rows go left to right, odd rows go right to left
+            if y % 2 == 1:  # Odd row (0-indexed)
+                x = self.width - 1 - x
+
+        # Convert to linear index
+        return y * self.width + x
+
     def update_leds_from_binary(self, data):
         """Update LEDs from binary frame data"""
         # Check if we have enough data for the header
@@ -173,18 +212,12 @@ class LegridController:
             logger.warning(f"Received incomplete binary frame: {len(data)} bytes")
             return
 
-        # Parse the header - FIXED to use little-endian to match server encoding
+        # Parse the header - using little-endian to match server encoding
         version = data[0]
         msg_type = data[1]
-        frame_id = struct.unpack("<I", data[2:6])[
-            0
-        ]  # Changed from ">" to "<" for little-endian
-        width = struct.unpack("<H", data[6:8])[
-            0
-        ]  # Changed from ">" to "<" for little-endian
-        height = struct.unpack("<H", data[8:10])[
-            0
-        ]  # Changed from ">" to "<" for little-endian
+        frame_id = struct.unpack("<I", data[2:6])[0]
+        width = struct.unpack("<H", data[6:8])[0]
+        height = struct.unpack("<H", data[8:10])[0]
 
         # Log header info for debugging
         logger.debug(
@@ -200,16 +233,19 @@ class LegridController:
             logger.warning(f"Unknown message type: {msg_type}")
             return
 
+        # We can handle frame data with different dimensions, but log a warning
         if width != self.width or height != self.height:
             logger.warning(
                 f"Frame dimensions mismatch: {width}x{height} (expected {self.width}x{self.height})"
             )
-            # Continue anyway, as this might just be a configuration issue
+            # We'll use the smaller dimensions
+            width = min(width, self.width)
+            height = min(height, self.height)
 
         # Extract pixel data based on message type
         pixel_data = data[10:]
         if msg_type == 1:  # Full frame
-            self.update_leds_from_pixels(pixel_data)
+            self.update_leds_from_pixels(pixel_data, width, height)
         elif msg_type == 2:  # Delta frame
             self.apply_delta_frame(pixel_data)
 
@@ -219,38 +255,57 @@ class LegridController:
         if self.stats["last_frame_time"] > 0:
             time_diff = current_time - self.stats["last_frame_time"]
             if time_diff > 0:
-                self.stats["fps"] = 1.0 / time_diff
+                # Apply smoothing to FPS calculation
+                self.stats["fps"] = 0.8 * self.stats["fps"] + 0.2 * (1.0 / time_diff)
         self.stats["last_frame_time"] = current_time
         self.stats["frames_displayed"] += 1
 
-    def update_leds_from_pixels(self, pixel_data):
-        """Update all LEDs from pixel data (full frame)"""
-        if len(pixel_data) < self.led_count * 3:
+    def update_leds_from_pixels(self, pixel_data, width, height):
+        """Update all LEDs from pixel data (full frame), applying layout transformation"""
+        if len(pixel_data) < width * height * 3:
             logger.warning(
-                f"Not enough pixel data: got {len(pixel_data)} bytes, expected {self.led_count * 3}"
+                f"Not enough pixel data: got {len(pixel_data)} bytes, expected {width * height * 3}"
             )
             # Still try to update as many pixels as we can
 
-        pixel_count = min(self.led_count, len(pixel_data) // 3)
-        for i in range(pixel_count):
-            index = i * 3
-            if index + 2 < len(pixel_data):
-                r = pixel_data[index]
-                g = pixel_data[index + 1]
-                b = pixel_data[index + 2]
+        # Clear all LEDs first
+        for i in range(self.led_count):
+            if HARDWARE_AVAILABLE:
+                self.strip[i] = (0, 0, 0)
+            else:
+                self.strip.setPixelColor(i, 0)
 
-                if HARDWARE_AVAILABLE:
-                    self.strip[i] = (r, g, b)
-                else:
-                    color = (r << 16) | (g << 8) | b
-                    self.strip.setPixelColor(i, color)
+        # Update LEDs using the mapping function
+        updated_leds = set()
+        for y in range(height):
+            for x in range(width):
+                # Calculate source index in the pixel data
+                src_idx = (y * width + x) * 3
 
+                if src_idx + 2 < len(pixel_data):
+                    # Read RGB values
+                    r = pixel_data[src_idx]
+                    g = pixel_data[src_idx + 1]
+                    b = pixel_data[src_idx + 2]
+
+                    # Map to physical LED position
+                    dest_idx = self.map_pixel_index(x, y)
+
+                    if 0 <= dest_idx < self.led_count:
+                        updated_leds.add(dest_idx)
+                        if HARDWARE_AVAILABLE:
+                            self.strip[dest_idx] = (r, g, b)
+                        else:
+                            color = (r << 16) | (g << 8) | b
+                            self.strip.setPixelColor(dest_idx, color)
+
+        # Show the strip
         if HARDWARE_AVAILABLE:
             self.strip.show()
         else:
             self.strip.show()
 
-        logger.debug(f"Updated {pixel_count} LEDs from full frame")
+        logger.debug(f"Updated {len(updated_leds)} LEDs from full frame")
 
     def apply_delta_frame(self, delta_data):
         """Apply a delta frame (only changed pixels)"""
@@ -258,8 +313,8 @@ class LegridController:
             logger.warning("Delta frame too small")
             return
 
-        # First 2 bytes are the number of deltas - also fixed to little-endian
-        num_deltas = struct.unpack("<H", delta_data[0:2])[0]  # Changed from ">" to "<"
+        # First 2 bytes are the number of deltas - using little-endian
+        num_deltas = struct.unpack("<H", delta_data[0:2])[0]
         delta_data = delta_data[2:]
 
         if len(delta_data) < num_deltas * 5:
@@ -268,28 +323,40 @@ class LegridController:
             )
             return
 
+        # Track updated LEDs for logging
+        updated_leds = set()
+
         for i in range(num_deltas):
             index = i * 5
             if index + 4 < len(delta_data):
-                # 2 bytes for pixel index, 3 bytes for RGB - fixed to little-endian
-                pixel_index = struct.unpack("<H", delta_data[index : index + 2])[
-                    0
-                ]  # Changed from ">" to "<"
+                # 2 bytes for pixel index, 3 bytes for RGB - little-endian
+                pixel_index = struct.unpack("<H", delta_data[index : index + 2])[0]
                 r = delta_data[index + 2]
                 g = delta_data[index + 3]
                 b = delta_data[index + 4]
 
-                if pixel_index < self.led_count:
+                # Convert linear index to x,y for mapping
+                x = pixel_index % self.width
+                y = pixel_index // self.width
+
+                # Map to physical LED position
+                dest_idx = self.map_pixel_index(x, y)
+
+                if 0 <= dest_idx < self.led_count:
+                    updated_leds.add(dest_idx)
                     if HARDWARE_AVAILABLE:
-                        self.strip[pixel_index] = (r, g, b)
+                        self.strip[dest_idx] = (r, g, b)
                     else:
                         color = (r << 16) | (g << 8) | b
-                        self.strip.setPixelColor(pixel_index, color)
+                        self.strip.setPixelColor(dest_idx, color)
 
+        # Show the strip
         if HARDWARE_AVAILABLE:
             self.strip.show()
         else:
             self.strip.show()
+
+        logger.debug(f"Updated {len(updated_leds)} LEDs from delta frame")
 
     def on_open(self, ws):
         """Handle WebSocket connection open"""
@@ -314,7 +381,10 @@ class LegridController:
         try:
             # Check if the message is binary or text
             if isinstance(message, bytes):
-                # Process binary frame
+                # Process binary frame - but we shouldn't receive these with Phoenix channels
+                logger.warning(
+                    "Received binary WebSocket message - not expected with Phoenix channels"
+                )
                 self.update_leds_from_binary(message)
             else:
                 # Process Phoenix Channel message (JSON)
@@ -333,12 +403,22 @@ class LegridController:
                 elif event == "frame":
                     # Handle frame message - contains binary data in payload["binary"]
                     if "binary" in payload:
+                        # Record time of frame receipt for latency measurements
+                        receipt_time = time.time()
+
                         # The binary data is base64 encoded in JSON
                         binary_data = base64.b64decode(payload["binary"])
                         logger.debug(
                             f"Received frame binary data of length {len(binary_data)}"
                         )
+
+                        # Calculate latency from receipt to display
                         self.update_leds_from_binary(binary_data)
+
+                        # Calculate and log latency
+                        display_time = time.time()
+                        latency_ms = (display_time - receipt_time) * 1000
+                        logger.debug(f"Frame processing latency: {latency_ms:.2f}ms")
 
                 elif event == "request_stats":
                     # Send stats in response to request
@@ -351,7 +431,9 @@ class LegridController:
                 elif event == "simulation_config":
                     # Apply simulation config
                     logger.info(f"Received simulation config: {payload}")
-                    # Apply simulation settings here if needed
+                    # Process any configuration options
+                    if "orientation" in payload:
+                        self.process_orientation_config(payload["orientation"])
 
                 elif event == "ping":
                     # Respond to ping
@@ -370,6 +452,26 @@ class LegridController:
             import traceback
 
             logger.error(traceback.format_exc())
+
+    def process_orientation_config(self, orientation):
+        """Process orientation configuration from server"""
+        if not isinstance(orientation, dict):
+            logger.warning(f"Invalid orientation config: {orientation}")
+            return
+
+        # Update orientation options if provided
+        if "flip_x" in orientation:
+            self.flip_x = bool(orientation["flip_x"])
+        if "flip_y" in orientation:
+            self.flip_y = bool(orientation["flip_y"])
+        if "transpose" in orientation:
+            self.transpose = bool(orientation["transpose"])
+        if "layout" in orientation:
+            self.layout = orientation["layout"]
+
+        logger.info(
+            f"Updated grid orientation: flip_x={self.flip_x}, flip_y={self.flip_y}, transpose={self.transpose}, layout={self.layout}"
+        )
 
     def on_error(self, ws, error):
         """Handle WebSocket errors"""
@@ -404,7 +506,7 @@ class LegridController:
                 "frames_received": self.stats["frames_received"],
                 "frames_displayed": self.stats["frames_displayed"],
                 "connection_drops": self.stats["connection_drops"],
-                "fps": self.stats["fps"],
+                "fps": round(self.stats["fps"], 1),
                 "connection_uptime": uptime,
                 "timestamp": datetime.now().isoformat(),
             },
@@ -430,6 +532,12 @@ class LegridController:
                 "led_count": self.led_count,
                 "version": "1.0.0",
                 "hardware": "Raspberry Pi" if HARDWARE_AVAILABLE else "Mock",
+                "layout": self.layout,
+                "orientation": {
+                    "flip_x": self.flip_x,
+                    "flip_y": self.flip_y,
+                    "transpose": self.transpose,
+                },
             },
             "ref": None,
         }
@@ -451,13 +559,19 @@ class LegridController:
                 "frames_received": self.stats["frames_received"],
                 "frames_displayed": self.stats["frames_displayed"],
                 "connection_drops": self.stats["connection_drops"],
-                "fps": self.stats["fps"],
+                "fps": round(self.stats["fps"], 1),
                 "connection_uptime": self.stats["connection_uptime"],
                 "hardware_info": {
                     "type": "Raspberry Pi" if HARDWARE_AVAILABLE else "Mock",
                     "led_count": self.led_count,
                     "width": self.width,
                     "height": self.height,
+                    "layout": self.layout,
+                    "orientation": {
+                        "flip_x": self.flip_x,
+                        "flip_y": self.flip_y,
+                        "transpose": self.transpose,
+                    },
                 },
             },
             "ref": None,
@@ -499,10 +613,11 @@ class LegridController:
 
                 stats_thread = Thread(target=stats_sender)
                 stats_thread.daemon = True
+                stats_thread.start()  # Start the thread
 
-                # Connect to the server
+                # Connect to the server with ping enabled for responsiveness
                 logger.info(f"Connecting to {self.server_url}...")
-                self.ws.run_forever()
+                self.ws.run_forever(ping_interval=1, ping_timeout=5)
 
                 # If we get here, the connection was closed
                 if running:
@@ -579,6 +694,33 @@ def parse_args():
         default=DEFAULT_LOG_LEVEL,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help=f"Logging level (default: {DEFAULT_LOG_LEVEL})",
+    )
+
+    # Grid layout and orientation options
+    parser.add_argument(
+        "--layout",
+        type=str,
+        default=DEFAULT_LAYOUT,
+        choices=["linear", "serpentine"],
+        help=f"LED strip layout pattern (default: {DEFAULT_LAYOUT})",
+    )
+    parser.add_argument(
+        "--flip-x",
+        action="store_true",
+        default=DEFAULT_FLIP_X,
+        help="Flip grid horizontally",
+    )
+    parser.add_argument(
+        "--flip-y",
+        action="store_true",
+        default=DEFAULT_FLIP_Y,
+        help="Flip grid vertically",
+    )
+    parser.add_argument(
+        "--transpose",
+        action="store_true",
+        default=DEFAULT_TRANSPOSE,
+        help="Transpose grid (swap X and Y axes)",
     )
 
     return parser.parse_args()
