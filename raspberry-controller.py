@@ -36,7 +36,9 @@ DEFAULT_HEIGHT = 24
 DEFAULT_LED_COUNT = 600  # DEFAULT_WIDTH * DEFAULT_HEIGHT
 DEFAULT_LED_PIN = 18
 DEFAULT_BRIGHTNESS = 255
-DEFAULT_SERVER_URL = "ws://100.86.122.19:4000"
+DEFAULT_SERVER_URL = (
+    "ws://192.168.1.11:4000/controller/websocket"  # Updated with correct websocket path
+)
 DEFAULT_LOG_LEVEL = "INFO"
 
 # Global variables
@@ -171,12 +173,23 @@ class LegridController:
             logger.warning(f"Received incomplete binary frame: {len(data)} bytes")
             return
 
-        # Parse the header
+        # Parse the header - FIXED to use little-endian to match server encoding
         version = data[0]
         msg_type = data[1]
-        frame_id = struct.unpack(">I", data[2:6])[0]
-        width = struct.unpack(">H", data[6:8])[0]
-        height = struct.unpack(">H", data[8:10])[0]
+        frame_id = struct.unpack("<I", data[2:6])[
+            0
+        ]  # Changed from ">" to "<" for little-endian
+        width = struct.unpack("<H", data[6:8])[
+            0
+        ]  # Changed from ">" to "<" for little-endian
+        height = struct.unpack("<H", data[8:10])[
+            0
+        ]  # Changed from ">" to "<" for little-endian
+
+        # Log header info for debugging
+        logger.debug(
+            f"Frame header: version={version}, type={msg_type}, id={frame_id}, dims={width}x{height}"
+        )
 
         # Validate header
         if version != 1:
@@ -191,7 +204,7 @@ class LegridController:
             logger.warning(
                 f"Frame dimensions mismatch: {width}x{height} (expected {self.width}x{self.height})"
             )
-            return
+            # Continue anyway, as this might just be a configuration issue
 
         # Extract pixel data based on message type
         pixel_data = data[10:]
@@ -216,9 +229,10 @@ class LegridController:
             logger.warning(
                 f"Not enough pixel data: got {len(pixel_data)} bytes, expected {self.led_count * 3}"
             )
-            return
+            # Still try to update as many pixels as we can
 
-        for i in range(self.led_count):
+        pixel_count = min(self.led_count, len(pixel_data) // 3)
+        for i in range(pixel_count):
             index = i * 3
             if index + 2 < len(pixel_data):
                 r = pixel_data[index]
@@ -236,14 +250,16 @@ class LegridController:
         else:
             self.strip.show()
 
+        logger.debug(f"Updated {pixel_count} LEDs from full frame")
+
     def apply_delta_frame(self, delta_data):
         """Apply a delta frame (only changed pixels)"""
         if len(delta_data) < 2:
             logger.warning("Delta frame too small")
             return
 
-        # First 2 bytes are the number of deltas
-        num_deltas = struct.unpack(">H", delta_data[0:2])[0]
+        # First 2 bytes are the number of deltas - also fixed to little-endian
+        num_deltas = struct.unpack("<H", delta_data[0:2])[0]  # Changed from ">" to "<"
         delta_data = delta_data[2:]
 
         if len(delta_data) < num_deltas * 5:
@@ -255,8 +271,10 @@ class LegridController:
         for i in range(num_deltas):
             index = i * 5
             if index + 4 < len(delta_data):
-                # 2 bytes for pixel index, 3 bytes for RGB
-                pixel_index = struct.unpack(">H", delta_data[index : index + 2])[0]
+                # 2 bytes for pixel index, 3 bytes for RGB - fixed to little-endian
+                pixel_index = struct.unpack("<H", delta_data[index : index + 2])[
+                    0
+                ]  # Changed from ">" to "<"
                 r = delta_data[index + 2]
                 g = delta_data[index + 3]
                 b = delta_data[index + 4]
@@ -306,6 +324,8 @@ class LegridController:
                 event = data.get("event")
                 payload = data.get("payload", {})
 
+                logger.debug(f"Received event: {event}")
+
                 if event == "phx_reply" and payload.get("status") == "ok":
                     # Join confirmation
                     logger.info("Successfully joined channel")
@@ -315,6 +335,9 @@ class LegridController:
                     if "binary" in payload:
                         # The binary data is base64 encoded in JSON
                         binary_data = base64.b64decode(payload["binary"])
+                        logger.debug(
+                            f"Received frame binary data of length {len(binary_data)}"
+                        )
                         self.update_leds_from_binary(binary_data)
 
                 elif event == "request_stats":
@@ -344,6 +367,9 @@ class LegridController:
                     )
         except Exception as e:
             logger.error(f"Error processing message: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
 
     def on_error(self, ws, error):
         """Handle WebSocket errors"""
@@ -450,8 +476,7 @@ class LegridController:
         while running:
             try:
                 # Create WebSocket connection
-                # Note: For Phoenix channels, use a URL like:
-                # ws://100.86.122.19:4000/controller/websocket
+                # Use the proper Phoenix Channel WebSocket path
                 self.ws = websocket.WebSocketApp(
                     self.server_url,
                     on_open=self.on_open,
