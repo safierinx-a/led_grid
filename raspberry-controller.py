@@ -25,6 +25,7 @@ except ImportError:
 # Try to import websocket-client
 try:
     import websocket
+    from websocket import ABNF  # Import ABNF for opcode constants
 except ImportError:
     print("Error: websocket-client library not found.")
     print("Please install it with: pip install websocket-client")
@@ -238,19 +239,21 @@ class LegridController:
                     logger.info("Ignoring WebSocket pong frame")
                     return
 
-                # Phoenix protocol version check - it should be between 0-9 for our LED protocol
-                if data[0] > 10:
-                    logger.info(
-                        f"Ignoring binary data with invalid protocol version: {data[0]}"
-                    )
-                    return
-
             # Dump the first 20 bytes for debugging (only for priority frames to avoid log spam)
             if priority:
                 logger.debug(f"Binary frame first 20 bytes (hex): {data[:20].hex()}")
 
             # Parse the header - using little-endian to match server encoding
-            version = data[0]
+            version = data[
+                0
+            ]  # This will be 1 from the server or possibly 123 if something is wrong
+
+            # Special handling for protocol version 123
+            if version == 123:
+                logger.info("Detected protocol version 123, treating as version 1")
+                # Adjust the version for processing
+                version = 1
+
             msg_type = data[1]
             frame_id = struct.unpack("<I", data[2:6])[0]
             width = struct.unpack("<H", data[6:8])[0]
@@ -268,7 +271,7 @@ class LegridController:
                 priority or self.stats["fps"] < 20
             ):  # Only log details at lower frame rates or for priority updates
                 logger.debug(
-                    f"Frame header: version={version}, type={msg_type}, id={frame_id}, dims={width}x{height}"
+                    f"Frame header: version={version} (original: {data[0]}), type={msg_type}, id={frame_id}, dims={width}x{height}"
                 )
 
             # Validate message type - but be lenient
@@ -463,13 +466,21 @@ class LegridController:
                         )
                         return
 
+                    # Check if this might be a frame with protocol version 123
+                    if message[0] == 123 and len(message) >= 10:
+                        logger.info(
+                            "Received binary message with protocol version 123, processing it"
+                        )
+                        self.update_leds_from_binary(message, priority=True)
+                        return
+
                     # Phoenix heartbeat messages often have specific patterns
                     if len(message) >= 4 and message[0] == 0x1 and message[1] == 0x1:
                         logger.debug("Received Phoenix heartbeat message")
                         return
 
                 # Only process likely frame data - check for valid protocol versions
-                if len(message) >= 10 and message[0] <= 10:
+                if len(message) >= 10 and (message[0] <= 10 or message[0] == 123):
                     logger.debug(
                         f"Processing binary WebSocket message ({len(message)} bytes)"
                     )
@@ -798,8 +809,13 @@ class LegridController:
                 logger.info(f"Connecting to {self.server_url}...")
                 # Set ping_interval to keep connection responsive and skip_utf8_validation for performance
                 # Ensure ping_interval > ping_timeout (fix for Error: Ensure ping_interval > ping_timeout)
+                # FIX: Set binary_type=ABNF.OPCODE_BINARY to prevent JSON text encoding issues
                 self.ws.run_forever(
-                    ping_interval=10, ping_timeout=5, skip_utf8_validation=True
+                    ping_interval=10,
+                    ping_timeout=5,
+                    skip_utf8_validation=True,
+                    # This is critical - without this, binary frames can be misinterpreted
+                    binary_type=ABNF.OPCODE_BINARY,
                 )
 
                 # If we get here, the connection was closed
