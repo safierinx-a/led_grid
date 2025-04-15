@@ -36,7 +36,9 @@ DEFAULT_HEIGHT = 24
 DEFAULT_LED_COUNT = 600  # DEFAULT_WIDTH * DEFAULT_HEIGHT
 DEFAULT_LED_PIN = 18
 DEFAULT_BRIGHTNESS = 255
-DEFAULT_SERVER_URL = "ws://192.168.1.11:4000/controller/websocket"
+DEFAULT_SERVER_URL = (
+    "ws://192.168.1.11:4000/controller/websocket"  # Ensure correct path
+)
 DEFAULT_LOG_LEVEL = "INFO"
 
 # Grid layout and orientation options
@@ -590,7 +592,8 @@ class LegridController:
         while running:
             try:
                 # Create WebSocket connection
-                # Use the proper Phoenix Channel WebSocket path
+                # Note: For Phoenix channels, use a URL like:
+                # ws://192.168.1.11:4000/controller/websocket
                 self.ws = websocket.WebSocketApp(
                     self.server_url,
                     on_open=self.on_open,
@@ -613,11 +616,10 @@ class LegridController:
 
                 stats_thread = Thread(target=stats_sender)
                 stats_thread.daemon = True
-                stats_thread.start()  # Start the thread
 
-                # Connect to the server with ping enabled for responsiveness
+                # Connect to the server
                 logger.info(f"Connecting to {self.server_url}...")
-                self.ws.run_forever(ping_interval=1, ping_timeout=5)
+                self.ws.run_forever()
 
                 # If we get here, the connection was closed
                 if running:
