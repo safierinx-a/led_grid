@@ -221,8 +221,32 @@ class LegridController:
             return
 
         try:
-            # Dump the first 20 bytes for debugging
-            if priority:  # Only log for priority frames to avoid log spam
+            # Check for WebSocket control frames - common patterns
+            if len(data) >= 2:
+                # WebSocket close frame (opcode 8)
+                if data[0] == 0x88 or data[0] == 0x8:
+                    logger.info("Ignoring WebSocket close frame")
+                    return
+
+                # WebSocket ping frame (opcode 9)
+                if data[0] == 0x89 or data[0] == 0x9:
+                    logger.info("Ignoring WebSocket ping frame")
+                    return
+
+                # WebSocket pong frame (opcode 10)
+                if data[0] == 0x8A or data[0] == 0xA:
+                    logger.info("Ignoring WebSocket pong frame")
+                    return
+
+                # Phoenix protocol version check - it should be between 0-9 for our LED protocol
+                if data[0] > 10:
+                    logger.info(
+                        f"Ignoring binary data with invalid protocol version: {data[0]}"
+                    )
+                    return
+
+            # Dump the first 20 bytes for debugging (only for priority frames to avoid log spam)
+            if priority:
                 logger.debug(f"Binary frame first 20 bytes (hex): {data[:20].hex()}")
 
             # Parse the header - using little-endian to match server encoding
@@ -232,15 +256,12 @@ class LegridController:
             width = struct.unpack("<H", data[6:8])[0]
             height = struct.unpack("<H", data[8:10])[0]
 
-            # Always log protocol version issues
-            if version != 1:
+            # Do basic sanity checks on the frame data
+            if width == 0 or height == 0 or width > 1000 or height > 1000:
                 logger.warning(
-                    f"Unexpected protocol version: {version}, attempting to process anyway"
+                    f"Suspicious frame dimensions: {width}x{height}, ignoring frame"
                 )
-                # Try to detect probable Phoenix WebSocket handshake messages
-                if data[0:2] == b"\x88\x02":  # Common WebSocket control frame
-                    logger.info("Detected WebSocket control frame, ignoring")
-                    return
+                return
 
             # Skip detailed logging in high frame rate scenarios to reduce latency
             if (
@@ -249,17 +270,6 @@ class LegridController:
                 logger.debug(
                     f"Frame header: version={version}, type={msg_type}, id={frame_id}, dims={width}x{height}"
                 )
-
-            # Handle common bit patterns by converting them to known formats
-            if (
-                version > 100
-            ):  # Likely a WebSocket protocol message or other non-frame data
-                logger.info(f"Handling non-standard protocol version: {version}")
-                # For version 123, try assuming it's actually a full frame type 1 with corrupted header
-                msg_type = 1  # Force to full frame
-                # Try to infer dimensions from our configuration
-                width = self.width
-                height = self.height
 
             # Validate message type - but be lenient
             if msg_type not in (1, 2):
@@ -444,26 +454,30 @@ class LegridController:
         try:
             # Check if the message is binary or text
             if isinstance(message, bytes):
-                # We shouldn't normally receive binary WebSocket messages with Phoenix channels
-                # But if we do, let's try to decode it as a binary frame directly
-                logger.info(
-                    "Received binary WebSocket message, trying to process it directly"
-                )
-                # Try to process the binary frame directly
-                try:
-                    self.update_leds_from_binary(message, priority=True)
-                except Exception as bin_error:
-                    logger.error(f"Failed to process binary message: {bin_error}")
-                    # As a fallback, try to decode it from base64
-                    try:
-                        # Try to decode as base64 if that's how it was encoded
-                        decoded = base64.b64decode(message)
-                        logger.info(
-                            f"Decoded binary message as base64, length: {len(decoded)}"
+                # Check for WebSocket control frames first
+                if len(message) >= 1:
+                    opcode = message[0] & 0xF if len(message) > 0 else None
+                    if opcode in [0x8, 0x9, 0xA]:  # Close, Ping, Pong frames
+                        logger.debug(
+                            f"Received WebSocket control frame (opcode: {opcode})"
                         )
-                        self.update_leds_from_binary(decoded, priority=True)
-                    except Exception as b64_error:
-                        logger.error(f"Failed to decode binary as base64: {b64_error}")
+                        return
+
+                    # Phoenix heartbeat messages often have specific patterns
+                    if len(message) >= 4 and message[0] == 0x1 and message[1] == 0x1:
+                        logger.debug("Received Phoenix heartbeat message")
+                        return
+
+                # Only process likely frame data - check for valid protocol versions
+                if len(message) >= 10 and message[0] <= 10:
+                    logger.debug(
+                        f"Processing binary WebSocket message ({len(message)} bytes)"
+                    )
+                    self.update_leds_from_binary(message, priority=False)
+                else:
+                    logger.info(
+                        f"Ignoring binary WebSocket message: first byte = {message[0] if len(message) > 0 else 'unknown'}"
+                    )
             else:
                 # Process Phoenix Channel message (JSON)
                 data = json.loads(message)
