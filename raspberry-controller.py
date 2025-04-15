@@ -100,6 +100,10 @@ class LegridController:
         self.server_url = args.server_url
         self.controller_id = str(uuid.uuid4())
 
+        # Pattern tracking
+        self.last_pattern_id = None
+        self.last_parameters = None
+
         # Grid layout options
         self.layout = args.layout
         self.flip_x = args.flip_x
@@ -207,7 +211,7 @@ class LegridController:
         # Convert to linear index
         return y * self.width + x
 
-    def update_leds_from_binary(self, data):
+    def update_leds_from_binary(self, data, priority=False):
         """Update LEDs from binary frame data"""
         # Check if we have enough data for the header
         if len(data) < 10:
@@ -221,10 +225,13 @@ class LegridController:
         width = struct.unpack("<H", data[6:8])[0]
         height = struct.unpack("<H", data[8:10])[0]
 
-        # Log header info for debugging
-        logger.debug(
-            f"Frame header: version={version}, type={msg_type}, id={frame_id}, dims={width}x{height}"
-        )
+        # Skip detailed logging in high frame rate scenarios to reduce latency
+        if (
+            priority or self.stats["fps"] < 20
+        ):  # Only log details at lower frame rates or for priority updates
+            logger.debug(
+                f"Frame header: version={version}, type={msg_type}, id={frame_id}, dims={width}x{height}"
+            )
 
         # Validate header
         if version != 1:
@@ -247,9 +254,9 @@ class LegridController:
         # Extract pixel data based on message type
         pixel_data = data[10:]
         if msg_type == 1:  # Full frame
-            self.update_leds_from_pixels(pixel_data, width, height)
+            self.update_leds_from_pixels(pixel_data, width, height, priority=priority)
         elif msg_type == 2:  # Delta frame
-            self.apply_delta_frame(pixel_data)
+            self.apply_delta_frame(pixel_data, priority=priority)
 
         # Update stats
         self.stats["frames_received"] += 1
@@ -262,7 +269,7 @@ class LegridController:
         self.stats["last_frame_time"] = current_time
         self.stats["frames_displayed"] += 1
 
-    def update_leds_from_pixels(self, pixel_data, width, height):
+    def update_leds_from_pixels(self, pixel_data, width, height, priority=False):
         """Update all LEDs from pixel data (full frame), applying layout transformation"""
         if len(pixel_data) < width * height * 3:
             logger.warning(
@@ -270,12 +277,13 @@ class LegridController:
             )
             # Still try to update as many pixels as we can
 
-        # Clear all LEDs first
-        for i in range(self.led_count):
-            if HARDWARE_AVAILABLE:
-                self.strip[i] = (0, 0, 0)
-            else:
-                self.strip.setPixelColor(i, 0)
+        # Clear all LEDs first if this is a priority update (redundant if already cleared by pattern change)
+        if priority:
+            for i in range(self.led_count):
+                if HARDWARE_AVAILABLE:
+                    self.strip[i] = (0, 0, 0)
+                else:
+                    self.strip.setPixelColor(i, 0)
 
         # Update LEDs using the mapping function
         updated_leds = set()
@@ -289,6 +297,10 @@ class LegridController:
                     r = pixel_data[src_idx]
                     g = pixel_data[src_idx + 1]
                     b = pixel_data[src_idx + 2]
+
+                    # Skip transparent/black pixels in non-priority mode (optimization)
+                    if not priority and r == 0 and g == 0 and b == 0:
+                        continue
 
                     # Map to physical LED position
                     dest_idx = self.map_pixel_index(x, y)
@@ -307,9 +319,11 @@ class LegridController:
         else:
             self.strip.show()
 
-        logger.debug(f"Updated {len(updated_leds)} LEDs from full frame")
+        # Only log detailed info at lower fps or for priority updates
+        if priority or self.stats["fps"] < 20:
+            logger.debug(f"Updated {len(updated_leds)} LEDs from full frame")
 
-    def apply_delta_frame(self, delta_data):
+    def apply_delta_frame(self, delta_data, priority=False):
         """Apply a delta frame (only changed pixels)"""
         if len(delta_data) < 2:
             logger.warning("Delta frame too small")
@@ -328,6 +342,7 @@ class LegridController:
         # Track updated LEDs for logging
         updated_leds = set()
 
+        # For priority updates, process immediately without any optimizations
         for i in range(num_deltas):
             index = i * 5
             if index + 4 < len(delta_data):
@@ -336,6 +351,10 @@ class LegridController:
                 r = delta_data[index + 2]
                 g = delta_data[index + 3]
                 b = delta_data[index + 4]
+
+                # Skip transparent/black pixels in non-priority mode (optimization)
+                if not priority and r == 0 and g == 0 and b == 0:
+                    continue
 
                 # Convert linear index to x,y for mapping
                 x = pixel_index % self.width
@@ -358,7 +377,9 @@ class LegridController:
         else:
             self.strip.show()
 
-        logger.debug(f"Updated {len(updated_leds)} LEDs from delta frame")
+        # Only log detailed info at lower fps or for priority updates
+        if priority or self.stats["fps"] < 20:
+            logger.debug(f"Updated {len(updated_leds)} LEDs from delta frame")
 
     def on_open(self, ws):
         """Handle WebSocket connection open"""
@@ -396,7 +417,9 @@ class LegridController:
                 event = data.get("event")
                 payload = data.get("payload", {})
 
-                logger.debug(f"Received event: {event}")
+                # Only log non-frame events to reduce spam
+                if event != "frame":
+                    logger.debug(f"Received event: {event}")
 
                 if event == "phx_reply" and payload.get("status") == "ok":
                     # Join confirmation
@@ -405,22 +428,79 @@ class LegridController:
                 elif event == "frame":
                     # Handle frame message - contains binary data in payload["binary"]
                     if "binary" in payload:
+                        # Check if this is a new pattern or parameters changed
+                        clear_needed = False
+                        priority_update = False  # Flag for high-priority updates
+
+                        # Check for pattern ID changes
+                        if "pattern_id" in payload:
+                            if (
+                                not hasattr(self, "last_pattern_id")
+                                or self.last_pattern_id != payload["pattern_id"]
+                            ):
+                                self.last_pattern_id = payload["pattern_id"]
+                                clear_needed = True
+                                priority_update = (
+                                    True  # Pattern changes are highest priority
+                                )
+                                logger.info(
+                                    f"New pattern detected (ID: {self.last_pattern_id}). Clearing LEDs."
+                                )
+
+                        # Check for parameter changes
+                        if "parameters" in payload:
+                            if (
+                                not hasattr(self, "last_parameters")
+                                or self.last_parameters != payload["parameters"]
+                            ):
+                                param_diff = ""
+                                if hasattr(self, "last_parameters"):
+                                    # Only log changes in non-high-fps scenarios
+                                    if self.stats["fps"] < 20:
+                                        old_params = set(self.last_parameters.items())
+                                        new_params = set(payload["parameters"].items())
+                                        changes = new_params - old_params
+                                        if changes:
+                                            param_diff = f" Changes: {changes}"
+                                            priority_update = (
+                                                True  # Parameter changes get priority
+                                            )
+
+                                self.last_parameters = payload["parameters"].copy()
+                                clear_needed = True
+                                logger.info(
+                                    f"Pattern parameters changed.{param_diff} Clearing LEDs."
+                                )
+
+                        # Clear LEDs if needed before applying new frame
+                        if clear_needed:
+                            self.clear_leds()
+
                         # Record time of frame receipt for latency measurements
                         receipt_time = time.time()
 
                         # The binary data is base64 encoded in JSON
                         binary_data = base64.b64decode(payload["binary"])
-                        logger.debug(
-                            f"Received frame binary data of length {len(binary_data)}"
+
+                        # Only log at lower frame rates
+                        if self.stats["fps"] < 20:
+                            logger.debug(
+                                f"Received frame binary data of length {len(binary_data)}"
+                            )
+
+                        # Process frame data immediately to reduce latency
+                        # For high-priority updates (pattern/parameter changes), use immediate mode
+                        self.update_leds_from_binary(
+                            binary_data, priority=priority_update
                         )
 
-                        # Calculate latency from receipt to display
-                        self.update_leds_from_binary(binary_data)
-
-                        # Calculate and log latency
-                        display_time = time.time()
-                        latency_ms = (display_time - receipt_time) * 1000
-                        logger.debug(f"Frame processing latency: {latency_ms:.2f}ms")
+                        # Calculate and log latency only at lower frame rates
+                        if self.stats["fps"] < 20:
+                            display_time = time.time()
+                            latency_ms = (display_time - receipt_time) * 1000
+                            logger.debug(
+                                f"Frame processing latency: {latency_ms:.2f}ms"
+                            )
 
                 elif event == "request_stats":
                     # Send stats in response to request
@@ -591,7 +671,7 @@ class LegridController:
 
         while running:
             try:
-                # Create WebSocket connection
+                # Create WebSocket connection with optimized settings
                 # Note: For Phoenix channels, use a URL like:
                 # ws://192.168.1.11:4000/controller/websocket
                 self.ws = websocket.WebSocketApp(
@@ -616,10 +696,14 @@ class LegridController:
 
                 stats_thread = Thread(target=stats_sender)
                 stats_thread.daemon = True
+                stats_thread.start()  # Start the stats thread immediately
 
-                # Connect to the server
+                # Connect to the server with optimized settings
                 logger.info(f"Connecting to {self.server_url}...")
-                self.ws.run_forever()
+                # Set ping_interval to keep connection responsive and skip_utf8_validation for performance
+                self.ws.run_forever(
+                    ping_interval=1, ping_timeout=5, skip_utf8_validation=True
+                )
 
                 # If we get here, the connection was closed
                 if running:

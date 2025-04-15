@@ -63,8 +63,11 @@ defmodule LegridWeb.ControllerChannel do
     # Convert frame to binary format for efficient transmission
     frame_binary = frame_to_binary(frame)
 
+    # Base64 encode the binary data for JSON serialization
+    encoded_binary = Base.encode64(frame_binary)
+
     # Push the binary frame to the controller
-    push(socket, "frame", %{binary: frame_binary})
+    push(socket, "frame", %{binary: encoded_binary})
 
     {:noreply, socket}
   end
