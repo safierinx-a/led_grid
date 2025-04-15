@@ -216,58 +216,98 @@ class LegridController:
         # Check if we have enough data for the header
         if len(data) < 10:
             logger.warning(f"Received incomplete binary frame: {len(data)} bytes")
+            if len(data) > 0:
+                logger.debug(f"First bytes (hex): {data[: min(10, len(data))].hex()}")
             return
 
-        # Parse the header - using little-endian to match server encoding
-        version = data[0]
-        msg_type = data[1]
-        frame_id = struct.unpack("<I", data[2:6])[0]
-        width = struct.unpack("<H", data[6:8])[0]
-        height = struct.unpack("<H", data[8:10])[0]
+        try:
+            # Dump the first 20 bytes for debugging
+            if priority:  # Only log for priority frames to avoid log spam
+                logger.debug(f"Binary frame first 20 bytes (hex): {data[:20].hex()}")
 
-        # Skip detailed logging in high frame rate scenarios to reduce latency
-        if (
-            priority or self.stats["fps"] < 20
-        ):  # Only log details at lower frame rates or for priority updates
-            logger.debug(
-                f"Frame header: version={version}, type={msg_type}, id={frame_id}, dims={width}x{height}"
-            )
+            # Parse the header - using little-endian to match server encoding
+            version = data[0]
+            msg_type = data[1]
+            frame_id = struct.unpack("<I", data[2:6])[0]
+            width = struct.unpack("<H", data[6:8])[0]
+            height = struct.unpack("<H", data[8:10])[0]
 
-        # Validate header
-        if version != 1:
-            logger.warning(f"Unsupported protocol version: {version}")
-            return
+            # Always log protocol version issues
+            if version != 1:
+                logger.warning(
+                    f"Unexpected protocol version: {version}, attempting to process anyway"
+                )
+                # Try to detect probable Phoenix WebSocket handshake messages
+                if data[0:2] == b"\x88\x02":  # Common WebSocket control frame
+                    logger.info("Detected WebSocket control frame, ignoring")
+                    return
 
-        if msg_type not in (1, 2):
-            logger.warning(f"Unknown message type: {msg_type}")
-            return
+            # Skip detailed logging in high frame rate scenarios to reduce latency
+            if (
+                priority or self.stats["fps"] < 20
+            ):  # Only log details at lower frame rates or for priority updates
+                logger.debug(
+                    f"Frame header: version={version}, type={msg_type}, id={frame_id}, dims={width}x{height}"
+                )
 
-        # We can handle frame data with different dimensions, but log a warning
-        if width != self.width or height != self.height:
-            logger.warning(
-                f"Frame dimensions mismatch: {width}x{height} (expected {self.width}x{self.height})"
-            )
-            # We'll use the smaller dimensions
-            width = min(width, self.width)
-            height = min(height, self.height)
+            # Handle common bit patterns by converting them to known formats
+            if (
+                version > 100
+            ):  # Likely a WebSocket protocol message or other non-frame data
+                logger.info(f"Handling non-standard protocol version: {version}")
+                # For version 123, try assuming it's actually a full frame type 1 with corrupted header
+                msg_type = 1  # Force to full frame
+                # Try to infer dimensions from our configuration
+                width = self.width
+                height = self.height
 
-        # Extract pixel data based on message type
-        pixel_data = data[10:]
-        if msg_type == 1:  # Full frame
-            self.update_leds_from_pixels(pixel_data, width, height, priority=priority)
-        elif msg_type == 2:  # Delta frame
-            self.apply_delta_frame(pixel_data, priority=priority)
+            # Validate message type - but be lenient
+            if msg_type not in (1, 2):
+                logger.warning(
+                    f"Unknown message type: {msg_type}, defaulting to full frame"
+                )
+                msg_type = 1  # Default to full frame processing for unknown types
 
-        # Update stats
-        self.stats["frames_received"] += 1
-        current_time = time.time()
-        if self.stats["last_frame_time"] > 0:
-            time_diff = current_time - self.stats["last_frame_time"]
-            if time_diff > 0:
-                # Apply smoothing to FPS calculation
-                self.stats["fps"] = 0.8 * self.stats["fps"] + 0.2 * (1.0 / time_diff)
-        self.stats["last_frame_time"] = current_time
-        self.stats["frames_displayed"] += 1
+            # We can handle frame data with different dimensions, but log a warning
+            if width != self.width or height != self.height:
+                logger.warning(
+                    f"Frame dimensions mismatch: {width}x{height} (expected {self.width}x{self.height})"
+                )
+                # We'll use the smaller dimensions
+                width = min(width, self.width)
+                height = min(height, self.height)
+
+            # Extract pixel data based on message type
+            pixel_data = data[10:]
+            if msg_type == 1:  # Full frame
+                self.update_leds_from_pixels(
+                    pixel_data, width, height, priority=priority
+                )
+            elif msg_type == 2:  # Delta frame
+                self.apply_delta_frame(pixel_data, priority=priority)
+
+            # Update stats
+            self.stats["frames_received"] += 1
+            current_time = time.time()
+            if self.stats["last_frame_time"] > 0:
+                time_diff = current_time - self.stats["last_frame_time"]
+                if time_diff > 0:
+                    # Apply smoothing to FPS calculation
+                    self.stats["fps"] = 0.8 * self.stats["fps"] + 0.2 * (
+                        1.0 / time_diff
+                    )
+            self.stats["last_frame_time"] = current_time
+            self.stats["frames_displayed"] += 1
+
+        except Exception as e:
+            logger.error(f"Error processing binary frame: {e}")
+            if len(data) > 0:
+                logger.error(
+                    f"First 20 bytes (hex): {data[: min(20, len(data))].hex()}"
+                )
+            import traceback
+
+            logger.error(traceback.format_exc())
 
     def update_leds_from_pixels(self, pixel_data, width, height, priority=False):
         """Update all LEDs from pixel data (full frame), applying layout transformation"""
@@ -404,11 +444,26 @@ class LegridController:
         try:
             # Check if the message is binary or text
             if isinstance(message, bytes):
-                # Process binary frame - but we shouldn't receive these with Phoenix channels
-                logger.warning(
-                    "Received binary WebSocket message - not expected with Phoenix channels"
+                # We shouldn't normally receive binary WebSocket messages with Phoenix channels
+                # But if we do, let's try to decode it as a binary frame directly
+                logger.info(
+                    "Received binary WebSocket message, trying to process it directly"
                 )
-                self.update_leds_from_binary(message)
+                # Try to process the binary frame directly
+                try:
+                    self.update_leds_from_binary(message, priority=True)
+                except Exception as bin_error:
+                    logger.error(f"Failed to process binary message: {bin_error}")
+                    # As a fallback, try to decode it from base64
+                    try:
+                        # Try to decode as base64 if that's how it was encoded
+                        decoded = base64.b64decode(message)
+                        logger.info(
+                            f"Decoded binary message as base64, length: {len(decoded)}"
+                        )
+                        self.update_leds_from_binary(decoded, priority=True)
+                    except Exception as b64_error:
+                        logger.error(f"Failed to decode binary as base64: {b64_error}")
             else:
                 # Process Phoenix Channel message (JSON)
                 data = json.loads(message)
@@ -466,11 +521,11 @@ class LegridController:
                                                 True  # Parameter changes get priority
                                             )
 
-                                self.last_parameters = payload["parameters"].copy()
-                                clear_needed = True
-                                logger.info(
-                                    f"Pattern parameters changed.{param_diff} Clearing LEDs."
-                                )
+                            self.last_parameters = payload["parameters"].copy()
+                            clear_needed = True
+                            logger.info(
+                                f"Pattern parameters changed.{param_diff} Clearing LEDs."
+                            )
 
                         # Clear LEDs if needed before applying new frame
                         if clear_needed:
@@ -480,27 +535,47 @@ class LegridController:
                         receipt_time = time.time()
 
                         # The binary data is base64 encoded in JSON
-                        binary_data = base64.b64decode(payload["binary"])
+                        try:
+                            binary_data = base64.b64decode(payload["binary"])
 
-                        # Only log at lower frame rates
-                        if self.stats["fps"] < 20:
-                            logger.debug(
-                                f"Received frame binary data of length {len(binary_data)}"
+                            # Only log at lower frame rates
+                            if self.stats["fps"] < 20:
+                                logger.debug(
+                                    f"Received frame binary data of length {len(binary_data)}"
+                                )
+
+                            # Process frame data immediately to reduce latency
+                            # For high-priority updates (pattern/parameter changes), use immediate mode
+                            self.update_leds_from_binary(
+                                binary_data, priority=priority_update
                             )
 
-                        # Process frame data immediately to reduce latency
-                        # For high-priority updates (pattern/parameter changes), use immediate mode
-                        self.update_leds_from_binary(
-                            binary_data, priority=priority_update
-                        )
-
-                        # Calculate and log latency only at lower frame rates
-                        if self.stats["fps"] < 20:
-                            display_time = time.time()
-                            latency_ms = (display_time - receipt_time) * 1000
-                            logger.debug(
-                                f"Frame processing latency: {latency_ms:.2f}ms"
+                            # Calculate and log latency only at lower frame rates
+                            if self.stats["fps"] < 20:
+                                display_time = time.time()
+                                latency_ms = (display_time - receipt_time) * 1000
+                                logger.debug(
+                                    f"Frame processing latency: {latency_ms:.2f}ms"
+                                )
+                        except Exception as bin_error:
+                            logger.error(
+                                f"Failed to decode or process binary frame: {bin_error}"
                             )
+                            # Log the first part of the binary string to help with debugging
+                            if (
+                                isinstance(payload["binary"], str)
+                                and len(payload["binary"]) > 0
+                            ):
+                                logger.debug(
+                                    f"Binary data starts with: {payload['binary'][:20]}"
+                                )
+                            elif (
+                                isinstance(payload["binary"], bytes)
+                                and len(payload["binary"]) > 0
+                            ):
+                                logger.debug(
+                                    f"Binary data starts with (hex): {payload['binary'][:20].hex()}"
+                                )
 
                 elif event == "request_stats":
                     # Send stats in response to request
@@ -531,6 +606,13 @@ class LegridController:
                     )
         except Exception as e:
             logger.error(f"Error processing message: {e}")
+            # For debugging, log message type and first few bytes
+            if isinstance(message, bytes):
+                logger.error(
+                    f"Error on binary message, first 20 bytes: {message[:20].hex()}"
+                )
+            elif isinstance(message, str):
+                logger.error(f"Error on text message, first 40 chars: {message[:40]}")
             import traceback
 
             logger.error(traceback.format_exc())
