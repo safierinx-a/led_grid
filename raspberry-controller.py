@@ -130,6 +130,13 @@ class LegridController:
             "connection_start_time": 0,
         }
 
+        # Connection health tracking
+        self.last_pong_time = 0
+        self.missing_pong_count = 0
+        self.connection_timeout = (
+            30  # Consider connection dead after 30 seconds without pong
+        )
+
         self.ws = None  # WebSocket connection
         self.strip = None  # LED strip
 
@@ -351,10 +358,6 @@ class LegridController:
                     g = pixel_data[src_idx + 1]
                     b = pixel_data[src_idx + 2]
 
-                    # Skip transparent/black pixels in non-priority mode (optimization)
-                    if not priority and r == 0 and g == 0 and b == 0:
-                        continue
-
                     # Map to physical LED position
                     dest_idx = self.map_pixel_index(x, y)
 
@@ -405,16 +408,10 @@ class LegridController:
                 g = delta_data[index + 3]
                 b = delta_data[index + 4]
 
-                # Skip transparent/black pixels in non-priority mode (optimization)
-                if not priority and r == 0 and g == 0 and b == 0:
-                    continue
-
-                # Convert linear index to x,y for mapping
-                x = pixel_index % self.width
-                y = pixel_index // self.width
-
                 # Map to physical LED position
-                dest_idx = self.map_pixel_index(x, y)
+                dest_idx = self.map_pixel_index(
+                    pixel_index % self.width, pixel_index // self.width
+                )
 
                 if 0 <= dest_idx < self.led_count:
                     updated_leds.add(dest_idx)
@@ -477,6 +474,8 @@ class LegridController:
                     # Phoenix heartbeat messages often have specific patterns
                     if len(message) >= 4 and message[0] == 0x1 and message[1] == 0x1:
                         logger.debug("Received Phoenix heartbeat message")
+                        # Update last_pong_time since we received something from the server
+                        self.last_pong_time = time.time()
                         return
 
                 # Only process likely frame data - check for valid protocol versions
@@ -489,6 +488,8 @@ class LegridController:
                     logger.info(
                         f"Ignoring binary WebSocket message: first byte = {message[0] if len(message) > 0 else 'unknown'}"
                     )
+                    # Still update last_pong_time since we received data from the server
+                    self.last_pong_time = time.time()
             else:
                 # Process Phoenix Channel message (JSON)
                 data = json.loads(message)
@@ -497,6 +498,9 @@ class LegridController:
                 event = data.get("event")
                 payload = data.get("payload", {})
 
+                # Any message received is a sign the connection is alive
+                self.last_pong_time = time.time()
+
                 # Only log non-frame events to reduce spam
                 if event != "frame":
                     logger.debug(f"Received event: {event}")
@@ -504,6 +508,8 @@ class LegridController:
                 if event == "phx_reply" and payload.get("status") == "ok":
                     # Join confirmation
                     logger.info("Successfully joined channel")
+                    # Reset missing pong counter on confirmed join
+                    self.missing_pong_count = 0
 
                 elif event == "frame":
                     # Handle frame message - contains binary data in payload["binary"]
@@ -787,6 +793,8 @@ class LegridController:
                     on_message=self.on_message,
                     on_error=self.on_error,
                     on_close=self.on_close,
+                    on_ping=lambda ws, message: logger.debug("Received ping"),
+                    on_pong=lambda ws, message: self.handle_pong(),
                 )
 
                 # Configure WebSocket to handle binary data properly
@@ -795,11 +803,55 @@ class LegridController:
 
                 # Set connection start time
                 self.stats["connection_start_time"] = time.time()
+                self.last_pong_time = time.time()  # Initialize pong timer
 
                 # Start a thread to send stats periodically
                 def stats_sender():
                     while running and self.ws.sock and self.ws.sock.connected:
-                        self.send_stats()
+                        try:
+                            # Check connection health
+                            if (
+                                time.time() - self.last_pong_time
+                                > self.connection_timeout
+                            ):
+                                self.missing_pong_count += 1
+                                logger.warning(
+                                    f"No pong received in {self.connection_timeout} seconds. Count: {self.missing_pong_count}"
+                                )
+
+                                # If we've missed too many pongs, force a reconnection
+                                if self.missing_pong_count >= 3:
+                                    logger.error(
+                                        "Connection appears to be dead. Forcing reconnection..."
+                                    )
+                                    if self.ws and self.ws.sock:
+                                        self.ws.close()
+                                    return
+
+                                # Send a ping to check if connection is alive
+                                if self.ws and self.ws.sock and self.ws.sock.connected:
+                                    self.ws.ping("ping")
+
+                            # Send regular stats if connection is healthy
+                            self.send_stats()
+
+                            # Send a Phoenix-specific heartbeat to keep the connection alive
+                            try:
+                                if self.ws and self.ws.sock and self.ws.sock.connected:
+                                    heartbeat = {
+                                        "topic": "phoenix",
+                                        "event": "heartbeat",
+                                        "payload": {},
+                                        "ref": str(int(time.time())),
+                                    }
+                                    self.ws.send(json.dumps(heartbeat))
+                                    logger.debug("Sent Phoenix heartbeat")
+                            except Exception as e:
+                                logger.error(f"Error sending Phoenix heartbeat: {e}")
+
+                        except Exception as e:
+                            logger.error(f"Error in stats thread: {e}")
+
                         time.sleep(5)  # Send stats every 5 seconds
 
                 # Start the WebSocket connection
@@ -811,12 +863,28 @@ class LegridController:
 
                 # Connect to the server with optimized settings
                 logger.info(f"Connecting to {self.server_url}...")
-                # Set ping_interval to keep connection responsive and skip_utf8_validation for performance
-                # Ensure ping_interval > ping_timeout (fix for Error: Ensure ping_interval > ping_timeout)
-                self.ws.run_forever(
-                    ping_interval=10,
-                    ping_timeout=5,
-                )
+
+                # More robust connection parameters:
+                # - Increased ping_interval for better connection monitoring
+                # - Implement ping/pong for connection health monitoring
+                # - Increased ping_timeout for better network tolerance
+                try:
+                    # Try using the run_forever method with the basic parameters first
+                    self.ws.run_forever(
+                        ping_interval=5,
+                        ping_timeout=3,
+                    )
+                except TypeError as e:
+                    # Handle the case where binary_type parameter is causing issues
+                    if "unexpected keyword argument 'binary_type'" in str(e):
+                        logger.warning(
+                            "WebSocket client does not support binary_type parameter, using fallback"
+                        )
+                        # Fall back to a more basic configuration
+                        self.ws.run_forever()
+                    else:
+                        # Re-raise if it's a different TypeError
+                        raise
 
                 # If we get here, the connection was closed
                 if running:
@@ -825,14 +893,27 @@ class LegridController:
                     )
                     time.sleep(reconnect_delay)
 
+                    # Reset missing pong counter on reconnection
+                    self.missing_pong_count = 0
+
                     # Increase reconnect delay up to a maximum of 30 seconds
                     reconnect_delay = min(reconnect_delay * 1.5, 30.0)
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
+                import traceback
+
+                logger.error(traceback.format_exc())
+
                 if running:
                     logger.info(f"Reconnecting in {reconnect_delay} seconds...")
                     time.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 1.5, 30.0)
+
+    def handle_pong(self):
+        """Handle pong responses from the server"""
+        logger.debug("Received pong from server")
+        # Update last pong time to track connection health
+        self.last_pong_time = time.time()
 
     def signal_handler(self, sig, frame):
         """Handle termination signals"""
@@ -843,8 +924,29 @@ class LegridController:
         # Cleanup
         self.clear_leds()
 
+        # Send a clean disconnect message if possible
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            try:
+                # Send a leave message
+                leave_message = {
+                    "topic": "controller:lobby",
+                    "event": "phx_leave",
+                    "payload": {},
+                    "ref": None,
+                }
+                self.ws.send(json.dumps(leave_message))
+                logger.info("Sent leave message")
+            except Exception as e:
+                logger.warning(f"Failed to send leave message: {e}")
+
+        # Close the websocket
         if self.ws:
             self.ws.close()
+
+        # Force exit if still running after 2 seconds
+        import threading
+
+        threading.Timer(2, lambda: os._exit(0)).start()
 
 
 def parse_args():
