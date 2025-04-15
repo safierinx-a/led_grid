@@ -2,26 +2,22 @@ version: '3'
 
 services:
   legrid:
+    container_name: ${USER:-safierinx}_legrid
     build: ./legrid
     ports:
       - "4000:4000"
     environment:
       - MIX_ENV=dev
       - PORT=4000
-      - LEGRID_CONTROLLER_URL=ws://mock-controller:8080
       - LEGRID_GRID_WIDTH=25
       - LEGRID_GRID_HEIGHT=24
     volumes:
       - ./legrid:/app
     command: mix phx.server
-    depends_on:
-      - mock-controller
+    networks:
+      - default
 
-  mock-controller:
-    build: ./mock-controller
-    ports:
-      - "8080:8080"
-    environment:
-      - GRID_WIDTH=25
-      - GRID_HEIGHT=24
-      - PORT=8080 
+networks:
+  default:
+    name: ${USER:-safierinx}_network
+    external: true 

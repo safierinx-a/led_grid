@@ -126,3 +126,31 @@ MIT License
 ## Contributing
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+
+## Integration with Infrastructure Repository
+
+This LED grid controller is designed to work with the infrastructure repository located at `../infra`. The integration provides:
+
+- MQTT message broker for communication
+- Nginx reverse proxy for web access
+- Cloudflare Tunnel for secure internet access
+
+### How to run with infrastructure
+
+1. Start the infrastructure services first:
+
+   ```bash
+   cd ../infra
+   docker compose up -d
+   ```
+
+2. Once the infrastructure is running, you can start the LED grid services:
+
+   ```bash
+   cd ../led_grid
+   docker compose up -d
+   ```
+
+3. Access the LED grid dashboard at: `http://ledgrid.yourdomain.com`
+
+Note: The docker-compose.yml in this repository is configured to connect to the external network created by the infrastructure repository. Make sure the USER environment variable is set correctly in both .env files.
