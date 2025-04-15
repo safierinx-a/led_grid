@@ -701,8 +701,9 @@ class LegridController:
                 # Connect to the server with optimized settings
                 logger.info(f"Connecting to {self.server_url}...")
                 # Set ping_interval to keep connection responsive and skip_utf8_validation for performance
+                # Ensure ping_interval > ping_timeout (fix for Error: Ensure ping_interval > ping_timeout)
                 self.ws.run_forever(
-                    ping_interval=1, ping_timeout=5, skip_utf8_validation=True
+                    ping_interval=10, ping_timeout=5, skip_utf8_validation=True
                 )
 
                 # If we get here, the connection was closed
