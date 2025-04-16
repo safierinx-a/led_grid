@@ -2,22 +2,23 @@ version: '3'
 
 services:
   legrid:
-    container_name: ${USER:-safierinx}_legrid
-    build: ./legrid
+    build:
+      context: ./legrid
     ports:
       - "4000:4000"
     environment:
       - MIX_ENV=dev
+      - PHX_HOST=0.0.0.0
       - PORT=4000
-      - LEGRID_GRID_WIDTH=25
-      - LEGRID_GRID_HEIGHT=24
+      - GRID_WIDTH=25
+      - GRID_HEIGHT=24
     volumes:
       - ./legrid:/app
-    command: mix phx.server
-    networks:
-      - default
+      - /app/deps
+      - /app/_build
+    restart: unless-stopped
 
 networks:
   default:
-    name: ${USER:-safierinx}_network
+    name: ${USER}_network
     external: true 
