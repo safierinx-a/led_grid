@@ -50,6 +50,22 @@ defmodule Legrid.Controller.Interface do
   end
 
   @doc """
+  Activate monitor mode - used when monitor view is active.
+  Starts periodic stats collection.
+  """
+  def activate_monitor do
+    GenServer.call(__MODULE__, {:set_monitor_active, true})
+  end
+
+  @doc """
+  Deactivate monitor mode - used when monitor view is closed.
+  Stops periodic stats collection.
+  """
+  def deactivate_monitor do
+    GenServer.call(__MODULE__, {:set_monitor_active, false})
+  end
+
+  @doc """
   Send simulation configuration to the controller.
   """
   def send_simulation_config(options) do
