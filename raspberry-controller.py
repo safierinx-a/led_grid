@@ -1,4 +1,38 @@
 #!/usr/bin/env python3
+"""
+Legrid LED Matrix Controller - Raspberry Pi Client
+
+This script connects to a Phoenix server via WebSocket and controls
+WS2812B/NeoPixel LED strips/matrices according to the frames received.
+
+Features:
+- Real-time control of WS2812B/NeoPixel LED matrices
+- WebSocket communication with Phoenix server
+- Support for both hardware control and mock implementation
+- Automatic reconnection and error handling
+- Frame buffering for robust playback during network instability
+- Priority handling for pattern/parameter changes
+- Performance monitoring and statistics reporting
+
+Frame Buffer Mode:
+When enabled (default), frames are stored in a buffer and played back at a
+consistent frame rate. This improves playback smoothness during network
+jitter and provides resilience against brief connection issues.
+
+Buffer features:
+- Configurable buffer size (default: 20 frames)
+- Adjustable playback rate (default: 30 FPS)
+- Priority frame bypass (pattern changes skip the buffer)
+- Dashboard synchronization for monitoring
+- Automatic buffer management during connection issues
+
+To disable the buffer and use direct mode:
+    python raspberry-controller.py --no-buffer
+
+For fine-tuning buffer behavior:
+    python raspberry-controller.py --buffer-size 30 --buffer-rate 60
+"""
+
 import os
 import time
 import json
@@ -10,6 +44,7 @@ import logging
 import sys
 from datetime import datetime
 import base64
+import threading
 
 # Try to import the rpi_ws281x library for hardware control
 # If it's not available, we'll use a mock implementation for development
@@ -53,6 +88,12 @@ DEBUG_FRAMES = False  # Set to True to debug frame processing
 DEBUG_BLACK_PIXELS = False  # Set to True to analyze black pixels specifically
 DEBUG_DELTA_FRAMES = False  # Set to True to debug delta frame details
 FORCE_FULL_UPDATES = False  # Set to True to force updating all pixels on every frame
+
+# Frame buffer configuration
+DEFAULT_BUFFER_SIZE = 20  # Number of frames to buffer
+DEFAULT_BUFFER_PLAYBACK_RATE = 30  # Target FPS for buffered playback
+ENABLE_FRAME_BUFFER = True  # Enable frame buffering
+PRIORITY_FRAME_BYPASS = True  # Allow high-priority frames to bypass buffer
 
 # Global variables
 running = True
@@ -131,6 +172,16 @@ class LegridController:
         self.flip_y = args.flip_y
         self.transpose = args.transpose
 
+        # Frame buffer settings
+        self.enable_buffer = args.enable_buffer
+        self.buffer_size = args.buffer_size
+        self.buffer_playback_rate = args.buffer_rate
+        self.frame_buffer = []  # Queue of frames to be displayed
+        self.buffer_lock = threading.Lock()  # Thread safety for buffer access
+        self.buffer_running = False  # Flag to control buffer playback thread
+        self.last_displayed_frame_id = None  # Track the last displayed frame ID
+        self.priority_pattern_change = False  # Flag for high-priority pattern changes
+
         # Log grid configuration
         logger.info(
             f"Grid configuration: {self.width}x{self.height}, layout={self.layout}"
@@ -138,16 +189,29 @@ class LegridController:
         logger.info(
             f"Grid orientation: flip_x={self.flip_x}, flip_y={self.flip_y}, transpose={self.transpose}"
         )
+        if self.enable_buffer:
+            logger.info(
+                f"Frame buffer enabled: size={self.buffer_size}, target rate={self.buffer_playback_rate}fps"
+            )
+        else:
+            logger.info("Frame buffer disabled - using direct mode")
 
         # Statistics
         self.stats = {
             "frames_received": 0,
             "frames_displayed": 0,
+            "frames_buffered": 0,
+            "frames_dropped": 0,
+            "buffer_underruns": 0,
+            "buffer_overruns": 0,
             "connection_drops": 0,
             "last_frame_time": 0,
             "fps": 0,
+            "target_fps": self.buffer_playback_rate,
+            "buffer_fullness": 0,
             "connection_uptime": 0,
             "connection_start_time": 0,
+            "last_dashboard_sync": 0,
         }
 
         # Connection health tracking
@@ -659,7 +723,11 @@ class LegridController:
                         logger.info(
                             "Received binary message with protocol version 123, processing it"
                         )
-                        self.update_leds_from_binary(message, priority=True)
+                        # Process directly - priority frame
+                        if self.enable_buffer:
+                            self.buffer_frame(message, priority=True)
+                        else:
+                            self.update_leds_from_binary(message, priority=True)
                         return
 
                     # Phoenix heartbeat messages often have specific patterns
@@ -674,7 +742,13 @@ class LegridController:
                     logger.debug(
                         f"Processing binary WebSocket message ({len(message)} bytes)"
                     )
-                    self.update_leds_from_binary(message, priority=False)
+
+                    # Use frame buffer if enabled
+                    if self.enable_buffer:
+                        self.buffer_frame(message)
+                    else:
+                        # Direct mode - process immediately
+                        self.update_leds_from_binary(message, priority=False)
                 else:
                     logger.info(
                         f"Ignoring binary WebSocket message: first byte = {message[0] if len(message) > 0 else 'unknown'}"
@@ -706,8 +780,8 @@ class LegridController:
                     # Handle frame message - contains binary data in payload["binary"]
                     if "binary" in payload:
                         # Check if this is a new pattern or parameters changed
+                        is_priority = False
                         clear_needed = False
-                        priority_update = False  # Flag for high-priority updates
 
                         # Check for pattern ID changes
                         if "pattern_id" in payload:
@@ -717,7 +791,7 @@ class LegridController:
                             ):
                                 self.last_pattern_id = payload["pattern_id"]
                                 clear_needed = True
-                                priority_update = (
+                                is_priority = (
                                     True  # Pattern changes are highest priority
                                 )
                                 logger.info(
@@ -725,6 +799,10 @@ class LegridController:
                                 )
                                 # Force reinitialization of LED state when pattern changes
                                 self.led_state_initialized = False
+
+                                # If using buffer, clear it on pattern change
+                                if self.enable_buffer:
+                                    self.clear_frame_buffer()
 
                         # Check for parameter changes
                         if "parameters" in payload:
@@ -741,7 +819,7 @@ class LegridController:
                                         changes = new_params - old_params
                                         if changes:
                                             param_diff = f" Changes: {changes}"
-                                            priority_update = (
+                                            is_priority = (
                                                 True  # Parameter changes get priority
                                             )
 
@@ -753,6 +831,10 @@ class LegridController:
                             # Also reinitialize LED state on parameter changes
                             self.led_state_initialized = False
 
+                            # If using buffer, clear it on parameter change
+                            if self.enable_buffer:
+                                self.clear_frame_buffer()
+
                         # Increment frame counter
                         self.frame_counter += 1
 
@@ -760,7 +842,7 @@ class LegridController:
                         # Force a full clear periodically if full updates are enabled
                         if self.force_full_updates:
                             # Always treat as priority update which ensures full clearing
-                            priority_update = True
+                            is_priority = True
                             force_clear = (
                                 self.frame_counter % 10 == 0
                             )  # Every 10 frames
@@ -785,47 +867,31 @@ class LegridController:
                         try:
                             binary_data = base64.b64decode(payload["binary"])
 
+                            # Record frame ID if available for dashboard sync
+                            if "id" in payload:
+                                self.last_displayed_frame_id = payload["id"]
+
                             # Only log at lower frame rates
                             if self.stats["fps"] < 20:
                                 logger.debug(
                                     f"Received frame binary data of length {len(binary_data)}"
                                 )
 
-                            # Process frame data immediately to reduce latency
-                            # For high-priority updates (pattern/parameter changes), use immediate mode
-                            self.update_leds_from_binary(
-                                binary_data, priority=priority_update
-                            )
+                            # Process frame - either buffer it or display immediately
+                            if self.enable_buffer:
+                                # Add to buffer (with priority flag if needed)
+                                self.buffer_frame(binary_data, priority=is_priority)
+                            else:
+                                # Direct mode - process immediately
+                                self.update_leds_from_binary(
+                                    binary_data, priority=is_priority
+                                )
 
-                            # Calculate and log latency only at lower frame rates
-                            if self.stats["fps"] < 20:
-                                display_time = time.time()
-                                latency_ms = (display_time - receipt_time) * 1000
-                                logger.debug(
-                                    f"Frame processing latency: {latency_ms:.2f}ms"
-                                )
-                        except Exception as bin_error:
-                            logger.error(
-                                f"Failed to decode or process binary frame: {bin_error}"
-                            )
-                            # Log the first part of the binary string to help with debugging
-                            if (
-                                isinstance(payload["binary"], str)
-                                and len(payload["binary"]) > 0
-                            ):
-                                logger.debug(
-                                    f"Binary data starts with: {payload['binary'][:20]}"
-                                )
-                            elif (
-                                isinstance(payload["binary"], bytes)
-                                and len(payload["binary"]) > 0
-                            ):
-                                logger.debug(
-                                    f"Binary data starts with (hex): {payload['binary'][:20].hex()}"
-                                )
+                        except Exception as e:
+                            logger.error(f"Error processing binary frame data: {e}")
 
                 elif event == "request_stats":
-                    # Send stats in response to request
+                    # Send stats back to the server
                     self.send_stats()
 
                 elif event == "request_detailed_stats":
@@ -833,33 +899,45 @@ class LegridController:
                     self.send_detailed_stats()
 
                 elif event == "simulation_config":
-                    # Apply simulation config
-                    logger.info(f"Received simulation config: {payload}")
-                    # Process any configuration options
-                    if "orientation" in payload:
-                        self.process_orientation_config(payload["orientation"])
+                    # Handle simulation configuration changes
+                    if "buffer_size" in payload:
+                        new_size = int(payload["buffer_size"])
+                        if new_size >= 1:
+                            old_size = self.buffer_size
+                            self.buffer_size = new_size
+                            logger.info(
+                                f"Changed buffer size from {old_size} to {new_size}"
+                            )
 
-                elif event == "ping":
-                    # Respond to ping
-                    self.ws.send(
-                        json.dumps(
-                            {
-                                "topic": "controller:lobby",
-                                "event": "pong",
-                                "payload": {},
-                                "ref": None,
-                            }
-                        )
-                    )
+                    if "buffer_rate" in payload:
+                        new_rate = float(payload["buffer_rate"])
+                        if new_rate > 0:
+                            old_rate = self.buffer_playback_rate
+                            self.buffer_playback_rate = new_rate
+                            self.stats["target_fps"] = new_rate
+                            logger.info(
+                                f"Changed buffer playback rate from {old_rate} to {new_rate}"
+                            )
+
+                    if "enable_buffer" in payload:
+                        enable = bool(payload["enable_buffer"])
+                        if enable != self.enable_buffer:
+                            self.enable_buffer = enable
+                            if enable:
+                                logger.info("Enabled frame buffer")
+                            else:
+                                logger.info("Disabled frame buffer")
+                                self.clear_frame_buffer()
+
+                elif event == "clear_display":
+                    # Clear the display and buffer
+                    logger.info("Received clear display command")
+                    self.clear_leds()
+                    if self.enable_buffer:
+                        self.clear_frame_buffer()
+
         except Exception as e:
             logger.error(f"Error processing message: {e}")
-            # For debugging, log message type and first few bytes
-            if isinstance(message, bytes):
-                logger.error(
-                    f"Error on binary message, first 20 bytes: {message[:20].hex()}"
-                )
-            elif isinstance(message, str):
-                logger.error(f"Error on text message, first 40 chars: {message[:40]}")
             import traceback
 
             logger.error(traceback.format_exc())
@@ -916,8 +994,13 @@ class LegridController:
             "payload": {
                 "frames_received": self.stats["frames_received"],
                 "frames_displayed": self.stats["frames_displayed"],
+                "frames_buffered": self.stats["frames_buffered"],
+                "frames_dropped": self.stats["frames_dropped"],
                 "connection_drops": self.stats["connection_drops"],
                 "fps": round(self.stats["fps"], 1),
+                "target_fps": self.stats["target_fps"],
+                "buffer_enabled": self.enable_buffer,
+                "buffer_fullness": round(self.stats["buffer_fullness"] * 100, 1),
                 "connection_uptime": uptime,
                 "timestamp": datetime.now().isoformat(),
             },
@@ -969,9 +1052,21 @@ class LegridController:
                 "type": "detailed_stats",
                 "frames_received": self.stats["frames_received"],
                 "frames_displayed": self.stats["frames_displayed"],
+                "frames_buffered": self.stats["frames_buffered"],
+                "frames_dropped": self.stats["frames_dropped"],
+                "buffer_underruns": self.stats["buffer_underruns"],
+                "buffer_overruns": self.stats["buffer_overruns"],
                 "connection_drops": self.stats["connection_drops"],
                 "fps": round(self.stats["fps"], 1),
+                "target_fps": self.stats["target_fps"],
                 "connection_uptime": self.stats["connection_uptime"],
+                "buffer": {
+                    "enabled": self.enable_buffer,
+                    "size": self.buffer_size,
+                    "current_size": len(self.frame_buffer),
+                    "fullness": round(self.stats["buffer_fullness"] * 100, 1),
+                    "playback_rate": self.buffer_playback_rate,
+                },
                 "hardware_info": {
                     "type": "Raspberry Pi" if HARDWARE_AVAILABLE else "Mock",
                     "led_count": self.led_count,
@@ -984,6 +1079,7 @@ class LegridController:
                         "transpose": self.transpose,
                     },
                 },
+                "last_displayed_frame": self.last_displayed_frame_id,
             },
             "ref": None,
         }
@@ -1023,6 +1119,7 @@ class LegridController:
 
                 # Start a thread to send stats periodically
                 def stats_sender():
+                    buffer_status_counter = 0
                     while running and self.ws.sock and self.ws.sock.connected:
                         try:
                             # Check connection health
@@ -1050,6 +1147,11 @@ class LegridController:
 
                             # Send regular stats if connection is healthy
                             self.send_stats()
+
+                            # Display buffer status periodically (every 5 cycles = 25 seconds)
+                            buffer_status_counter += 1
+                            if buffer_status_counter % 5 == 0 and self.enable_buffer:
+                                self.display_buffer_status()
 
                             # Send a Phoenix-specific heartbeat to keep the connection alive
                             try:
@@ -1164,6 +1266,208 @@ class LegridController:
 
         threading.Timer(2, lambda: os._exit(0)).start()
 
+    def buffer_frame(self, frame_data, priority=False):
+        """Add a frame to the buffer for playback
+        Returns True if frame was added, False if it was dropped"""
+        if not self.enable_buffer or not frame_data:
+            return False
+
+        # For priority frames (pattern changes, etc.), we might want to flush the buffer
+        if priority and PRIORITY_FRAME_BYPASS:
+            logger.debug(
+                "Priority frame detected - bypassing buffer and displaying immediately"
+            )
+            # Display immediately
+            self.update_leds_from_binary(frame_data, priority=True)
+            # Clear buffer
+            with self.buffer_lock:
+                old_size = len(self.frame_buffer)
+                self.frame_buffer.clear()
+                self.stats["frames_dropped"] += old_size
+                self.stats["buffer_fullness"] = 0
+            # Still add to buffer as first frame
+            with self.buffer_lock:
+                self.frame_buffer.append((time.time(), frame_data))
+                self.stats["frames_buffered"] += 1
+                self.stats["buffer_fullness"] = (
+                    len(self.frame_buffer) / self.buffer_size
+                )
+            return True
+
+        # Normal frame handling - add to buffer if space available
+        with self.buffer_lock:
+            if len(self.frame_buffer) < self.buffer_size:
+                # Add frame with timestamp
+                self.frame_buffer.append((time.time(), frame_data))
+                self.stats["frames_buffered"] += 1
+                self.stats["buffer_fullness"] = (
+                    len(self.frame_buffer) / self.buffer_size
+                )
+
+                # Start buffer playback thread if not already running
+                if (
+                    not self.buffer_running
+                    and len(self.frame_buffer) >= self.buffer_size / 4
+                ):
+                    self.start_buffer_playback()
+                return True
+            else:
+                # Buffer full - drop the frame
+                self.stats["frames_dropped"] += 1
+                self.stats["buffer_overruns"] += 1
+                return False
+
+    def start_buffer_playback(self):
+        """Start the buffer playback thread"""
+        if self.buffer_running:
+            return  # Already running
+
+        self.buffer_running = True
+
+        # Start a thread to play back the buffered frames
+        playback_thread = threading.Thread(target=self.buffer_playback_loop)
+        playback_thread.daemon = True
+        playback_thread.start()
+        logger.info("Started frame buffer playback thread")
+
+    def buffer_playback_loop(self):
+        """Main loop for playing back buffered frames"""
+        frame_interval = (
+            1.0 / self.buffer_playback_rate
+        )  # Time between frames in seconds
+        last_frame_time = 0
+
+        try:
+            while self.buffer_running and running:
+                current_time = time.time()
+
+                # Check if it's time to display the next frame
+                if current_time - last_frame_time >= frame_interval:
+                    # Get next frame from buffer
+                    frame_data = None
+                    with self.buffer_lock:
+                        if self.frame_buffer:
+                            # Get and remove the oldest frame
+                            _, frame_data = self.frame_buffer.pop(0)
+                            self.stats["buffer_fullness"] = (
+                                len(self.frame_buffer) / self.buffer_size
+                            )
+
+                    if frame_data:
+                        # Display the frame
+                        self.update_leds_from_binary(frame_data, priority=False)
+                        self.stats["frames_displayed"] += 1
+
+                        # Calculate actual FPS with smoothing
+                        current_time = time.time()
+                        if last_frame_time > 0:
+                            time_diff = current_time - last_frame_time
+                            if time_diff > 0:
+                                # 80% previous value, 20% new value for smoothing
+                                self.stats["fps"] = 0.8 * self.stats["fps"] + 0.2 * (
+                                    1.0 / time_diff
+                                )
+
+                        last_frame_time = current_time
+
+                        # Synchronize dashboard with current state
+                        self.sync_dashboard_state()
+                    else:
+                        # Buffer underrun - no frames available
+                        self.stats["buffer_underruns"] += 1
+                        logger.debug("Buffer underrun - no frames available")
+
+                # Check if buffer is empty and has been empty for a while
+                with self.buffer_lock:
+                    if not self.frame_buffer and current_time - last_frame_time > 1.0:
+                        logger.debug(
+                            "Buffer empty for 1 second, stopping playback thread"
+                        )
+                        self.buffer_running = False
+                        break
+
+                # Sleep for a small amount to avoid CPU spinning
+                # Use 1/4 of frame interval to have good timing precision
+                time.sleep(frame_interval / 4)
+
+        except Exception as e:
+            logger.error(f"Error in buffer playback thread: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            self.buffer_running = False
+
+    def sync_dashboard_state(self):
+        """Send synchronization data to the dashboard to keep it in sync with the display"""
+        # Only sync periodically to avoid too much network traffic
+        current_time = time.time()
+        if (
+            current_time - self.stats["last_dashboard_sync"] < 0.5
+        ):  # Sync every 500ms max
+            return
+
+        # Create sync message with current display state
+        try:
+            sync_data = {
+                "topic": "controller:lobby",
+                "event": "display_sync",
+                "payload": {
+                    "controller_id": self.controller_id,
+                    "timestamp": current_time,
+                    "frame_id": self.last_displayed_frame_id,
+                    "buffer_stats": {
+                        "fullness": self.stats["buffer_fullness"],
+                        "fps": self.stats["fps"],
+                        "queue_length": len(self.frame_buffer),
+                    },
+                },
+                "ref": None,
+            }
+
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                self.ws.send(json.dumps(sync_data))
+                self.stats["last_dashboard_sync"] = current_time
+                logger.debug("Sent dashboard sync data")
+        except Exception as e:
+            logger.error(f"Error sending dashboard sync: {e}")
+
+    def clear_frame_buffer(self):
+        """Clear the frame buffer (used on pattern changes, errors, etc.)"""
+        with self.buffer_lock:
+            buffer_size = len(self.frame_buffer)
+            self.frame_buffer.clear()
+            self.stats["frames_dropped"] += buffer_size
+            self.stats["buffer_fullness"] = 0
+            logger.debug(f"Cleared frame buffer, dropped {buffer_size} frames")
+
+    def display_buffer_status(self):
+        """Display a simple visualization of buffer status in the logs"""
+        if not self.enable_buffer:
+            return
+
+        with self.buffer_lock:
+            buffer_size = len(self.frame_buffer)
+            fullness = buffer_size / self.buffer_size
+
+            # Create a simple text-based visualization
+            blocks = 20
+            filled = int(fullness * blocks)
+            bar = "[" + "█" * filled + "·" * (blocks - filled) + "]"
+
+            # Log the buffer status
+            logger.info(
+                f"Buffer status: {bar} {buffer_size}/{self.buffer_size} frames "
+                f"({fullness * 100:.1f}%) - FPS: {self.stats['fps']:.1f}/{self.buffer_playback_rate}"
+            )
+
+            # Also include info about performance
+            if self.stats["buffer_underruns"] > 0 or self.stats["buffer_overruns"] > 0:
+                logger.info(
+                    f"Performance: {self.stats['buffer_underruns']} underruns, "
+                    f"{self.stats['buffer_overruns']} overruns, "
+                    f"{self.stats['frames_dropped']} frames dropped"
+                )
+
 
 def parse_args():
     """Parse command line arguments"""
@@ -1197,7 +1501,7 @@ def parse_args():
         "--led-brightness",
         type=int,
         default=DEFAULT_BRIGHTNESS,
-        help=f"LED brightness (0-255, default: {DEFAULT_BRIGHTNESS})",
+        help=f"LED brightness (0-255) (default: {DEFAULT_BRIGHTNESS})",
     )
     parser.add_argument(
         "--server-url",
@@ -1213,13 +1517,13 @@ def parse_args():
         help=f"Logging level (default: {DEFAULT_LOG_LEVEL})",
     )
 
-    # Grid layout and orientation options
+    # Grid layout options
     parser.add_argument(
         "--layout",
         type=str,
         default=DEFAULT_LAYOUT,
         choices=["linear", "serpentine"],
-        help=f"LED strip layout pattern (default: {DEFAULT_LAYOUT})",
+        help=f"Grid layout (default: {DEFAULT_LAYOUT})",
     )
     parser.add_argument(
         "--flip-x",
@@ -1237,33 +1541,60 @@ def parse_args():
         "--transpose",
         action="store_true",
         default=DEFAULT_TRANSPOSE,
-        help="Transpose grid (swap X and Y axes)",
+        help="Transpose grid (rotate 90 degrees)",
     )
 
-    # Debugging options
+    # Debug options
     parser.add_argument(
         "--debug-frames",
         action="store_true",
         default=DEBUG_FRAMES,
-        help="Enable detailed frame debugging",
+        help="Debug frame processing",
     )
     parser.add_argument(
         "--debug-black-pixels",
         action="store_true",
         default=DEBUG_BLACK_PIXELS,
-        help="Debug black pixel handling specifically",
+        help="Debug black pixel handling",
     )
     parser.add_argument(
         "--debug-delta-frames",
         action="store_true",
         default=DEBUG_DELTA_FRAMES,
-        help="Debug delta frame details",
+        help="Debug delta frame processing",
     )
     parser.add_argument(
         "--force-full-updates",
         action="store_true",
         default=FORCE_FULL_UPDATES,
-        help="Force updating all pixels on every frame (may help with black pixel issues)",
+        help="Force full frame updates",
+    )
+
+    # Buffer options
+    parser.add_argument(
+        "--enable-buffer",
+        action="store_true",
+        default=ENABLE_FRAME_BUFFER,
+        help="Enable frame buffering for smoother playback",
+    )
+    parser.add_argument(
+        "--buffer-size",
+        type=int,
+        default=DEFAULT_BUFFER_SIZE,
+        help=f"Size of frame buffer (default: {DEFAULT_BUFFER_SIZE})",
+    )
+    parser.add_argument(
+        "--buffer-rate",
+        type=float,
+        default=DEFAULT_BUFFER_PLAYBACK_RATE,
+        help=f"Target FPS for buffer playback (default: {DEFAULT_BUFFER_PLAYBACK_RATE})",
+    )
+    parser.add_argument(
+        "--no-priority-bypass",
+        action="store_false",
+        dest="priority_bypass",
+        default=PRIORITY_FRAME_BYPASS,
+        help="Disable priority frame bypass (all frames go through buffer)",
     )
 
     return parser.parse_args()
