@@ -12,7 +12,7 @@ import Config
 
 # Configure Legrid application settings
 config :legrid,
-  # No controller URL - will run in standalone mode
+  controller_url: "ws://100.124.195.32:8080",
   grid_width: 25,
   grid_height: 24
 
