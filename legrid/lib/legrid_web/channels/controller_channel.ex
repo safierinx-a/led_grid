@@ -59,6 +59,23 @@ defmodule LegridWeb.ControllerChannel do
   end
 
   @impl true
+  def handle_in("display_sync", payload, socket) do
+    controller_id = socket.assigns.controller_id
+
+    # Forward display sync information to interface
+    Phoenix.PubSub.broadcast(
+      Legrid.PubSub,
+      "controller:events",
+      {:display_sync, controller_id, payload}
+    )
+
+    # Log at debug level
+    Logger.debug("Received display sync from controller #{controller_id}: buffer status: #{inspect(payload["buffer_stats"])}")
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:frame, frame}, socket) do
     # Convert frame to binary format for efficient transmission
     frame_binary = frame_to_binary(frame)
@@ -68,6 +85,30 @@ defmodule LegridWeb.ControllerChannel do
 
     # Push the binary frame to the controller
     push(socket, "frame", %{binary: encoded_binary})
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:frame_batch, frames, is_priority, _pattern_id}, socket) do
+    # Convert the batch of frames to a single binary message
+    batch_binary = frames_batch_to_binary(frames, is_priority)
+
+    # Send the binary batch directly using a raw socket send
+    # This bypass Phoenix Channel's JSON encoding for efficiency
+    send(self(), {:binary, batch_binary})
+
+    # Log the batch at debug level
+    Logger.debug("Sent batch of #{length(frames)} frames to controller #{socket.assigns.controller_id}")
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:binary, binary_data}, socket) do
+    # Send the binary data directly on the raw websocket
+    # This avoids any Phoenix Channel overhead, Base64 encoding, etc.
+    socket.transport_pid |> send({:socket_push, :binary, binary_data})
 
     {:noreply, socket}
   end
@@ -138,5 +179,25 @@ defmodule LegridWeb.ControllerChannel do
       # Pixel data
       pixel_data::binary
     >>
+  end
+
+  # Convert a batch of frames to binary format for batch transmission
+  defp frames_batch_to_binary(frames, is_priority) do
+    # Frame count and priority flag header
+    header = <<
+      0xB::8,                           # Batch identifier (1 byte)
+      length(frames)::little-integer-32, # Frame count (4 bytes)
+      (if is_priority, do: 1, else: 0)::8 # Priority flag (1 byte)
+    >>
+
+    # Convert each frame to binary and add to the batch
+    frame_binaries = for frame <- frames do
+      frame_binary = frame_to_binary(frame)
+      # Prefix each frame with its length
+      <<byte_size(frame_binary)::little-integer-32, frame_binary::binary>>
+    end
+
+    # Combine header and all frame data
+    IO.iodata_to_binary([header, frame_binaries])
   end
 end

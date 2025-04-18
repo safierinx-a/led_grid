@@ -11,6 +11,7 @@ defmodule Legrid.Application do
     controller_url = Application.get_env(:legrid, :controller_url, "ws://localhost:8080")
     grid_width = Application.get_env(:legrid, :grid_width, 25)
     grid_height = Application.get_env(:legrid, :grid_height, 24)
+    batch_size = Application.get_env(:legrid, :batch_size, 120)
 
     children = [
       # Start the Telemetry supervisor
@@ -21,6 +22,12 @@ defmodule Legrid.Application do
       {Legrid.Patterns.Registry, []},
       # Start the Pattern Runner
       {Legrid.Patterns.Runner, []},
+      # Start the Frame Buffer for batch transmission
+      {Legrid.Controller.FrameBuffer, [
+        batch_size: batch_size,
+        max_delay: 500,  # 500ms max before sending partial batch
+        min_frames: 5    # At least 5 frames before sending partial batch
+      ]},
       # Start the Controller Interface
       {Legrid.Controller.Interface, [
         url: controller_url,

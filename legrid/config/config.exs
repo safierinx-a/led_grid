@@ -8,7 +8,11 @@
 import Config
 
 config :legrid,
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  # Frame batch configuration
+  batch_size: 120,                 # Max frames per batch
+  batch_max_delay: 500,            # Max delay in ms before sending a partial batch
+  batch_min_frames: 5              # Min frames before sending a partial batch
 
 # Configures the endpoint
 config :legrid, LegridWeb.Endpoint,

@@ -85,6 +85,42 @@ defmodule LegridWeb.Components.MonitoringComponent do
               <div class="stat-value"><%= format_bytes(get_in(@detailed_stats, [:performance, "bytes_sent"])) %></div>
             </div>
           </div>
+
+          <%= if get_in(@detailed_stats, [:buffer]) do %>
+            <div class="stat-section">
+              <h4>Frame Buffer</h4>
+              <div class="stat-row">
+                <div class="stat-name">Fullness:</div>
+                <div class="stat-value"><%= format_percentage(get_in(@detailed_stats, [:buffer, "fullness"])) %></div>
+              </div>
+              <div class="stat-row">
+                <div class="stat-name">FPS:</div>
+                <div class="stat-value"><%= format_number(get_in(@detailed_stats, [:buffer, "fps"])) %> fps</div>
+              </div>
+              <div class="stat-row">
+                <div class="stat-name">Queue:</div>
+                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer, "queue_length"]) || 0 %> frames</div>
+              </div>
+            </div>
+          <% end %>
+
+          <%= if get_in(@detailed_stats, [:buffer_status]) do %>
+            <div class="stat-section">
+              <h4>Server Buffer</h4>
+              <div class="stat-row">
+                <div class="stat-name">Frames In Buffer:</div>
+                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :frames_in_buffer]) || 0 %></div>
+              </div>
+              <div class="stat-row">
+                <div class="stat-name">Batch Size:</div>
+                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :batch_size]) || 0 %> frames</div>
+              </div>
+              <div class="stat-row">
+                <div class="stat-name">Batches Sent:</div>
+                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :batches_sent]) || 0 %></div>
+              </div>
+            </div>
+          <% end %>
         </div>
       <% end %>
 
@@ -135,4 +171,16 @@ defmodule LegridWeb.Components.MonitoringComponent do
     "#{format_bytes(bytes_per_sec)}/s"
   end
   defp format_bandwidth(_), do: "0 B/s"
+
+  # Format a percentage value
+  defp format_percentage(value) when is_number(value) do
+    "#{Float.round(value * 100, 1)}%"
+  end
+  defp format_percentage(_), do: "0%"
+
+  # Format a number with 1 decimal place
+  defp format_number(value) when is_number(value) do
+    Float.round(value, 1)
+  end
+  defp format_number(_), do: 0.0
 end

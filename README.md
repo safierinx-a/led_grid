@@ -119,6 +119,29 @@ The controller supports two frame formats:
 }
 ```
 
+### Batch Frame Format
+
+The controller also supports batched frames for improved connection stability and animation performance:
+
+- 1 byte: 0xB (batch identifier)
+- 4 bytes: Frame count (uint32, little-endian)
+- 1 byte: Priority flag (1 = priority frames, 0 = normal frames)
+- For each frame:
+  - 4 bytes: Frame length (uint32, little-endian)
+  - N bytes: Frame data (in binary format as described above)
+
+Batch frames offer several advantages:
+
+- Reduced overhead by sending multiple frames in a single WebSocket message
+- Better buffering and playback during network instability
+- More efficient animation transmission
+
+You can test batch frame transmission using the included `batch-test.py` script:
+
+```bash
+python batch-test.py --frames 120 --pattern rainbow
+```
+
 ## License
 
 MIT License

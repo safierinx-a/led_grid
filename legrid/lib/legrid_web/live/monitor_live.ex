@@ -15,6 +15,8 @@ defmodule LegridWeb.MonitorLive do
         Interface.activate_monitor()
         # Request stats immediately
         request_stats()
+        # Schedule periodic stats refresh
+        schedule_stats_refresh()
       rescue
         _ -> :ok # Silently handle errors if the controller isn't available
       end
@@ -77,16 +79,34 @@ defmodule LegridWeb.MonitorLive do
 
   @impl true
   def handle_info({:controller_stats_detailed, stats}, socket) do
+    # Get buffer status
+    buffer_status = try do
+      Legrid.Controller.FrameBuffer.status()
+    rescue
+      _ -> %{available: false}
+    end
+
+    # Add buffer status to detailed stats
     detailed = %{
       system: stats["system"] || %{},
       performance: stats["performance"] || %{},
-      client: stats["client"] || %{}
+      client: stats["client"] || %{},
+      buffer: stats["buffer"] || %{},
+      buffer_status: buffer_status
     }
 
     # Update stats with client count from detailed stats
     new_stats = Map.put(socket.assigns.stats, :clients, get_in(detailed, [:system, "clients"]) || 0)
 
     {:noreply, assign(socket, detailed_stats: detailed, stats: new_stats)}
+  end
+
+  @impl true
+  def handle_info(:refresh_stats, socket) do
+    request_stats()
+    # Reschedule for the next refresh
+    schedule_stats_refresh()
+    {:noreply, socket}
   end
 
   @impl true
@@ -179,5 +199,10 @@ defmodule LegridWeb.MonitorLive do
     rescue
       _ -> {:error, :not_connected} # Silently handle errors if the controller isn't available
     end
+  end
+
+  defp schedule_stats_refresh do
+    # Refresh stats every 3 seconds
+    Process.send_after(self(), :refresh_stats, 3000)
   end
 end

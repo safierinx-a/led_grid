@@ -203,6 +203,15 @@ defmodule Legrid.Patterns.Runner do
         {:noreply, %{state | timer_ref: timer_ref, last_frame_time: now}}
 
       {:ok, frame, new_pattern_state} ->
+        # Add pattern ID to frame metadata if not already present
+        frame = if frame.metadata && Map.has_key?(frame.metadata, "pattern_id") do
+          frame
+        else
+          # Create or update metadata with pattern ID
+          metadata = (frame.metadata || %{}) |> Map.put("pattern_id", state.current_pattern)
+          %{frame | metadata: metadata}
+        end
+
         # Publish the frame
         Phoenix.PubSub.broadcast(Legrid.PubSub, "frames", {:frame, frame})
 

@@ -200,18 +200,22 @@ class LegridController:
         self.stats = {
             "frames_received": 0,
             "frames_displayed": 0,
-            "frames_buffered": 0,
             "frames_dropped": 0,
+            "frames_buffered": 0,
+            "batch_frames_received": 0,  # Counter for frames received in batch mode
+            "fps": 0,
+            "last_frame_time": 0,
+            "buffer_fullness": 0,
             "buffer_underruns": 0,
             "buffer_overruns": 0,
             "connection_drops": 0,
-            "last_frame_time": 0,
-            "fps": 0,
             "target_fps": self.buffer_playback_rate,
-            "buffer_fullness": 0,
             "connection_uptime": 0,
             "connection_start_time": 0,
             "last_dashboard_sync": 0,
+            "last_stats_time": time.time(),
+            "last_pong_time": time.time(),
+            "last_ping_time": 0,
         }
 
         # Connection health tracking
@@ -718,6 +722,14 @@ class LegridController:
                         )
                         return
 
+                    # Check if this is a batch frame message (starts with byte 0xB)
+                    if message[0] == 0xB and len(message) >= 9:
+                        logger.info(
+                            f"Received batch frame message ({len(message)} bytes)"
+                        )
+                        self.process_batch_frames(message)
+                        return
+
                     # Check if this might be a frame with protocol version 123
                     if message[0] == 123 and len(message) >= 10:
                         logger.info(
@@ -747,14 +759,15 @@ class LegridController:
                     if self.enable_buffer:
                         self.buffer_frame(message)
                     else:
-                        # Direct mode - process immediately
-                        self.update_leds_from_binary(message, priority=False)
+                        self.update_leds_from_binary(message)
                 else:
-                    logger.info(
-                        f"Ignoring binary WebSocket message: first byte = {message[0] if len(message) > 0 else 'unknown'}"
+                    logger.warning(
+                        f"Received unknown binary message format ({len(message)} bytes)"
                     )
-                    # Still update last_pong_time since we received data from the server
-                    self.last_pong_time = time.time()
+                    # Log the first few bytes for debugging
+                    if len(message) > 0:
+                        logger.debug(f"First 10 bytes: {message[:10].hex()}")
+
             else:
                 # Process Phoenix Channel message (JSON)
                 data = json.loads(message)
@@ -1467,6 +1480,93 @@ class LegridController:
                     f"{self.stats['buffer_overruns']} overruns, "
                     f"{self.stats['frames_dropped']} frames dropped"
                 )
+
+    def process_batch_frames(self, message):
+        """Process a batch of frames sent in a single message
+
+        Batch format:
+        - Byte 0: 0xB (batch identifier)
+        - Bytes 1-4: Frame count (uint32, little-endian)
+        - Byte 5: Priority flag (1 = priority, 0 = normal)
+        - For each frame:
+          - 4 bytes: Frame length (uint32, little-endian)
+          - N bytes: Frame data
+        """
+        try:
+            # Parse batch header
+            frame_count = struct.unpack("<I", message[1:5])[0]
+            is_priority = message[5] == 1
+
+            logger.info(
+                f"Processing batch with {frame_count} frames, priority={is_priority}"
+            )
+
+            # Extract and process individual frames
+            offset = 6
+            frames_processed = 0
+
+            # For high priority batches, clear the buffer first
+            if is_priority and self.enable_buffer:
+                logger.info("Priority batch received, clearing buffer")
+                self.clear_frame_buffer()
+
+            while offset < len(message) and frames_processed < frame_count:
+                # Check if we have enough data for the frame length
+                if offset + 4 > len(message):
+                    logger.warning(
+                        f"Batch truncated at frame {frames_processed + 1}/{frame_count}"
+                    )
+                    break
+
+                # Get frame length
+                frame_length = struct.unpack("<I", message[offset : offset + 4])[0]
+                offset += 4
+
+                # Check if we have enough data for the frame
+                if offset + frame_length > len(message):
+                    logger.warning(
+                        f"Batch truncated, frame {frames_processed + 1} incomplete"
+                    )
+                    break
+
+                # Extract frame data
+                frame_data = message[offset : offset + frame_length]
+                offset += frame_length
+
+                # Process the frame (buffer or display directly)
+                if self.enable_buffer:
+                    # For priority frames or when the buffer is empty, process faster
+                    if is_priority or len(self.frame_buffer) == 0:
+                        self.buffer_frame(frame_data, priority=is_priority)
+                    else:
+                        # Add to buffer with a small delay to avoid flooding
+                        self.buffer_frame(frame_data, priority=False)
+                else:
+                    # Direct mode - process immediately
+                    self.update_leds_from_binary(frame_data, priority=is_priority)
+
+                frames_processed += 1
+
+            # Update stats
+            self.stats["batch_frames_received"] += frames_processed
+
+            # If we processed all frames, log success
+            if frames_processed == frame_count:
+                logger.info(f"Successfully processed all {frame_count} frames in batch")
+            else:
+                logger.warning(
+                    f"Processed {frames_processed}/{frame_count} frames in batch"
+                )
+
+        except Exception as e:
+            logger.error(f"Error processing batch frames: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+
+            # Log the batch header for debugging
+            if len(message) >= 10:
+                logger.error(f"Batch header: {message[:10].hex()}")
 
 
 def parse_args():

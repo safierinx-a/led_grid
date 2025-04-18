@@ -72,6 +72,14 @@ defmodule Legrid.Controller.Interface do
     GenServer.cast(__MODULE__, {:send_simulation_config, options})
   end
 
+  @doc """
+  Get detailed stats about the controller and buffer status.
+  Used by the dashboard to display performance metrics.
+  """
+  def get_detailed_stats do
+    GenServer.call(__MODULE__, :get_detailed_stats)
+  end
+
   # Server callbacks
 
   @impl true
@@ -123,11 +131,42 @@ defmodule Legrid.Controller.Interface do
   end
 
   @impl true
+  def handle_call(:get_detailed_stats, _from, state) do
+    # Get buffer status
+    buffer_status = maybe_get_buffer_status()
+
+    # Combine controller info with detailed stats
+    stats = %{
+      connected: state.connected,
+      controller_count: length(state.connected_controllers),
+      controllers: state.connected_controllers,
+      buffer_status: buffer_status,
+      detailed_stats: state.last_detailed_stats || %{}
+    }
+
+    # If we have detailed stats, broadcast them to refresh the UI
+    if state.last_detailed_stats do
+      # Add buffer status to the detailed stats
+      detailed_stats = Map.put(state.last_detailed_stats, :buffer_status, buffer_status)
+      broadcast_detailed_stats_update(detailed_stats)
+    end
+
+    {:reply, stats, state}
+  end
+
+  @impl true
   def handle_cast({:send_frame, frame}, state) do
-    # Broadcast the frame to all controllers via the PubSub system
+    # Use the frame buffer instead of broadcasting directly
     if state.connected do
-      # Convert frame to format that can be sent
-      Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:frames", {:frame, frame})
+      # Send the frame to the buffer, passing the pattern ID if available
+      pattern_id = if frame.metadata && Map.has_key?(frame.metadata, "pattern_id") do
+        frame.metadata["pattern_id"]
+      else
+        nil
+      end
+
+      # Add to buffer - will be sent in batches
+      Legrid.Controller.FrameBuffer.add_frame(frame, pattern_id: pattern_id)
     end
 
     # Always update last frame
@@ -158,10 +197,17 @@ defmodule Legrid.Controller.Interface do
 
   @impl true
   def handle_info({:frame, frame}, state) do
-    # Forward the frame to all connected controllers
+    # Forward the frame to the buffer instead of broadcasting directly
     if state.connected do
-      # This broadcast will be received by the ControllerChannel
-      Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:frames", {:frame, frame})
+      # Get pattern ID from metadata if available
+      pattern_id = if frame.metadata && Map.has_key?(frame.metadata, "pattern_id") do
+        frame.metadata["pattern_id"]
+      else
+        nil
+      end
+
+      # Add to buffer - will be sent in batches
+      Legrid.Controller.FrameBuffer.add_frame(frame, pattern_id: pattern_id)
     end
 
     {:noreply, %{state | last_frame: frame}}
@@ -178,9 +224,13 @@ defmodule Legrid.Controller.Interface do
       first_controller_joined: true
     }
 
-    # If we have a last frame, send it to the new controller
+    # If we have a last frame, send it to the new controller as priority
     if new_state.last_frame do
+      # Send directly as high priority to immediately show something
       Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:frames", {:frame, new_state.last_frame})
+
+      # Also flush the buffer to ensure consistent state
+      Legrid.Controller.FrameBuffer.flush()
     end
 
     {:noreply, new_state}
@@ -207,7 +257,36 @@ defmodule Legrid.Controller.Interface do
     Logger.debug("Received stats from controller #{controller_id}: #{inspect(stats)}")
 
     # Store the stats update
-    {:noreply, %{state | last_stats_update: {controller_id, stats}}}
+    new_state = %{state | last_stats_update: {controller_id, stats}}
+
+    # Broadcast the stats update to the LiveView
+    broadcast_stats_update(stats)
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info({:display_sync, controller_id, sync_data}, state) do
+    Logger.debug("Received display sync from controller #{controller_id}")
+
+    # Store the buffer stats for dashboard access
+    buffer_stats = sync_data["buffer_stats"] || %{}
+
+    # Create a combined stats structure with both buffer stats and basic stats
+    detailed_stats = %{
+      buffer: buffer_stats,
+      controller_id: controller_id,
+      timestamp: DateTime.utc_now(),
+      connected: true
+    }
+
+    # Store these stats for dashboard access
+    new_state = %{state | last_detailed_stats: detailed_stats}
+
+    # Broadcast the detailed stats update to the LiveView
+    broadcast_detailed_stats_update(detailed_stats)
+
+    {:noreply, new_state}
   end
 
   @impl true
@@ -215,8 +294,34 @@ defmodule Legrid.Controller.Interface do
     if state.connected do
       # Request detailed stats from controllers
       Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:frames", {:request_detailed_stats, nil})
+
+      # If we have any detailed stats, broadcast them immediately too
+      if state.last_detailed_stats do
+        broadcast_detailed_stats_update(state.last_detailed_stats)
+      end
     end
 
     {:noreply, state}
+  end
+
+  # Helper functions
+
+  defp maybe_get_buffer_status do
+    # Try to get buffer status if the module is available
+    try do
+      Legrid.Controller.FrameBuffer.status()
+    rescue
+      _ -> %{available: false}
+    end
+  end
+
+  # Broadcast stats updates to LiveView components
+  defp broadcast_stats_update(stats) do
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller_stats", {:controller_stats, stats})
+  end
+
+  # Broadcast detailed stats updates to LiveView components
+  defp broadcast_detailed_stats_update(detailed_stats) do
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller_stats", {:controller_stats_detailed, detailed_stats})
   end
 end
