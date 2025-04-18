@@ -182,6 +182,10 @@ class LegridController:
         self.last_displayed_frame_id = None  # Track the last displayed frame ID
         self.priority_pattern_change = False  # Flag for high-priority pattern changes
 
+        # Batch tracking for flow control
+        self.last_batch_sequence = 0  # Last received batch sequence number
+        self.last_batch_timestamp = 0  # Timestamp of last received batch
+
         # Log grid configuration
         logger.info(
             f"Grid configuration: {self.width}x{self.height}, layout={self.layout}"
@@ -1349,6 +1353,8 @@ class LegridController:
             1.0 / self.buffer_playback_rate
         )  # Time between frames in seconds
         last_frame_time = 0
+        last_buffer_status_time = 0
+        buffer_status_interval = 0.5  # Send buffer status every 500ms
 
         try:
             while self.buffer_running and running:
@@ -1383,15 +1389,29 @@ class LegridController:
 
                         last_frame_time = current_time
 
-                        # Synchronize dashboard with current state
-                        self.sync_dashboard_state()
+                        # Synchronize dashboard with current state immediately after frame display
+                        if (
+                            current_time - last_buffer_status_time
+                            >= buffer_status_interval
+                        ):
+                            self.sync_dashboard_state(include_flow_control=True)
+                            last_buffer_status_time = current_time
                     else:
                         # Buffer underrun - no frames available
                         self.stats["buffer_underruns"] += 1
                         logger.debug("Buffer underrun - no frames available")
 
+                        # Send buffer status immediately to request more frames
+                        self.sync_dashboard_state(include_flow_control=True)
+                        last_buffer_status_time = current_time
+
                 # Check if buffer is empty and has been empty for a while
                 with self.buffer_lock:
+                    # Check if it's time to send buffer status
+                    if current_time - last_buffer_status_time >= buffer_status_interval:
+                        self.sync_dashboard_state(include_flow_control=True)
+                        last_buffer_status_time = current_time
+
                     if not self.frame_buffer and current_time - last_frame_time > 1.0:
                         logger.debug(
                             "Buffer empty for 1 second, stopping playback thread"
@@ -1410,14 +1430,34 @@ class LegridController:
             logger.error(traceback.format_exc())
             self.buffer_running = False
 
-    def sync_dashboard_state(self):
+    def sync_dashboard_state(self, include_flow_control=False):
         """Send synchronization data to the dashboard to keep it in sync with the display"""
         # Only sync periodically to avoid too much network traffic
         current_time = time.time()
         if (
             current_time - self.stats["last_dashboard_sync"] < 0.5
-        ):  # Sync every 500ms max
+        ) and not include_flow_control:  # Sync every 500ms max
             return
+
+        # Create flow control metrics
+        with self.buffer_lock:
+            buffer_length = len(self.frame_buffer)
+            buffer_fullness = (
+                buffer_length / self.buffer_size if self.buffer_size > 0 else 0
+            )
+
+        flow_control = {
+            "buffer_fullness": buffer_fullness,
+            "buffer_size": self.buffer_size,
+            "playback_rate": self.buffer_playback_rate,
+            "actual_fps": self.stats["fps"],
+            "underruns": self.stats["buffer_underruns"],
+            "overruns": self.stats["buffer_overruns"],
+            "can_receive": buffer_fullness
+            < 0.8,  # Accept more batches if buffer is below 80%
+            "sequence_received": self.last_batch_sequence,
+            "timestamp": current_time,
+        }
 
         # Create sync message with current display state
         try:
@@ -1429,10 +1469,11 @@ class LegridController:
                     "timestamp": current_time,
                     "frame_id": self.last_displayed_frame_id,
                     "buffer_stats": {
-                        "fullness": self.stats["buffer_fullness"],
+                        "fullness": buffer_fullness,
                         "fps": self.stats["fps"],
-                        "queue_length": len(self.frame_buffer),
+                        "queue_length": buffer_length,
                     },
+                    "flow_control": flow_control,
                 },
                 "ref": None,
             }
@@ -1440,7 +1481,10 @@ class LegridController:
             if self.ws and self.ws.sock and self.ws.sock.connected:
                 self.ws.send(json.dumps(sync_data))
                 self.stats["last_dashboard_sync"] = current_time
-                logger.debug("Sent dashboard sync data")
+                logger.debug(
+                    "Sent dashboard sync data"
+                    + (" with flow control" if include_flow_control else "")
+                )
         except Exception as e:
             logger.error(f"Error sending dashboard sync: {e}")
 
@@ -1488,27 +1532,82 @@ class LegridController:
         - Byte 0: 0xB (batch identifier)
         - Bytes 1-4: Frame count (uint32, little-endian)
         - Byte 5: Priority flag (1 = priority, 0 = normal)
+        - Bytes 6-9: Sequence number (uint32, little-endian)
+        - Bytes 10-17: Timestamp (uint64, little-endian)
         - For each frame:
           - 4 bytes: Frame length (uint32, little-endian)
           - N bytes: Frame data
         """
         try:
+            # Parse basic header first
+            if len(message) < 18:  # Minimal header size
+                logger.warning(
+                    f"Batch too short ({len(message)} bytes), need at least 18 bytes"
+                )
+                return
+
             # Parse batch header
             frame_count = struct.unpack("<I", message[1:5])[0]
             is_priority = message[5] == 1
 
+            # Check for extended header with sequence and timestamp
+            if len(message) >= 18:
+                sequence = struct.unpack("<I", message[6:10])[0]
+                timestamp = struct.unpack("<Q", message[10:18])[0]
+                offset = 18  # Start of frame data after full header
+            else:
+                # Backwards compatibility for older format without sequence
+                sequence = self.last_batch_sequence + 1
+                timestamp = int(time.time() * 1000)
+                offset = 6  # Old format header was only 6 bytes
+
             logger.info(
-                f"Processing batch with {frame_count} frames, priority={is_priority}"
+                f"Processing batch #{sequence} with {frame_count} frames, priority={is_priority}"
             )
 
-            # Extract and process individual frames
-            offset = 6
-            frames_processed = 0
+            # Store batch sequence for flow control
+            # For out-of-order detection
+            if sequence <= self.last_batch_sequence and not is_priority:
+                logger.warning(
+                    f"Received out-of-order batch #{sequence} (last was #{self.last_batch_sequence})"
+                )
+                # Still process priority frames even if out of order
+                if not is_priority:
+                    logger.info(
+                        f"Skipping batch #{sequence} as it's older than last processed #{self.last_batch_sequence}"
+                    )
+                    # Update flow control to notify server we're ahead
+                    self.sync_dashboard_state(include_flow_control=True)
+                    return
+
+            self.last_batch_sequence = sequence
+            self.last_batch_timestamp = timestamp
 
             # For high priority batches, clear the buffer first
             if is_priority and self.enable_buffer:
                 logger.info("Priority batch received, clearing buffer")
                 self.clear_frame_buffer()
+
+            # Check buffer fullness before accepting new frames
+            buffer_fullness = 0
+            with self.buffer_lock:
+                buffer_fullness = (
+                    len(self.frame_buffer) / self.buffer_size
+                    if self.buffer_size > 0
+                    else 0
+                )
+
+            # Check if we have room for this batch (unless it's priority)
+            if not is_priority and buffer_fullness > 0.8:
+                logger.warning(
+                    f"Buffer near full ({buffer_fullness * 100:.1f}%), skipping non-priority batch #{sequence}"
+                )
+                # Immediately send buffer status to adjust sending rate
+                self.sync_dashboard_state(include_flow_control=True)
+                return
+
+            # Process frames in batch
+            frames_processed = 0
 
             while offset < len(message) and frames_processed < frame_count:
                 # Check if we have enough data for the frame length
@@ -1552,11 +1651,16 @@ class LegridController:
 
             # If we processed all frames, log success
             if frames_processed == frame_count:
-                logger.info(f"Successfully processed all {frame_count} frames in batch")
+                logger.info(
+                    f"Successfully processed all {frame_count} frames in batch #{sequence}"
+                )
             else:
                 logger.warning(
-                    f"Processed {frames_processed}/{frame_count} frames in batch"
+                    f"Processed {frames_processed}/{frame_count} frames in batch #{sequence}"
                 )
+
+            # Send buffer status update after processing batch
+            self.sync_dashboard_state(include_flow_control=True)
 
         except Exception as e:
             logger.error(f"Error processing batch frames: {e}")
@@ -1565,8 +1669,10 @@ class LegridController:
             logger.error(traceback.format_exc())
 
             # Log the batch header for debugging
-            if len(message) >= 10:
-                logger.error(f"Batch header: {message[:10].hex()}")
+            if len(message) >= 18:
+                logger.error(f"Batch header: {message[:18].hex()}")
+            elif len(message) >= 6:
+                logger.error(f"Batch header: {message[:6].hex()}")
 
 
 def parse_args():

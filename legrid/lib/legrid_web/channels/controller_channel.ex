@@ -69,8 +69,13 @@ defmodule LegridWeb.ControllerChannel do
       {:display_sync, controller_id, payload}
     )
 
+    # Process flow control if present
+    if payload["flow_control"] do
+      Legrid.Controller.FrameBuffer.process_flow_control(controller_id, payload["flow_control"])
+    end
+
     # Log at debug level
-    Logger.debug("Received display sync from controller #{controller_id}: buffer status: #{inspect(payload["buffer_stats"])}")
+    Logger.debug("Received display sync from controller #{controller_id}")
 
     {:noreply, socket}
   end
@@ -90,16 +95,16 @@ defmodule LegridWeb.ControllerChannel do
   end
 
   @impl true
-  def handle_info({:frame_batch, frames, is_priority, _pattern_id}, socket) do
+  def handle_info({:frame_batch, frames, is_priority, _pattern_id, sequence, timestamp}, socket) do
     # Convert the batch of frames to a single binary message
-    batch_binary = frames_batch_to_binary(frames, is_priority)
+    batch_binary = frames_batch_to_binary(frames, is_priority, sequence, timestamp)
 
     # Send the binary batch directly using a raw socket send
     # This bypass Phoenix Channel's JSON encoding for efficiency
     send(self(), {:binary, batch_binary})
 
     # Log the batch at debug level
-    Logger.debug("Sent batch of #{length(frames)} frames to controller #{socket.assigns.controller_id}")
+    Logger.debug("Sent batch ##{sequence} of #{length(frames)} frames to controller #{socket.assigns.controller_id}")
 
     {:noreply, socket}
   end
@@ -182,12 +187,14 @@ defmodule LegridWeb.ControllerChannel do
   end
 
   # Convert a batch of frames to binary format for batch transmission
-  defp frames_batch_to_binary(frames, is_priority) do
+  defp frames_batch_to_binary(frames, is_priority, sequence, timestamp) do
     # Frame count and priority flag header
     header = <<
-      0xB::8,                           # Batch identifier (1 byte)
+      0xB::8,                            # Batch identifier (1 byte)
       length(frames)::little-integer-32, # Frame count (4 bytes)
-      (if is_priority, do: 1, else: 0)::8 # Priority flag (1 byte)
+      (if is_priority, do: 1, else: 0)::8, # Priority flag (1 byte)
+      sequence::little-integer-32,       # Sequence number (4 bytes)
+      timestamp::little-integer-64       # Timestamp (8 bytes)
     >>
 
     # Convert each frame to binary and add to the batch
