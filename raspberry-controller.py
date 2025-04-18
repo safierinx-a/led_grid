@@ -823,34 +823,77 @@ class LegridController:
 
                         # Check for parameter changes
                         if "parameters" in payload:
+                            # Compare with last parameters
                             if (
                                 not hasattr(self, "last_parameters")
                                 or self.last_parameters != payload["parameters"]
                             ):
+                                # Calculate what parameters changed
                                 param_diff = ""
+                                significant_changes = False
+
                                 if hasattr(self, "last_parameters"):
                                     # Only log changes in non-high-fps scenarios
                                     if self.stats["fps"] < 20:
                                         old_params = set(self.last_parameters.items())
                                         new_params = set(payload["parameters"].items())
                                         changes = new_params - old_params
+
                                         if changes:
                                             param_diff = f" Changes: {changes}"
-                                            is_priority = (
-                                                True  # Parameter changes get priority
+
+                                            # Determine if the changes are significant enough to require buffer clearing
+                                            significant_param_keys = {
+                                                "mode",
+                                                "type",
+                                                "effect",
+                                                "speed",
+                                                "pattern",
+                                            }
+                                            significant_changes = any(
+                                                key
+                                                for key, _ in changes
+                                                if any(
+                                                    sig_key in key.lower()
+                                                    for sig_key in significant_param_keys
+                                                )
                                             )
 
-                            self.last_parameters = payload["parameters"].copy()
-                            clear_needed = True
-                            logger.info(
-                                f"Pattern parameters changed.{param_diff} Clearing LEDs."
-                            )
-                            # Also reinitialize LED state on parameter changes
-                            self.led_state_initialized = False
+                                            # Only set priority for significant changes
+                                            if significant_changes:
+                                                is_priority = True  # Only significant parameter changes get priority
 
-                            # If using buffer, clear it on parameter change
-                            if self.enable_buffer:
-                                self.clear_frame_buffer()
+                                # Store last parameters for next comparison
+                                self.last_parameters = payload["parameters"].copy()
+
+                                # Log the changes
+                                logger.info(
+                                    f"Pattern parameters changed.{param_diff}"
+                                    + (
+                                        " Significant changes - clearing LEDs."
+                                        if significant_changes
+                                        else ""
+                                    )
+                                )
+
+                                # Only certain parameter changes require clearing
+                                if significant_changes:
+                                    clear_needed = True
+                                    # Also reinitialize LED state on parameter changes
+                                    self.led_state_initialized = False
+
+                                    # Only clear buffer for significant parameter changes
+                                    if self.enable_buffer and significant_changes:
+                                        logger.info(
+                                            "Significant parameter change - clearing buffer"
+                                        )
+                                        self.clear_frame_buffer()
+                                else:
+                                    # For minor parameter changes, no need to clear everything
+                                    logger.debug(
+                                        "Minor parameter changes - not clearing buffer or LEDs"
+                                    )
+                                    clear_needed = False
 
                         # Increment frame counter
                         self.frame_counter += 1
@@ -887,6 +930,24 @@ class LegridController:
                             # Record frame ID if available for dashboard sync
                             if "id" in payload:
                                 self.last_displayed_frame_id = payload["id"]
+
+                            # Check if this frame has parameter change metadata
+                            if payload.get("metadata", {}).get("param_change", False):
+                                # This frame contains parameter changes
+                                is_significant = payload.get("metadata", {}).get(
+                                    "significant_change", False
+                                )
+                                logger.info(
+                                    f"Frame contains parameter changes (significant={is_significant})"
+                                )
+
+                                # Only for significant changes, we might want to set priority
+                                if is_significant:
+                                    is_priority = True
+                                    clear_needed = True
+                                else:
+                                    # For minor parameter tweaks, no need for priority treatment
+                                    is_priority = False
 
                             # Only log at lower frame rates
                             if self.stats["fps"] < 20:

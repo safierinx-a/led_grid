@@ -12,40 +12,43 @@ defmodule LegridWeb.HomeLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    # Subscribe to frame updates and controller stats
-    if connected?(socket) do
-      Runner.subscribe()
-      Phoenix.PubSub.subscribe(Legrid.PubSub, "controller_stats")
-      # Attempt to activate monitoring safely
-      try do
-        Interface.activate_monitor()
-        # Request stats immediately
-        request_stats()
-      rescue
-        _ -> :ok # Silently handle errors if the controller isn't available
-      end
-    end
+    # Subscribe to frames
+    Runner.subscribe()
 
-    # Get available patterns
+    # Get patterns from registry
     patterns = Registry.list_patterns()
+    |> Enum.sort_by(fn p -> p.name end)
 
-    # Attempt to get controller status safely
+    # Put all patterns in a map
+    pattern_map = patterns
+    |> Enum.reduce(%{}, fn p, acc -> Map.put(acc, p.id, p) end)
+
+    # Get controller status
     controller_status = try do
       Interface.status()
     rescue
-      _ -> %{connected: false, url: nil, width: @grid_width, height: @grid_height}
+      _ -> %{connected: false}
     end
+
+    # Initial default pattern
+    current_pattern = nil
+    pattern_params = %{}
+
+    # Initialize the parameter update timer and buffer
+    Process.put(:param_update_timer, nil)
+    Process.put(:param_update_buffer, %{})
+
+    # Subscribe to controller stats for monitoring panel
+    Phoenix.PubSub.subscribe(Legrid.PubSub, "controller_stats")
 
     socket = socket
     |> assign(:patterns, patterns)
-    |> assign(:current_pattern, nil)
-    |> assign(:pattern_metadata, nil)
-    |> assign(:pixels, blank_pixels())
+    |> assign(:pattern_map, pattern_map)
+    |> assign(:current_pattern, current_pattern)
+    |> assign(:pattern_params, pattern_params)
+    |> assign(:controller_enabled, false)
     |> assign(:controller_status, controller_status)
-    |> assign(:pattern_params, %{})
-    |> assign(:grid_width, @grid_width)
-    |> assign(:grid_height, @grid_height)
-    |> assign(:pixel_size, @pixel_size)
+    |> assign(:monitoring_active, true)
     |> assign(:stats, %{
       fps: 0,
       frames_received: 0,
@@ -57,8 +60,6 @@ defmodule LegridWeb.HomeLive do
     })
     |> assign(:detailed_stats, nil)
     |> assign(:stats_history, [])
-    |> assign(:monitoring_active, true) # Start with monitoring active
-    |> assign(:controller_enabled, true) # Start with controller enabled
 
     {:ok, socket}
   end
@@ -117,15 +118,16 @@ defmodule LegridWeb.HomeLive do
   end
 
   @impl true
-  def handle_event("update-form-params", %{"params" => params} = form_params, socket) do
-    pattern_id = socket.assigns.current_pattern
-
-    if pattern_id do
+  def handle_event("update-form-params", %{"pattern" => form_params}, socket) do
+    # This updates multiple parameters at once from a form submission
+    if socket.assigns.current_pattern do
       try do
+        # Get parameter definitions
+        pattern_id = socket.assigns.current_pattern
         {:ok, metadata} = Registry.get_pattern(pattern_id)
 
-        # Convert parameter values to appropriate types
-        converted_params = Enum.reduce(params, %{}, fn {key, value}, acc ->
+        # Convert parameters based on their type
+        converted_params = Enum.reduce(form_params, %{}, fn {key, value}, acc ->
           param_def = metadata.parameters[key]
           if param_def do
             # Convert value to appropriate type - add error handling
@@ -145,7 +147,7 @@ defmodule LegridWeb.HomeLive do
 
         # Apply if controller enabled - auto-apply changes
         if socket.assigns.controller_enabled do
-          Runner.update_pattern_params(pattern_params)
+          debounced_update_params(pattern_params)
         end
 
         {:noreply, assign(socket, pattern_params: pattern_params)}
@@ -155,36 +157,6 @@ defmodule LegridWeb.HomeLive do
           {:noreply, socket}  # Return unchanged socket on error
       end
     else
-      {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("update-param", %{"value" => value, "_target" => [key]}, socket) do
-    # Handle direct value change
-    IO.puts("Processing parameter update for #{key} = #{value}")
-
-    # Get parameter definition
-    pattern_id = socket.assigns.current_pattern
-    {:ok, metadata} = Registry.get_pattern(pattern_id)
-    param_def = metadata.parameters[key]
-
-    if param_def do
-      # Convert based on parameter type
-      converted_value = convert_param_value(value, param_def.type)
-
-      # Update the parameter
-      pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
-
-      # Apply if controller enabled
-      if socket.assigns.controller_enabled do
-        Runner.update_pattern_params(pattern_params)
-      end
-
-      {:noreply, assign(socket, pattern_params: pattern_params)}
-    else
-      # Parameter not found - possibly a checkbox which doesn't use value
-      IO.puts("Parameter definition not found for direct update: #{key}")
       {:noreply, socket}
     end
   end
@@ -209,7 +181,7 @@ defmodule LegridWeb.HomeLive do
 
       # Apply if controller enabled
       if socket.assigns.controller_enabled do
-        Runner.update_pattern_params(pattern_params)
+        debounced_update_params(pattern_params)
       end
 
       {:noreply, assign(socket, pattern_params: pattern_params)}
@@ -243,7 +215,7 @@ defmodule LegridWeb.HomeLive do
 
           # Apply if controller enabled
           if socket.assigns.controller_enabled do
-            Runner.update_pattern_params(pattern_params)
+            debounced_update_params(pattern_params)
           end
 
           {:noreply, assign(socket, pattern_params: pattern_params)}
@@ -473,5 +445,35 @@ defmodule LegridWeb.HomeLive do
     rescue
       _ -> :ok # Silently handle errors if the controller isn't available
     end
+  end
+
+  # Debounces parameter updates to reduce frequent changes
+  defp debounced_update_params(params) do
+    # Store the latest params in process dictionary
+    Process.put(:param_update_buffer, params)
+
+    # Cancel any existing timer
+    timer_ref = Process.get(:param_update_timer)
+    if timer_ref, do: Process.cancel_timer(timer_ref)
+
+    # Set a new timer to apply the updates after 200ms
+    new_timer = Process.send_after(self(), :apply_debounced_params, 200)
+    Process.put(:param_update_timer, new_timer)
+  end
+
+  @impl true
+  def handle_info(:apply_debounced_params, socket) do
+    # Get the latest params from the buffer
+    latest_params = Process.get(:param_update_buffer)
+
+    # Apply them if we have any
+    if latest_params && map_size(latest_params) > 0 do
+      Runner.update_pattern_params(latest_params)
+    end
+
+    # Clear the timer reference
+    Process.put(:param_update_timer, nil)
+
+    {:noreply, socket}
   end
 end
