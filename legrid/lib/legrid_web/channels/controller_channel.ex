@@ -181,22 +181,52 @@ defmodule LegridWeb.ControllerChannel do
     # Only process if this message is for this controller
     if socket.assigns.controller_id == target_controller_id do
       controller_id = socket.assigns.controller_id
-      Logger.info("Processing batch for controller #{controller_id}: #{length(frames)} frames")
+      Logger.info("Sending batch to controller #{controller_id}: #{length(frames)} frames, seq=#{sequence}, pattern=#{inspect(pattern_id)}")
 
-      # Send each frame as a separate "frame" event
-      Enum.each(frames, fn frame ->
-        # Convert to binary - just the pixel data
-        frame_binary = encode_frame_binary(frame)
+      # Create a proper batch binary format that exactly matches what the controller expects in process_batch_frames:
+      # - Byte 0: 0xB (batch identifier)
+      # - Bytes 1-4: Frame count (uint32, little-endian)
+      # - Byte 5: Priority flag (1 = priority, 0 = normal)
+      # - Bytes 6-9: Sequence number (uint32, little-endian)
+      # - Bytes 10-17: Timestamp (uint64, little-endian)
+      # - For each frame:
+      #   - 4 bytes: Frame length (uint32, little-endian)
+      #   - N bytes: Frame data
 
-        # Send using the "frame" event format that controller already understands
-        push(socket, "frame", %{
-          binary: Base.encode64(frame_binary),
-          pattern_id: pattern_id,
-          timestamp: System.system_time(:millisecond)
-        })
+      # Start with the batch header
+      frame_count = length(frames)
+      priority_flag = if is_priority, do: 1, else: 0
+      current_timestamp = timestamp || System.system_time(:millisecond)
+
+      # Batch header
+      batch_header = <<0xB::8, frame_count::little-32, priority_flag::8, sequence::little-32, current_timestamp::little-64>>
+
+      # Build frame data
+      frames_binary = Enum.reduce(frames, <<>>, fn frame, acc ->
+        # Generate the binary data for this frame
+        frame_data = encode_frame_binary(frame)
+        frame_length = byte_size(frame_data)
+
+        # Combine with the accumulated data
+        <<acc::binary, frame_length::little-32, frame_data::binary>>
       end)
 
-      Logger.info("Sent #{length(frames)} individual frames to controller #{controller_id}")
+      # Combined batch data
+      batch_data = <<batch_header::binary, frames_binary::binary>>
+
+      # Log batch details
+      Logger.info("Created batch binary: #{byte_size(batch_data)} bytes, #{frame_count} frames, priority=#{priority_flag}, sequence=#{sequence}")
+
+      # Send to controller using the display_batch event
+      push(socket, "display_batch", %{
+        frames: Base.encode64(batch_data),
+        count: frame_count,
+        priority: is_priority,
+        sequence: sequence
+      })
+
+      # Log that the batch was sent
+      Logger.info("Batch sent to controller #{controller_id}")
     end
 
     {:noreply, socket}
@@ -378,7 +408,7 @@ defmodule LegridWeb.ControllerChannel do
     <<header::binary, frames_binary::binary>>
   end
 
-  # Helper to encode a single frame in binary format controller expects
+  # Helper to encode a single frame in binary format
   defp encode_frame_binary(frame) do
     # Version 1, message type 1 (full frame)
     version = 1
