@@ -185,6 +185,10 @@ defmodule Legrid.Controller.FrameBuffer do
     # Record the request in our pending requests map with timestamp
     now = System.monotonic_time(:millisecond)
 
+    # Log request details
+    Logger.info("FrameBuffer: received batch request from controller #{controller_id}: seq=#{last_sequence}, space=#{space_available}, urgent=#{urgent}")
+    Logger.debug("FrameBuffer state: #{length(state.frames)} regular frames, #{length(state.priority_frames)} priority frames, pattern=#{inspect(state.current_pattern_id)}")
+
     pending_requests = Map.put(state.pending_requests, controller_id, %{
       last_sequence: last_sequence,
       space_available: space_available,
@@ -199,14 +203,17 @@ defmodule Legrid.Controller.FrameBuffer do
       cond do
         # If urgent request and we have priority frames, send those immediately
         urgent && length(state.priority_frames) > 0 ->
+          Logger.info("FrameBuffer: urgent request with priority frames, sending immediately to #{controller_id}")
           send_batch_to_controller(controller_id, state, true)
 
         # If we have enough regular frames, send those
         length(state.frames) >= min(state.min_frames, space_available) ->
+          Logger.info("FrameBuffer: enough regular frames available, sending to #{controller_id}")
           send_batch_to_controller(controller_id, state, false)
 
         # Otherwise wait for more frames or until max_delay is reached
         true ->
+          Logger.info("FrameBuffer: not enough frames yet, waiting for more before sending to #{controller_id}")
           state
       end
 
@@ -285,12 +292,22 @@ defmodule Legrid.Controller.FrameBuffer do
         end
 
       # Take the requested number of frames
-      frames_to_send = Enum.take(frames, max_frames)
+      frames_to_send = frames
+                      |> Enum.take(max_frames)
+                      |> Enum.reverse()
 
       if length(frames_to_send) > 0 do
         # Prepare the batch
         sequence = state.current_sequence + 1
         timestamp = System.system_time(:millisecond)
+
+        Logger.info("FrameBuffer: sending batch to controller #{controller_id}: #{length(frames_to_send)} frames, sequence #{sequence}, pattern #{inspect(state.current_pattern_id)}")
+
+        # Log sample frame data
+        if length(frames_to_send) > 0 do
+          first_frame = List.first(frames_to_send)
+          Logger.debug("FrameBuffer: first frame pixels: #{length(first_frame.pixels)}, metadata: #{inspect(first_frame.metadata)}")
+        end
 
         # Broadcast the batch to the specific controller
         Phoenix.PubSub.broadcast(
@@ -321,10 +338,12 @@ defmodule Legrid.Controller.FrameBuffer do
         %{new_state | pending_requests: Map.delete(new_state.pending_requests, controller_id)}
       else
         # No frames to send, leave state unchanged
+        Logger.info("FrameBuffer: no frames to send to controller #{controller_id}")
         state
       end
     else
       # No request for this controller, leave state unchanged
+      Logger.debug("FrameBuffer: no request found for controller #{controller_id}")
       state
     end
   end

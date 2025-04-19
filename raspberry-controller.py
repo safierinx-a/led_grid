@@ -740,7 +740,7 @@ class LegridController:
                         return
 
                     # Check if this might be a frame with protocol version 123
-                    if message[0] == 123 and len(message) >= 10:
+                    if message[0] == 123 and len(message[1:]) >= 10:
                         logger.info(
                             "Received binary message with protocol version 123, processing it"
                         )
@@ -957,6 +957,21 @@ class LegridController:
                     self.clear_leds()
                     if self.enable_buffer:
                         self.clear_frame_buffer()
+
+                elif event == "display_batch":
+                    # Handle batch display message
+                    if "frames" in payload:
+                        try:
+                            # Decode the base64 batch data
+                            batch_data = base64.b64decode(payload["frames"])
+                            logger.info(
+                                f"Received display_batch with {len(batch_data)} bytes of batch data"
+                            )
+
+                            # Process the batch frames
+                            self.process_batch_frames(batch_data)
+                        except Exception as e:
+                            logger.error(f"Error processing display_batch: {e}")
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")

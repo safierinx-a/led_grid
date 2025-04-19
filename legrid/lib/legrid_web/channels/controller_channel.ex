@@ -55,6 +55,14 @@ defmodule LegridWeb.ControllerChannel do
 
     Logger.info("Sent initiate_polling message to controller #{controller_id}")
 
+    # Send a diagnostic ping to verify the controller is able to respond
+    push(socket, "diagnostic_ping", %{
+      timestamp: System.system_time(:millisecond),
+      message: "Please respond with diagnostic_pong"
+    })
+
+    Logger.info("Sent diagnostic_ping to controller #{controller_id}")
+
     # Explicitly trigger a batch request to get initial frames
     # This will ensure the controller starts receiving frames even if it doesn't poll immediately
     FrameBuffer.handle_batch_request(controller_id, 0, 60, true)
@@ -160,7 +168,7 @@ defmodule LegridWeb.ControllerChannel do
     binary_data = frames_batch_to_binary(frames, pattern_id, sequence, timestamp)
 
     push(socket, "display_batch", %{
-      "frames" => binary_data,
+      "frames" => Base.encode64(binary_data),
       "count" => length(frames),
       "priority" => is_priority
     })
@@ -172,31 +180,23 @@ defmodule LegridWeb.ControllerChannel do
   def handle_info({:controller_batch, target_controller_id, frames, is_priority, pattern_id, sequence, timestamp}, socket) do
     # Only process if this message is for this controller
     if socket.assigns.controller_id == target_controller_id do
-      Logger.debug("Sending batch to controller #{target_controller_id}: #{length(frames)} frames, seq=#{sequence}")
+      controller_id = socket.assigns.controller_id
+      Logger.info("Processing batch for controller #{controller_id}: #{length(frames)} frames")
 
-      # Instead of using binary encoding, prepare a JSON-friendly structure
-      # Convert frames to a serializable format
-      serializable_frames = Enum.map(frames, fn frame ->
-        %{
-          id: frame.id,
-          timestamp: DateTime.to_unix(frame.timestamp, :millisecond),
-          source: frame.source,
-          width: frame.width,
-          height: frame.height,
-          pixels: frame.pixels,
-          metadata: frame.metadata || %{}
-        }
+      # Send each frame as a separate "frame" event
+      Enum.each(frames, fn frame ->
+        # Convert to binary - just the pixel data
+        frame_binary = encode_frame_binary(frame)
+
+        # Send using the "frame" event format that controller already understands
+        push(socket, "frame", %{
+          binary: Base.encode64(frame_binary),
+          pattern_id: pattern_id,
+          timestamp: System.system_time(:millisecond)
+        })
       end)
 
-      # Push the data to the socket using standard JSON encoding
-      push(socket, "frames_batch", %{
-        frames: serializable_frames,
-        sequence: sequence,
-        count: length(frames),
-        pattern_id: pattern_id,
-        timestamp: timestamp,
-        is_priority: is_priority
-      })
+      Logger.info("Sent #{length(frames)} individual frames to controller #{controller_id}")
     end
 
     {:noreply, socket}
@@ -244,12 +244,20 @@ defmodule LegridWeb.ControllerChannel do
     space_available = Map.get(payload, "space_available", 60)
     urgent = Map.get(payload, "urgent", false)
 
-    Logger.debug("Batch request from controller #{controller_id}: last_seq=#{last_sequence}, space=#{space_available}, urgent=#{urgent}")
+    Logger.info("Legacy batch_request from controller #{controller_id}: last_seq=#{last_sequence}, space=#{space_available}, urgent=#{urgent}, payload=#{inspect(payload)}")
 
     # Forward request to frame buffer
     FrameBuffer.handle_batch_request(controller_id, last_sequence, space_available, urgent)
 
-    {:reply, {:ok, %{status: "request_received"}}, socket}
+    # Send a confirmation back to the controller with current server time to help with latency detection
+    resp = %{
+      status: "request_received",
+      timestamp: System.system_time(:millisecond),
+      server_sequence: last_sequence
+    }
+
+    Logger.debug("Sending request confirmation: #{inspect(resp)}")
+    {:reply, {:ok, resp}, socket}
   end
 
   @impl true
@@ -273,12 +281,20 @@ defmodule LegridWeb.ControllerChannel do
     space_available = Map.get(payload, "space_available", 60)
     urgent = Map.get(payload, "urgent", false)
 
-    Logger.debug("Batch request from controller #{controller_id}: last_seq=#{last_sequence}, space=#{space_available}, urgent=#{urgent}")
+    Logger.info("Batch request from controller #{controller_id}: last_seq=#{last_sequence}, space=#{space_available}, urgent=#{urgent}, payload=#{inspect(payload)}")
 
     # Forward request to frame buffer
     FrameBuffer.handle_batch_request(controller_id, last_sequence, space_available, urgent)
 
-    {:reply, {:ok, %{status: "request_received"}}, socket}
+    # Send a confirmation back to the controller with current server time to help with latency detection
+    resp = %{
+      status: "request_received",
+      timestamp: System.system_time(:millisecond),
+      server_sequence: last_sequence
+    }
+
+    Logger.debug("Sending request confirmation: #{inspect(resp)}")
+    {:reply, {:ok, resp}, socket}
   end
 
   @impl true
@@ -299,6 +315,36 @@ defmodule LegridWeb.ControllerChannel do
     {:noreply, socket}
   end
 
+  @impl true
+  def handle_in("diagnostic_pong", payload, socket) do
+    controller_id = socket.assigns.controller_id
+    Logger.info("Received diagnostic_pong from controller #{controller_id}: #{inspect(payload)}")
+
+    # This confirms the controller can receive and process messages
+    {:reply, {:ok, %{received: true, server_time: System.system_time(:millisecond)}}, socket}
+  end
+
+  @impl true
+  def handle_in("batch_ack", payload, socket) do
+    controller_id = socket.assigns.controller_id
+
+    # Extract details from payload
+    sequence = Map.get(payload, "sequence", 0)
+    received_at = Map.get(payload, "received_at", 0)
+    rendered = Map.get(payload, "rendered", false)
+
+    Logger.info("Controller #{controller_id} acknowledged batch #{sequence}, rendered: #{rendered}, received at: #{received_at}")
+
+    # Forward acknowledgment to the system
+    Phoenix.PubSub.broadcast(
+      Legrid.PubSub,
+      "controller:events",
+      {:batch_acknowledged, controller_id, sequence, rendered, received_at}
+    )
+
+    {:reply, {:ok, %{received: true}}, socket}
+  end
+
   # Helper to convert frames to binary format
   defp frames_batch_to_binary(frames, pattern_id, sequence, timestamp) do
     # Convert string pattern_id to an integer hash if it's a string
@@ -315,28 +361,41 @@ defmodule LegridWeb.ControllerChannel do
     # Header: pattern_id (32 bits) + sequence (32 bits) + timestamp (64 bits)
     header = <<pattern_id_int::32, sequence::32, timestamp::64>>
 
-    # Join all frames into a single binary
+    # Join all frames into a single binary - use a simple and direct format
+    # that's easier for controllers to parse
     frames_binary = Enum.reduce(frames, <<>>, fn frame, acc ->
-      # Convert the frame to a serializable map format
-      frame_map = %{
-        id: frame.id,
-        timestamp: DateTime.to_unix(frame.timestamp, :millisecond),
-        source: frame.source,
-        width: frame.width,
-        height: frame.height,
-        pixels: frame.pixels,
-        metadata: frame.metadata || %{}
-      }
+      # Pack pixel data directly as RGB bytes
+      pixels_data = for {r, g, b} <- frame.pixels, into: <<>> do
+        <<r::8, g::8, b::8>>
+      end
 
-      # Convert to JSON
-      frame_data = Jason.encode!(frame_map)
-
-      # Each frame: length (16 bits) + data
-      frame_size = byte_size(frame_data)
-      <<acc::binary, frame_size::16, frame_data::binary>>
+      # Each frame: length (16 bits) + RGB data
+      pixel_count = length(frame.pixels)
+      <<acc::binary, pixel_count::16, pixels_data::binary>>
     end)
 
     # Return header + frames data
     <<header::binary, frames_binary::binary>>
+  end
+
+  # Helper to encode a single frame in binary format controller expects
+  defp encode_frame_binary(frame) do
+    # Version 1, message type 1 (full frame)
+    version = 1
+    msg_type = 1
+    frame_id = System.system_time(:millisecond) |> rem(0xFFFFFFFF)
+    width = Map.get(frame, :width, 25)
+    height = Map.get(frame, :height, 24)
+
+    # Header
+    header = <<version::8, msg_type::8, frame_id::little-32, width::little-16, height::little-16>>
+
+    # Pixel data as RGB bytes
+    pixel_data = for {r, g, b} <- frame.pixels, into: <<>> do
+      <<r::8, g::8, b::8>>
+    end
+
+    # Full frame
+    <<header::binary, pixel_data::binary>>
   end
 end
