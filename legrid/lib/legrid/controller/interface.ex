@@ -233,6 +233,9 @@ defmodule Legrid.Controller.Interface do
       Legrid.Controller.FrameBuffer.flush()
     end
 
+    # Send a batch request directly to the frame buffer to trigger initial frame sending
+    Legrid.Controller.FrameBuffer.handle_batch_request(controller_id, 0, 60, true)
+
     {:noreply, new_state}
   end
 

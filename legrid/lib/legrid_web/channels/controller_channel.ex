@@ -20,7 +20,61 @@ defmodule LegridWeb.ControllerChannel do
     # Subscribe to controller:socket topic to receive controller-specific batches
     Phoenix.PubSub.subscribe(Legrid.PubSub, "controller:socket")
 
+    # Notify controller interface that a controller has joined
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:events", {:controller_joined, controller_id})
+
     {:ok, socket}
+  end
+
+  @impl true
+  def join("controller:lobby", payload, socket) do
+    # Extract controller_id from payload
+    controller_id = Map.get(payload, "controller_id", "unknown-#{:rand.uniform(1000)}")
+
+    Logger.info("Controller #{controller_id} joining lobby channel")
+
+    # Store the controller_id in the socket
+    socket = assign(socket, :controller_id, controller_id)
+
+    # Subscribe to controller:socket topic to receive controller-specific batches
+    Phoenix.PubSub.subscribe(Legrid.PubSub, "controller:socket")
+
+    # Notify controller interface that a controller has joined
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:events", {:controller_joined, controller_id})
+
+    # Send a message to the controller requesting the first batch
+    Process.send_after(self(), {:initiate_polling, controller_id}, 500)
+
+    {:ok, socket}
+  end
+
+  @impl true
+  def handle_info({:initiate_polling, controller_id}, socket) do
+    # Push a message to the controller to request the first batch
+    push(socket, "initiate_polling", %{message: "Start polling for frames"})
+
+    Logger.info("Sent initiate_polling message to controller #{controller_id}")
+
+    # Explicitly trigger a batch request to get initial frames
+    # This will ensure the controller starts receiving frames even if it doesn't poll immediately
+    FrameBuffer.handle_batch_request(controller_id, 0, 60, true)
+
+    # Schedule a follow-up request in case the first one didn't produce frames
+    Process.send_after(self(), {:ensure_frames_sent, controller_id}, 1000)
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:ensure_frames_sent, controller_id}, socket) do
+    # This is a safety mechanism to ensure frames start flowing
+    # after controller connection
+    if socket.assigns.controller_id == controller_id do
+      Logger.debug("Ensuring frames are flowing to controller #{controller_id}")
+      FrameBuffer.handle_batch_request(controller_id, 0, 60, true)
+    end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -120,12 +174,23 @@ defmodule LegridWeb.ControllerChannel do
     if socket.assigns.controller_id == target_controller_id do
       Logger.debug("Sending batch to controller #{target_controller_id}: #{length(frames)} frames, seq=#{sequence}")
 
-      # Convert frames to binary format
-      batch_data = frames_batch_to_binary(frames, pattern_id, sequence, timestamp)
+      # Instead of using binary encoding, prepare a JSON-friendly structure
+      # Convert frames to a serializable format
+      serializable_frames = Enum.map(frames, fn frame ->
+        %{
+          id: frame.id,
+          timestamp: DateTime.to_unix(frame.timestamp, :millisecond),
+          source: frame.source,
+          width: frame.width,
+          height: frame.height,
+          pixels: frame.pixels,
+          metadata: frame.metadata || %{}
+        }
+      end)
 
-      # Push the binary data to the socket
+      # Push the data to the socket using standard JSON encoding
       push(socket, "frames_batch", %{
-        data: batch_data,
+        frames: serializable_frames,
         sequence: sequence,
         count: length(frames),
         pattern_id: pattern_id,
@@ -216,16 +281,59 @@ defmodule LegridWeb.ControllerChannel do
     {:reply, {:ok, %{status: "request_received"}}, socket}
   end
 
+  @impl true
+  def handle_info({:pattern_changed, pattern_id}, socket) do
+    # When a pattern changes, notify the controller directly
+    controller_id = socket.assigns.controller_id
+    Logger.debug("Notifying controller #{controller_id} of pattern change to #{pattern_id}")
+
+    # Notify the controller of the pattern change
+    push(socket, "pattern_changed", %{
+      pattern_id: pattern_id,
+      timestamp: System.system_time(:millisecond)
+    })
+
+    # Also request a batch with urgency to ensure new pattern frames flow immediately
+    FrameBuffer.handle_batch_request(controller_id, 0, 60, true)
+
+    {:noreply, socket}
+  end
+
   # Helper to convert frames to binary format
   defp frames_batch_to_binary(frames, pattern_id, sequence, timestamp) do
+    # Convert string pattern_id to an integer hash if it's a string
+    pattern_id_int = case pattern_id do
+      id when is_integer(id) -> id
+      id when is_binary(id) or is_atom(id) ->
+        # Convert to string and hash to a 32-bit integer
+        id_str = to_string(id)
+        :erlang.phash2(id_str, 2_147_483_647) # Max 32-bit signed int
+      nil -> 0
+      _ -> 0
+    end
+
     # Header: pattern_id (32 bits) + sequence (32 bits) + timestamp (64 bits)
-    header = <<pattern_id::32, sequence::32, timestamp::64>>
+    header = <<pattern_id_int::32, sequence::32, timestamp::64>>
 
     # Join all frames into a single binary
     frames_binary = Enum.reduce(frames, <<>>, fn frame, acc ->
+      # Convert the frame to a serializable map format
+      frame_map = %{
+        id: frame.id,
+        timestamp: DateTime.to_unix(frame.timestamp, :millisecond),
+        source: frame.source,
+        width: frame.width,
+        height: frame.height,
+        pixels: frame.pixels,
+        metadata: frame.metadata || %{}
+      }
+
+      # Convert to JSON
+      frame_data = Jason.encode!(frame_map)
+
       # Each frame: length (16 bits) + data
-      frame_size = byte_size(frame)
-      <<acc::binary, frame_size::16, frame::binary>>
+      frame_size = byte_size(frame_data)
+      <<acc::binary, frame_size::16, frame_data::binary>>
     end)
 
     # Return header + frames data

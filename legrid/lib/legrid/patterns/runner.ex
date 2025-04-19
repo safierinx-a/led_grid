@@ -131,6 +131,13 @@ defmodule Legrid.Patterns.Runner do
               frame_interval: frame_interval
             }
 
+            # Ensure we flush the FrameBuffer when a pattern changes
+            try do
+              Legrid.Controller.FrameBuffer.flush()
+            rescue
+              _ -> :ok # Ignore errors if FrameBuffer is not available
+            end
+
             {:reply, :ok, new_state}
         end
     end
@@ -143,6 +150,13 @@ defmodule Legrid.Patterns.Runner do
       if function_exported?(state.module, :update_params, 2) do
         case state.module.update_params(state.state, params) do
           {:ok, new_state} ->
+            # Ensure we flush the FrameBuffer when parameters change
+            try do
+              Legrid.Controller.FrameBuffer.flush()
+            rescue
+              _ -> :ok # Ignore errors if FrameBuffer is not available
+            end
+
             {:reply, :ok, %{state | state: new_state}}
 
           {:error, _} = error ->

@@ -112,11 +112,18 @@ defmodule Legrid.Controller.FrameBuffer do
   @impl true
   def handle_cast({:add_frame, frame, priority, pattern_id}, state) do
     # Check if pattern has changed
-    pattern_changed = state.current_pattern_id != nil && pattern_id != state.current_pattern_id
+    pattern_changed = state.current_pattern_id != nil &&
+                      pattern_id != nil &&
+                      pattern_id != state.current_pattern_id
+
+    # Log pattern changes
+    if pattern_changed do
+      Logger.info("Pattern changed from #{state.current_pattern_id} to #{pattern_id}")
+    end
 
     # Update state with new frame
     state =
-      if priority do
+      if priority || pattern_changed do
         # Add to priority frames
         %{state | priority_frames: [frame | state.priority_frames]}
       else
@@ -129,6 +136,41 @@ defmodule Legrid.Controller.FrameBuffer do
     state =
       if pattern_changed do
         Logger.debug("Pattern changed from #{state.current_pattern_id} to #{pattern_id}, flushing frames")
+
+        # Send to all known controllers, not just those with pending requests
+        known_controllers = Phoenix.PubSub.subscribers(Legrid.PubSub, "controller:socket")
+        Enum.each(known_controllers, fn pid ->
+          try do
+            # Try to extract controller_id from process dictionary or state
+            # This is a best-effort attempt
+            controller_id = Process.info(pid, :dictionary)
+                           |> case do
+                                {:dictionary, dict} ->
+                                  case Keyword.get(dict, :"$socket") do
+                                    %{assigns: %{controller_id: id}} -> id
+                                    _ -> nil
+                                  end
+                                _ -> nil
+                              end
+
+            if controller_id do
+              Logger.debug("Notifying controller #{controller_id} of pattern change")
+              Process.send_after(self(), {:batch_requested, controller_id, 0, 60, true}, 50)
+            end
+          rescue
+            _ -> :ok  # Ignore errors trying to extract controller_id
+          end
+        end)
+
+        # Also notify controllers we already know about from pending requests
+        Enum.each(state.pending_requests, fn {controller_id, _} ->
+          # Trigger a batch request to ensure frames are sent immediately
+          Process.send_after(self(), {:batch_requested, controller_id, 0, 60, true}, 50)
+        end)
+
+        # Broadcast a general notification about pattern change
+        Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:frames", {:pattern_changed, pattern_id})
+
         do_flush_to_all_controllers(state)
       else
         # Check if we have pending requests and enough frames or if urgent (priority)
