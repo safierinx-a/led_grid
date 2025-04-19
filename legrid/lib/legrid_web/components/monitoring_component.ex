@@ -119,6 +119,18 @@ defmodule LegridWeb.Components.MonitoringComponent do
                 <div class="stat-name">Batches Sent:</div>
                 <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :batches_sent]) || 0 %></div>
               </div>
+              <div class="stat-row">
+                <div class="stat-name">Current Sequence:</div>
+                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :current_sequence]) || 0 %></div>
+              </div>
+              <div class="stat-row">
+                <div class="stat-name">Controllers:</div>
+                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :controllers_count]) || 0 %> (<%= get_in(@detailed_stats, [:buffer_status, :ready_controllers]) || 0 %> ready)</div>
+              </div>
+              <div class="stat-row">
+                <div class="stat-name">Avg. Buffer Fullness:</div>
+                <div class="stat-value"><%= format_percentage(get_in(@detailed_stats, [:buffer_status, :avg_buffer_fullness])) %></div>
+              </div>
             </div>
           <% end %>
         </div>

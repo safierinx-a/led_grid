@@ -8,25 +8,19 @@ defmodule LegridWeb.ControllerChannel do
 
   use Phoenix.Channel
   require Logger
+  alias Legrid.Controller.FrameBuffer
 
   @impl true
-  def join("controller:lobby", message, socket) do
-    # Generate controller ID if not provided
-    controller_id = Map.get(message, "controller_id", "controller-#{System.unique_integer([:positive])}")
+  def join("controller:" <> controller_id, payload, socket) do
+    Logger.info("Controller #{controller_id} joining channel")
 
-    Logger.info("Controller joined: #{controller_id}")
-
-    # Subscribe to frames
-    Phoenix.PubSub.subscribe(Legrid.PubSub, "controller:frames")
-
-    # Notify controller interface that a new controller has joined
-    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:events", {:controller_joined, controller_id})
-
-    # Initialize socket assigns
+    # Store the controller_id in the socket
     socket = assign(socket, :controller_id, controller_id)
 
-    # Send initial welcome message
-    {:ok, %{status: "connected", controller_id: controller_id}, socket}
+    # Subscribe to controller:socket topic to receive controller-specific batches
+    Phoenix.PubSub.subscribe(Legrid.PubSub, "controller:socket")
+
+    {:ok, socket}
   end
 
   @impl true
@@ -69,42 +63,76 @@ defmodule LegridWeb.ControllerChannel do
       {:display_sync, controller_id, payload}
     )
 
-    # Process flow control if present
-    if payload["flow_control"] do
-      Legrid.Controller.FrameBuffer.process_flow_control(controller_id, payload["flow_control"])
-    end
+    # Log at debug level
+    Logger.debug("Received display sync from controller #{controller_id}: buffer status: #{inspect(payload["buffer_stats"])}")
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_in("batch_ready", payload, socket) do
+    controller_id = socket.assigns.controller_id
+
+    # Extract sequence number and buffer state
+    processed_sequence = Map.get(payload, "processed_sequence", 0)
+    buffer_fullness = Map.get(payload, "buffer_fullness", 0.0)
+    buffer_capacity = Map.get(payload, "buffer_capacity", 0)
+
+    # Forward batch ready signal to the frame buffer manager
+    Phoenix.PubSub.broadcast(
+      Legrid.PubSub,
+      "controller:events",
+      {:batch_ready, controller_id, processed_sequence, buffer_fullness, buffer_capacity}
+    )
 
     # Log at debug level
-    Logger.debug("Received display sync from controller #{controller_id}")
+    Logger.debug("Controller #{controller_id} ready for next batch after #{processed_sequence}, buffer fullness: #{buffer_fullness}")
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({:frame, frame}, socket) do
-    # Convert frame to binary format for efficient transmission
-    frame_binary = frame_to_binary(frame)
+  def handle_info({:frame, frame_data}, socket) do
+    push(socket, "display", %{
+      "frame" => frame_data
+    })
+    {:noreply, socket}
+  end
 
-    # Base64 encode the binary data for JSON serialization
-    encoded_binary = Base.encode64(frame_binary)
+  @impl true
+  def handle_info({:frame_batch, frames, is_priority, pattern_id, sequence, timestamp}, socket) do
+    # This is the broadcast-to-all method which is being phased out in favor of controller-specific batches
+    # But we'll keep it for backward compatibility during the transition
+    binary_data = frames_batch_to_binary(frames, pattern_id, sequence, timestamp)
 
-    # Push the binary frame to the controller
-    push(socket, "frame", %{binary: encoded_binary})
+    push(socket, "display_batch", %{
+      "frames" => binary_data,
+      "count" => length(frames),
+      "priority" => is_priority
+    })
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({:frame_batch, frames, is_priority, _pattern_id, sequence, timestamp}, socket) do
-    # Convert the batch of frames to a single binary message
-    batch_binary = frames_batch_to_binary(frames, is_priority, sequence, timestamp)
+  def handle_info({:controller_batch, target_controller_id, frames, is_priority, pattern_id, sequence, timestamp}, socket) do
+    # Only process if this message is for this controller
+    if socket.assigns.controller_id == target_controller_id do
+      Logger.debug("Sending batch to controller #{target_controller_id}: #{length(frames)} frames, seq=#{sequence}")
 
-    # Send the binary batch directly using a raw socket send
-    # This bypass Phoenix Channel's JSON encoding for efficiency
-    send(self(), {:binary, batch_binary})
+      # Convert frames to binary format
+      batch_data = frames_batch_to_binary(frames, pattern_id, sequence, timestamp)
 
-    # Log the batch at debug level
-    Logger.debug("Sent batch ##{sequence} of #{length(frames)} frames to controller #{socket.assigns.controller_id}")
+      # Push the binary data to the socket
+      push(socket, "frames_batch", %{
+        data: batch_data,
+        sequence: sequence,
+        count: length(frames),
+        pattern_id: pattern_id,
+        timestamp: timestamp,
+        is_priority: is_priority
+      })
+    end
 
     {:noreply, socket}
   end
@@ -142,69 +170,65 @@ defmodule LegridWeb.ControllerChannel do
     {:noreply, socket}
   end
 
-  # Convert frame to binary format for efficient transmission
-  defp frame_to_binary(frame) do
-    # Convert frame ID to integer
-    frame_id = if frame.id do
-      frame.id
-      |> String.replace(~r/[^0-9a-fA-F]/, "")
-      |> String.slice(0, 8)
-      |> String.downcase()
-      |> case do
-        "" -> 0
-        hex -> String.to_integer(hex, 16)
-      end
-    else
-      0
-    end
+  @impl true
+  def handle_in("batch_request", payload, socket) do
+    controller_id = socket.assigns.controller_id
 
-    # Serialize pixels to raw list of RGB values
-    pixel_data = case frame.pixels do
-      pixels when is_list(pixels) ->
-        # Convert RGB tuples to binary
-        for {r, g, b} <- pixels, byte <- [r, g, b] do
-          <<byte::8>>
-        end
-        |> IO.iodata_to_binary()
+    # Extract request details
+    last_sequence = Map.get(payload, "last_sequence", 0)
+    space_available = Map.get(payload, "space_available", 60)
+    urgent = Map.get(payload, "urgent", false)
 
-      pixels when is_binary(pixels) ->
-        # Already binary, just return
-        pixels
-    end
+    Logger.debug("Batch request from controller #{controller_id}: last_seq=#{last_sequence}, space=#{space_available}, urgent=#{urgent}")
 
-    # Create binary data in correct format
-    <<
-      # Header (10 bytes)
-      1::8,                           # Protocol version
-      1::8,                           # Message type (1 = frame)
-      frame_id::little-integer-32,    # Frame ID (4 bytes)
-      frame.width::little-integer-16, # Width (2 bytes)
-      frame.height::little-integer-16,# Height (2 bytes)
+    # Forward request to frame buffer
+    FrameBuffer.handle_batch_request(controller_id, last_sequence, space_available, urgent)
 
-      # Pixel data
-      pixel_data::binary
-    >>
+    {:reply, {:ok, %{status: "request_received"}}, socket}
   end
 
-  # Convert a batch of frames to binary format for batch transmission
-  defp frames_batch_to_binary(frames, is_priority, sequence, timestamp) do
-    # Frame count and priority flag header
-    header = <<
-      0xB::8,                            # Batch identifier (1 byte)
-      length(frames)::little-integer-32, # Frame count (4 bytes)
-      (if is_priority, do: 1, else: 0)::8, # Priority flag (1 byte)
-      sequence::little-integer-32,       # Sequence number (4 bytes)
-      timestamp::little-integer-64       # Timestamp (8 bytes)
-    >>
+  @impl true
+  def handle_info({:frame, frame, pattern_id}, socket) do
+    # Legacy single frame support - push directly to socket
+    push(socket, "frame", %{
+      data: frame,
+      pattern_id: pattern_id,
+      timestamp: System.system_time(:millisecond)
+    })
 
-    # Convert each frame to binary and add to the batch
-    frame_binaries = for frame <- frames do
-      frame_binary = frame_to_binary(frame)
-      # Prefix each frame with its length
-      <<byte_size(frame_binary)::little-integer-32, frame_binary::binary>>
-    end
+    {:noreply, socket}
+  end
 
-    # Combine header and all frame data
-    IO.iodata_to_binary([header, frame_binaries])
+  @impl true
+  def handle_in("request_batch", payload, socket) do
+    controller_id = socket.assigns.controller_id
+
+    # Extract request details
+    last_sequence = Map.get(payload, "last_sequence", 0)
+    space_available = Map.get(payload, "space_available", 60)
+    urgent = Map.get(payload, "urgent", false)
+
+    Logger.debug("Batch request from controller #{controller_id}: last_seq=#{last_sequence}, space=#{space_available}, urgent=#{urgent}")
+
+    # Forward request to frame buffer
+    FrameBuffer.handle_batch_request(controller_id, last_sequence, space_available, urgent)
+
+    {:reply, {:ok, %{status: "request_received"}}, socket}
+  end
+
+  # Helper to convert frames to binary format
+  defp frames_batch_to_binary(frames, pattern_id, sequence, timestamp) do
+    # Header: pattern_id (32 bits) + sequence (32 bits) + timestamp (64 bits)
+    header = <<pattern_id::32, sequence::32, timestamp::64>>
+
+    # Join all frames into a single binary
+    frames_binary = Enum.reduce(frames, <<>>, fn frame, acc ->
+      # Each frame: length (16 bits) + data
+      frame_size = byte_size(frame)
+      <<acc::binary, frame_size::16, frame::binary>>
+    end)
+
+    # Return header + frames data
+    <<header::binary, frames_binary::binary>>
   end
 end

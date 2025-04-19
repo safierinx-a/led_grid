@@ -182,10 +182,6 @@ class LegridController:
         self.last_displayed_frame_id = None  # Track the last displayed frame ID
         self.priority_pattern_change = False  # Flag for high-priority pattern changes
 
-        # Batch tracking for flow control
-        self.last_batch_sequence = 0  # Last received batch sequence number
-        self.last_batch_timestamp = 0  # Timestamp of last received batch
-
         # Log grid configuration
         logger.info(
             f"Grid configuration: {self.width}x{self.height}, layout={self.layout}"
@@ -709,6 +705,15 @@ class LegridController:
         # Send join message
         ws.send(json.dumps(join_message))
 
+        # Set up batch request timer after connected
+        # Initialize with a sensible default if not already done
+        if not hasattr(self, "last_processed_batch"):
+            self.last_processed_batch = 0
+
+        # Request first batch after a short delay to allow connection to stabilize
+        time.sleep(0.5)
+        self.request_next_batch(urgent=True)
+
         # Send controller info after successful connection
         self.send_controller_info()
 
@@ -823,77 +828,34 @@ class LegridController:
 
                         # Check for parameter changes
                         if "parameters" in payload:
-                            # Compare with last parameters
                             if (
                                 not hasattr(self, "last_parameters")
                                 or self.last_parameters != payload["parameters"]
                             ):
-                                # Calculate what parameters changed
                                 param_diff = ""
-                                significant_changes = False
-
                                 if hasattr(self, "last_parameters"):
                                     # Only log changes in non-high-fps scenarios
                                     if self.stats["fps"] < 20:
                                         old_params = set(self.last_parameters.items())
                                         new_params = set(payload["parameters"].items())
                                         changes = new_params - old_params
-
                                         if changes:
                                             param_diff = f" Changes: {changes}"
-
-                                            # Determine if the changes are significant enough to require buffer clearing
-                                            significant_param_keys = {
-                                                "mode",
-                                                "type",
-                                                "effect",
-                                                "speed",
-                                                "pattern",
-                                            }
-                                            significant_changes = any(
-                                                key
-                                                for key, _ in changes
-                                                if any(
-                                                    sig_key in key.lower()
-                                                    for sig_key in significant_param_keys
-                                                )
+                                            is_priority = (
+                                                True  # Parameter changes get priority
                                             )
 
-                                            # Only set priority for significant changes
-                                            if significant_changes:
-                                                is_priority = True  # Only significant parameter changes get priority
+                            self.last_parameters = payload["parameters"].copy()
+                            clear_needed = True
+                            logger.info(
+                                f"Pattern parameters changed.{param_diff} Clearing LEDs."
+                            )
+                            # Also reinitialize LED state on parameter changes
+                            self.led_state_initialized = False
 
-                                # Store last parameters for next comparison
-                                self.last_parameters = payload["parameters"].copy()
-
-                                # Log the changes
-                                logger.info(
-                                    f"Pattern parameters changed.{param_diff}"
-                                    + (
-                                        " Significant changes - clearing LEDs."
-                                        if significant_changes
-                                        else ""
-                                    )
-                                )
-
-                                # Only certain parameter changes require clearing
-                                if significant_changes:
-                                    clear_needed = True
-                                    # Also reinitialize LED state on parameter changes
-                                    self.led_state_initialized = False
-
-                                    # Only clear buffer for significant parameter changes
-                                    if self.enable_buffer and significant_changes:
-                                        logger.info(
-                                            "Significant parameter change - clearing buffer"
-                                        )
-                                        self.clear_frame_buffer()
-                                else:
-                                    # For minor parameter changes, no need to clear everything
-                                    logger.debug(
-                                        "Minor parameter changes - not clearing buffer or LEDs"
-                                    )
-                                    clear_needed = False
+                            # If using buffer, clear it on parameter change
+                            if self.enable_buffer:
+                                self.clear_frame_buffer()
 
                         # Increment frame counter
                         self.frame_counter += 1
@@ -930,24 +892,6 @@ class LegridController:
                             # Record frame ID if available for dashboard sync
                             if "id" in payload:
                                 self.last_displayed_frame_id = payload["id"]
-
-                            # Check if this frame has parameter change metadata
-                            if payload.get("metadata", {}).get("param_change", False):
-                                # This frame contains parameter changes
-                                is_significant = payload.get("metadata", {}).get(
-                                    "significant_change", False
-                                )
-                                logger.info(
-                                    f"Frame contains parameter changes (significant={is_significant})"
-                                )
-
-                                # Only for significant changes, we might want to set priority
-                                if is_significant:
-                                    is_priority = True
-                                    clear_needed = True
-                                else:
-                                    # For minor parameter tweaks, no need for priority treatment
-                                    is_priority = False
 
                             # Only log at lower frame rates
                             if self.stats["fps"] < 20:
@@ -1374,6 +1318,19 @@ class LegridController:
 
         # Normal frame handling - add to buffer if space available
         with self.buffer_lock:
+            # Check if we're approaching buffer capacity
+            buffer_fullness = len(self.frame_buffer) / self.buffer_size
+
+            if buffer_fullness > 0.9 and not priority:
+                # Buffer nearly full (90% or more) - implement adaptive dropping strategy
+                # Drop every other frame to prevent overflow
+                if self.stats["frames_buffered"] % 2 == 0:
+                    logger.warning(
+                        f"Buffer at {buffer_fullness:.1%} - dropping frame to prevent overflow"
+                    )
+                    self.stats["frames_dropped"] += 1
+                    return False
+
             if len(self.frame_buffer) < self.buffer_size:
                 # Add frame with timestamp
                 self.frame_buffer.append((time.time(), frame_data))
@@ -1414,15 +1371,32 @@ class LegridController:
             1.0 / self.buffer_playback_rate
         )  # Time between frames in seconds
         last_frame_time = 0
-        last_buffer_status_time = 0
-        buffer_status_interval = 0.5  # Send buffer status every 500ms
 
         try:
             while self.buffer_running and running:
                 current_time = time.time()
 
+                # Calculate frame display time based on transition state
+                current_interval = frame_interval
+                if (
+                    hasattr(self, "transition_speed_multiplier")
+                    and self.transition_speed_multiplier > 1.0
+                ):
+                    # During transition, play frames faster
+                    current_interval = frame_interval / self.transition_speed_multiplier
+
+                    # Gradually reduce the multiplier back to 1.0
+                    self.transition_speed_multiplier = max(
+                        1.0, self.transition_speed_multiplier - 0.1
+                    )
+
+                    if self.transition_speed_multiplier == 1.0:
+                        logger.info(
+                            "Transition complete, resuming normal playback speed"
+                        )
+
                 # Check if it's time to display the next frame
-                if current_time - last_frame_time >= frame_interval:
+                if current_time - last_frame_time >= current_interval:
                     # Get next frame from buffer
                     frame_data = None
                     with self.buffer_lock:
@@ -1450,35 +1424,37 @@ class LegridController:
 
                         last_frame_time = current_time
 
-                        # Synchronize dashboard with current state immediately after frame display
-                        if (
-                            current_time - last_buffer_status_time
-                            >= buffer_status_interval
-                        ):
-                            self.sync_dashboard_state(include_flow_control=True)
-                            last_buffer_status_time = current_time
+                        # Synchronize dashboard with current state
+                        self.sync_dashboard_state()
                     else:
                         # Buffer underrun - no frames available
                         self.stats["buffer_underruns"] += 1
                         logger.debug("Buffer underrun - no frames available")
 
-                        # Send buffer status immediately to request more frames
-                        self.sync_dashboard_state(include_flow_control=True)
-                        last_buffer_status_time = current_time
+                        # Request more frames immediately on underrun
+                        self.request_next_batch(urgent=True)
 
-                # Check if buffer is empty and has been empty for a while
+                # Check if buffer is getting low, request more frames
                 with self.buffer_lock:
-                    # Check if it's time to send buffer status
-                    if current_time - last_buffer_status_time >= buffer_status_interval:
-                        self.sync_dashboard_state(include_flow_control=True)
-                        last_buffer_status_time = current_time
-
-                    if not self.frame_buffer and current_time - last_frame_time > 1.0:
-                        logger.debug(
-                            "Buffer empty for 1 second, stopping playback thread"
-                        )
-                        self.buffer_running = False
-                        break
+                    if self.frame_buffer:
+                        buffer_fullness = len(self.frame_buffer) / self.buffer_size
+                        # Request more frames if buffer is less than 50% full
+                        if buffer_fullness < 0.5:
+                            # Only request if we haven't requested recently
+                            if (
+                                not hasattr(self, "last_batch_request_time")
+                                or current_time - self.last_batch_request_time > 0.2
+                            ):  # 200ms minimum between requests
+                                self.request_next_batch()
+                                self.last_batch_request_time = current_time
+                    else:
+                        # Empty buffer case - check if it's been empty for a while
+                        if current_time - last_frame_time > 1.0:
+                            logger.debug(
+                                "Buffer empty for 1 second, attempting to refill"
+                            )
+                            self.request_next_batch(urgent=True)
+                            # But don't stop playback thread, keep checking
 
                 # Sleep for a small amount to avoid CPU spinning
                 # Use 1/4 of frame interval to have good timing precision
@@ -1491,34 +1467,14 @@ class LegridController:
             logger.error(traceback.format_exc())
             self.buffer_running = False
 
-    def sync_dashboard_state(self, include_flow_control=False):
+    def sync_dashboard_state(self):
         """Send synchronization data to the dashboard to keep it in sync with the display"""
         # Only sync periodically to avoid too much network traffic
         current_time = time.time()
         if (
             current_time - self.stats["last_dashboard_sync"] < 0.5
-        ) and not include_flow_control:  # Sync every 500ms max
+        ):  # Sync every 500ms max
             return
-
-        # Create flow control metrics
-        with self.buffer_lock:
-            buffer_length = len(self.frame_buffer)
-            buffer_fullness = (
-                buffer_length / self.buffer_size if self.buffer_size > 0 else 0
-            )
-
-        flow_control = {
-            "buffer_fullness": buffer_fullness,
-            "buffer_size": self.buffer_size,
-            "playback_rate": self.buffer_playback_rate,
-            "actual_fps": self.stats["fps"],
-            "underruns": self.stats["buffer_underruns"],
-            "overruns": self.stats["buffer_overruns"],
-            "can_receive": buffer_fullness
-            < 0.8,  # Accept more batches if buffer is below 80%
-            "sequence_received": self.last_batch_sequence,
-            "timestamp": current_time,
-        }
 
         # Create sync message with current display state
         try:
@@ -1530,11 +1486,10 @@ class LegridController:
                     "timestamp": current_time,
                     "frame_id": self.last_displayed_frame_id,
                     "buffer_stats": {
-                        "fullness": buffer_fullness,
+                        "fullness": self.stats["buffer_fullness"],
                         "fps": self.stats["fps"],
-                        "queue_length": buffer_length,
+                        "queue_length": len(self.frame_buffer),
                     },
-                    "flow_control": flow_control,
                 },
                 "ref": None,
             }
@@ -1542,10 +1497,7 @@ class LegridController:
             if self.ws and self.ws.sock and self.ws.sock.connected:
                 self.ws.send(json.dumps(sync_data))
                 self.stats["last_dashboard_sync"] = current_time
-                logger.debug(
-                    "Sent dashboard sync data"
-                    + (" with flow control" if include_flow_control else "")
-                )
+                logger.debug("Sent dashboard sync data")
         except Exception as e:
             logger.error(f"Error sending dashboard sync: {e}")
 
@@ -1600,74 +1552,70 @@ class LegridController:
           - N bytes: Frame data
         """
         try:
-            # Parse basic header first
-            if len(message) < 18:  # Minimal header size
-                logger.warning(
-                    f"Batch too short ({len(message)} bytes), need at least 18 bytes"
-                )
-                return
-
             # Parse batch header
             frame_count = struct.unpack("<I", message[1:5])[0]
             is_priority = message[5] == 1
 
-            # Check for extended header with sequence and timestamp
-            if len(message) >= 18:
-                sequence = struct.unpack("<I", message[6:10])[0]
-                timestamp = struct.unpack("<Q", message[10:18])[0]
-                offset = 18  # Start of frame data after full header
-            else:
-                # Backwards compatibility for older format without sequence
-                sequence = self.last_batch_sequence + 1
-                timestamp = int(time.time() * 1000)
-                offset = 6  # Old format header was only 6 bytes
+            # Extract batch sequence and timestamp if available (bytes 6-17)
+            batch_sequence = 0
+            batch_timestamp = 0
 
-            logger.info(
-                f"Processing batch #{sequence} with {frame_count} frames, priority={is_priority}"
-            )
-
-            # Store batch sequence for flow control
-            # For out-of-order detection
-            if sequence <= self.last_batch_sequence and not is_priority:
-                logger.warning(
-                    f"Received out-of-order batch #{sequence} (last was #{self.last_batch_sequence})"
+            if len(message) >= 18:  # We have sequence and timestamp info
+                batch_sequence = struct.unpack("<I", message[6:10])[0]
+                batch_timestamp = struct.unpack("<Q", message[10:18])[0]
+                logger.info(
+                    f"Received batch sequence #{batch_sequence} with timestamp {batch_timestamp}, contains {frame_count} frames"
                 )
-                # Still process priority frames even if out of order
-                if not is_priority:
-                    logger.info(
-                        f"Skipping batch #{sequence} as it's older than last processed #{self.last_batch_sequence}"
+                offset = 18  # Start of frame data
+            else:
+                # Backward compatibility with old format
+                logger.info(f"Received legacy batch without sequence info")
+                offset = 6  # Start of frame data in old format
+
+            # Check if this batch should be processed or discarded based on sequence
+            if hasattr(self, "last_processed_batch") and batch_sequence > 0:
+                # If we receive an older batch than what we've already processed, discard it
+                if batch_sequence < self.last_processed_batch and not is_priority:
+                    logger.warning(
+                        f"Discarding out-of-sequence batch #{batch_sequence} (already processed #{self.last_processed_batch})"
                     )
-                    # Update flow control to notify server we're ahead
-                    self.sync_dashboard_state(include_flow_control=True)
                     return
 
-            self.last_batch_sequence = sequence
-            self.last_batch_timestamp = timestamp
+                # If we receive a batch that's more than one ahead of what we expect, log a warning
+                if batch_sequence > self.last_processed_batch + 1 and not is_priority:
+                    logger.warning(
+                        f"Received batch #{batch_sequence} but expected #{self.last_processed_batch + 1} - possible missing batch"
+                    )
 
-            # For high priority batches, clear the buffer first
-            if is_priority and self.enable_buffer:
-                logger.info("Priority batch received, clearing buffer")
-                self.clear_frame_buffer()
-
-            # Check buffer fullness before accepting new frames
-            buffer_fullness = 0
-            with self.buffer_lock:
-                buffer_fullness = (
-                    len(self.frame_buffer) / self.buffer_size
-                    if self.buffer_size > 0
-                    else 0
+            if is_priority:
+                logger.info(
+                    f"Priority batch #{batch_sequence} received with {frame_count} frames"
                 )
 
-            # Check if we have room for this batch (unless it's priority)
-            if not is_priority and buffer_fullness > 0.8:
-                logger.warning(
-                    f"Buffer near full ({buffer_fullness * 100:.1f}%), skipping non-priority batch #{sequence}"
-                )
-                # Immediately send buffer status to adjust sending rate
-                self.sync_dashboard_state(include_flow_control=True)
-                return
+                # Implement transitional approach for priority batches
+                with self.buffer_lock:
+                    # Keep track of how many frames we've played from previous pattern
+                    previous_pattern_frames = len(self.frame_buffer)
 
-            # Process frames in batch
+                    # We don't completely clear the buffer, but we mark all existing frames
+                    # to be played quickly in a shortened timeframe
+                    if previous_pattern_frames > 0:
+                        logger.info(
+                            f"Transitioning from previous pattern with {previous_pattern_frames} frames remaining"
+                        )
+                        # Adjust play speed for existing frames to complete faster
+                        self.transition_speed_multiplier = 3.0  # Play 3x faster
+                    else:
+                        # No transition needed
+                        self.transition_speed_multiplier = 1.0
+            else:
+                logger.debug(
+                    f"Processing regular batch #{batch_sequence} with {frame_count} frames"
+                )
+                # Regular frame batch - no transition needed
+                if not hasattr(self, "transition_speed_multiplier"):
+                    self.transition_speed_multiplier = 1.0
+
             frames_processed = 0
 
             while offset < len(message) and frames_processed < frame_count:
@@ -1695,7 +1643,7 @@ class LegridController:
 
                 # Process the frame (buffer or display directly)
                 if self.enable_buffer:
-                    # For priority frames or when the buffer is empty, process faster
+                    # For priority frames or when the buffer is empty, process immediately
                     if is_priority or len(self.frame_buffer) == 0:
                         self.buffer_frame(frame_data, priority=is_priority)
                     else:
@@ -1713,15 +1661,32 @@ class LegridController:
             # If we processed all frames, log success
             if frames_processed == frame_count:
                 logger.info(
-                    f"Successfully processed all {frame_count} frames in batch #{sequence}"
+                    f"Successfully processed all {frame_count} frames in batch #{batch_sequence}"
                 )
             else:
                 logger.warning(
-                    f"Processed {frames_processed}/{frame_count} frames in batch #{sequence}"
+                    f"Processed {frames_processed}/{frame_count} frames in batch #{batch_sequence}"
                 )
 
-            # Send buffer status update after processing batch
-            self.sync_dashboard_state(include_flow_control=True)
+            # Update the last processed batch sequence
+            if batch_sequence > 0:
+                self.last_processed_batch = batch_sequence
+
+            # Schedule next batch request soon after processing, especially for priority
+            if is_priority:
+                self.request_next_batch_soon(100)  # Request more in 100ms
+            else:
+                # Regular request timing based on buffer fullness
+                buffer_fullness = (
+                    len(self.frame_buffer) / self.buffer_size
+                    if self.enable_buffer
+                    else 0
+                )
+                # The emptier the buffer, the sooner we request
+                delay = int(
+                    1000 * (0.2 + buffer_fullness * 0.3)
+                )  # 200-500ms based on fullness
+                self.request_next_batch_soon(delay)
 
         except Exception as e:
             logger.error(f"Error processing batch frames: {e}")
@@ -1730,10 +1695,49 @@ class LegridController:
             logger.error(traceback.format_exc())
 
             # Log the batch header for debugging
-            if len(message) >= 18:
-                logger.error(f"Batch header: {message[:18].hex()}")
-            elif len(message) >= 6:
-                logger.error(f"Batch header: {message[:6].hex()}")
+            if len(message) >= 10:
+                logger.error(f"Batch header: {message[:10].hex()}")
+
+    def request_next_batch_soon(self, delay_ms=100):
+        """Schedule a batch request soon after a priority change"""
+
+        def request_batch():
+            self.request_next_batch(urgent=True)
+
+        threading.Timer(delay_ms / 1000.0, request_batch).start()
+
+    def request_next_batch(self, urgent=False):
+        """Request the next batch of frames from the server"""
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            # Calculate how many frames we can safely accept
+            if self.enable_buffer:
+                space_available = max(0, self.buffer_size - len(self.frame_buffer))
+                # Don't request if buffer is too full (>75%) unless urgent
+                if len(self.frame_buffer) / self.buffer_size > 0.75 and not urgent:
+                    logger.debug(
+                        f"Buffer at {len(self.frame_buffer) / self.buffer_size:.1%} - deferring batch request"
+                    )
+                    return
+            else:
+                space_available = 30  # Default for non-buffered mode
+
+            request = {
+                "topic": "controller:lobby",
+                "event": "request_batch",
+                "payload": {
+                    "controller_id": self.controller_id,
+                    "last_sequence": getattr(self, "last_processed_batch", 0),
+                    "space_available": space_available,
+                    "urgent": urgent,
+                    "timestamp": int(time.time() * 1000),
+                },
+                "ref": None,
+            }
+
+            self.ws.send(json.dumps(request))
+            logger.debug(
+                f"Requested next batch after sequence #{getattr(self, 'last_processed_batch', 0)}, space: {space_available}, urgent: {urgent}"
+            )
 
 
 def parse_args():

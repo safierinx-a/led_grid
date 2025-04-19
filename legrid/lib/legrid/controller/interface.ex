@@ -304,6 +304,39 @@ defmodule Legrid.Controller.Interface do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_info({:batch_ready, controller_id, sequence, buffer_fullness, buffer_capacity}, state) do
+    Logger.debug("Controller #{controller_id} processed batch ##{sequence}, buffer fullness: #{buffer_fullness}")
+
+    # Signal to the frame buffer that a controller is ready for more frames
+    try do
+      Legrid.Controller.FrameBuffer.controller_ready(controller_id, sequence, buffer_fullness, buffer_capacity)
+    rescue
+      _ -> :ok # Silently handle if frame buffer module doesn't implement this yet
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:batch_requested, controller_id, last_sequence, space_available, urgent}, state) do
+    Logger.debug("Controller #{controller_id} requested batch after sequence #{last_sequence}, space: #{space_available}, urgent: #{urgent}")
+
+    # Signal to the frame buffer that a controller is requesting frames
+    try do
+      Legrid.Controller.FrameBuffer.handle_batch_request(controller_id, last_sequence, space_available, urgent)
+    rescue
+      e ->
+        Logger.error("Error handling batch request: #{inspect(e)}")
+        # Fall back to sending a frame directly if frame buffer doesn't support batch requests
+        if state.last_frame do
+          Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:frames", {:frame, state.last_frame})
+        end
+    end
+
+    {:noreply, state}
+  end
+
   # Helper functions
 
   defp maybe_get_buffer_status do

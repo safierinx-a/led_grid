@@ -141,35 +141,9 @@ defmodule Legrid.Patterns.Runner do
     if state.current_pattern && state.module && state.state do
       # Check if the module supports parameter updates
       if function_exported?(state.module, :update_params, 2) do
-        # Determine significance of parameter changes
-        significant_change = check_significant_parameter_changes(params, state.state)
-
         case state.module.update_params(state.state, params) do
           {:ok, new_state} ->
-            # Generate a frame with parameter change flag
-            case state.module.render(new_state, 0) do
-              {:ok, frame, _} ->
-                # Mark this frame with parameter change
-                frame = Legrid.Controller.Frame.mark_parameter_change(frame, significant_change)
-
-                # Add pattern ID to metadata
-                metadata = (frame.metadata || %{})
-                |> Map.put("pattern_id", state.current_pattern)
-                |> Map.put("param_change", true)
-                |> Map.put("significant_change", significant_change)
-
-                frame = %{frame | metadata: metadata}
-
-                # Broadcast the frame immediately
-                Phoenix.PubSub.broadcast(Legrid.PubSub, "frames", {:frame, frame})
-
-                # Return the updated state
-                {:reply, :ok, %{state | state: new_state}}
-
-              _ ->
-                # If render failed, just update state
-                {:reply, :ok, %{state | state: new_state}}
-            end
+            {:reply, :ok, %{state | state: new_state}}
 
           {:error, _} = error ->
             {:reply, error, state}
@@ -280,24 +254,5 @@ defmodule Legrid.Patterns.Runner do
 
   defp create_blank_pixels(count) do
     for _i <- 1..count, do: {0, 0, 0}
-  end
-
-  # Helper function to check if parameter changes are significant
-  defp check_significant_parameter_changes(params, state) do
-    # Get current parameters from state if possible
-    current_params = case state do
-      %{params: current} when is_map(current) -> current
-      _ -> %{}
-    end
-
-    # Check for keys that typically cause significant visual changes
-    significant_keys = ["mode", "type", "effect", "pattern", "speed", "color_mode"]
-
-    # Check if any significant keys have changed
-    Enum.any?(significant_keys, fn key ->
-      # Only consider significant if parameter exists in both maps and has changed
-      Map.has_key?(params, key) and Map.has_key?(current_params, key) and
-        params[key] != current_params[key]
-    end)
   end
 end
