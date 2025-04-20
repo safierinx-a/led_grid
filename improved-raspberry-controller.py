@@ -807,9 +807,30 @@ class LegridController:
         self.width = args.width
         self.height = args.height
         self.led_count = args.led_count
-        self.brightness = args.brightness
+        self.brightness = args.led_brightness
         self.server_url = args.server_url
         self.controller_id = args.controller_id or str(uuid.uuid4())
+
+        # Store controller ID to a file for persistence
+        if not args.controller_id:
+            try:
+                id_file = os.path.join(
+                    os.path.dirname(os.path.realpath(__file__)), "controller_id.txt"
+                )
+                if os.path.exists(id_file):
+                    with open(id_file, "r") as f:
+                        saved_id = f.read().strip()
+                        if saved_id:
+                            self.controller_id = saved_id
+                            logger.info(
+                                f"Loaded controller ID from file: {self.controller_id}"
+                            )
+
+                # Save the ID to file (whether new or loaded)
+                with open(id_file, "w") as f:
+                    f.write(self.controller_id)
+            except Exception as e:
+                logger.warning(f"Error managing controller ID file: {e}")
 
         # Layout settings
         self.layout = args.layout
@@ -896,12 +917,15 @@ class LegridController:
             self.current_led_state[i] = (0, 0, 0)
 
         # Show changes
-        if HARDWARE_AVAILABLE:
-            self.strip.show()
-        else:
-            self.strip.show()
+        try:
+            if HARDWARE_AVAILABLE:
+                self.strip.show()
+            else:
+                self.strip.show()
+        except Exception as e:
+            logger.error(f"Error showing LED strip: {e}")
 
-        # Mark as initialized
+        # We've now initialized the LED state
         self.led_state_initialized = True
         logger.info("Cleared all LEDs")
 
@@ -1294,24 +1318,29 @@ class LegridController:
 
                     if 0 <= dest_idx < self.led_count:
                         # Save old value for delta tracking
-                        old_value = self.current_led_state[dest_idx]
                         new_value = (r, g, b)
 
                         # Update state tracking
                         self.current_led_state[dest_idx] = new_value
 
-                        # Update LED
-                        if HARDWARE_AVAILABLE:
-                            self.strip[dest_idx] = (r, g, b)
-                        else:
-                            color = (r << 16) | (g << 8) | b
-                            self.strip.setPixelColor(dest_idx, color)
+                        try:
+                            # Update LED
+                            if HARDWARE_AVAILABLE:
+                                self.strip[dest_idx] = (r, g, b)
+                            else:
+                                color = (r << 16) | (g << 8) | b
+                                self.strip.setPixelColor(dest_idx, color)
+                        except IndexError:
+                            logger.warning(f"LED index {dest_idx} out of bounds")
 
         # Show the strip
-        if HARDWARE_AVAILABLE:
-            self.strip.show()
-        else:
-            self.strip.show()
+        try:
+            if HARDWARE_AVAILABLE:
+                self.strip.show()
+            else:
+                self.strip.show()
+        except Exception as e:
+            logger.error(f"Error showing LED strip: {e}")
 
         # We've now initialized the LED state
         self.led_state_initialized = True
@@ -1361,17 +1390,23 @@ class LegridController:
                     self.current_led_state[dest_idx] = (r, g, b)
 
                     # Update LED
-                    if HARDWARE_AVAILABLE:
-                        self.strip[dest_idx] = (r, g, b)
-                    else:
-                        color = (r << 16) | (g << 8) | b
-                        self.strip.setPixelColor(dest_idx, color)
+                    try:
+                        if HARDWARE_AVAILABLE:
+                            self.strip[dest_idx] = (r, g, b)
+                        else:
+                            color = (r << 16) | (g << 8) | b
+                            self.strip.setPixelColor(dest_idx, color)
+                    except IndexError:
+                        logger.warning(f"LED index {dest_idx} out of bounds")
 
         # Show the strip
-        if HARDWARE_AVAILABLE:
-            self.strip.show()
-        else:
-            self.strip.show()
+        try:
+            if HARDWARE_AVAILABLE:
+                self.strip.show()
+            else:
+                self.strip.show()
+        except Exception as e:
+            logger.error(f"Error showing LED strip: {e}")
 
     def send_controller_info(self):
         """Send controller information after connection"""
