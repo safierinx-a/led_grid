@@ -98,26 +98,12 @@ defmodule Legrid.Patterns.Registry do
 
   defp discover_patterns do
     # Register our built-in patterns
-    known_patterns = [SineWave, Lissajous, GameOfLife, PixelArt, OpticalIllusion, Clock, RadarSweep, ComplexPixelArt]
+    known_patterns = [SineWave, Lissajous, GameOfLife, PixelArt, OpticalIllusion, Clock, RadarSweep, ComplexPixelArt, GradientFlow, AttractorTracer, WaveModulation, PolygonMorph, TheatreText, FlowField, WaveInterference, Spiral]
 
     Enum.reduce(known_patterns, %{}, fn module, acc ->
       if implements_behaviour?(module, PatternBehaviour) do
         metadata = module.metadata()
         Map.put(acc, metadata.id, module)
-      else
-        acc
-      end
-    end)
-  end
-
-  defp implements_behaviour?(module, behaviour) do
-    behaviours = module.module_info(:attributes)
-    |> Keyword.get(:behaviour, [])
-
-    behaviour in behaviours
-  end
-end
-ap.put(acc, metadata.id, module)
       else
         acc
       end
