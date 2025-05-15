@@ -32,6 +32,14 @@ logging.basicConfig(
 for logger_name in ["websocket", "legrid-controller"]:
     logging.getLogger(logger_name).setLevel(logging.DEBUG)
 
+# Add logging handler for the Python controller
+controller_logger = logging.getLogger("legrid-controller")
+controller_logger.setLevel(logging.DEBUG)
+
+# Add logging for key libraries
+for lib in ["json", "websocket-client", "requests"]:
+    logging.getLogger(lib).setLevel(logging.DEBUG)
+
 print("=" * 60)
 print("LED GRID CONTROLLER TEST")
 print("=" * 60)
@@ -54,5 +62,8 @@ if __name__ == "__main__":
         print("\nTest interrupted by user")
     except Exception as e:
         print(f"\nError during test: {e}")
+        import traceback
+
+        traceback.print_exc()
     finally:
         print("Test completed")

@@ -249,15 +249,19 @@ class ConnectionManager:
                     "response" in payload
                     and payload["response"].get("status") == "connected"
                 ):
-                    logger.info("Successfully joined controller channel")
+                    # Mark channel as joined
                     self.channel_joined = True
+                    logger.info("Successfully joined controller channel")
 
                     # Send controller info
                     self.send_controller_info()
 
                     # Request initial batch of frames
                     logger.info("Requesting initial batch of frames")
-                    self._request_batch(0)
+                    if self._request_batch(0):
+                        logger.info("Initial batch request sent successfully")
+                    else:
+                        logger.error("Failed to send initial batch request")
 
             elif event == "frame":
                 # Handle frame message
@@ -311,8 +315,9 @@ class ConnectionManager:
                     pattern = payload.get("pattern", "unknown")
                     priority = payload.get("priority", 0)
 
+                    # Check if we have binary data in the payload
                     if "binary" in payload:
-                        # Extract and decode binary data
+                        # The binary data is base64 encoded in JSON
                         binary_data = base64.b64decode(payload["binary"])
                         logger.info(
                             f"Processing batch: {len(binary_data)} bytes, seq={seq}, pattern={pattern}"
@@ -322,21 +327,54 @@ class ConnectionManager:
                         self.on_frame_callback(binary_data)
                         self._update_frame_stats()
                     else:
-                        # Fallback for non-binary payloads (less common)
-                        logger.debug("Processing batch data from payload (non-binary)")
-                        self.on_frame_callback(message)
-                        self._update_frame_stats()
+                        # This might be JSON data containing the batch
+                        # Try to extract it from the message
+                        try:
+                            # The message might be the original WebSocket message
+                            if isinstance(message, bytes):
+                                # Direct binary data
+                                logger.debug("Processing raw binary message")
+                                self.on_frame_callback(message)
+                            else:
+                                # If we have full JSON message, try to find binary content
+                                logger.debug(
+                                    "No binary field found in payload, checking message format"
+                                )
+                                if "frames" in payload:
+                                    # This might be a list of frames in JSON format
+                                    # Not currently implemented - server should use binary
+                                    logger.warning(
+                                        "JSON frame format not supported, server should use binary"
+                                    )
+                                else:
+                                    logger.error(
+                                        "Missing binary data in batch, cannot process frames"
+                                    )
 
-                    # Request the next batch of frames
-                    self._request_batch(seq + 1)
+                            # Update stats if we processed anything
+                            self._update_frame_stats()
+                        except Exception as e:
+                            logger.error(f"Failed to process non-binary batch: {e}")
+
+                    # Request the next batch of frames - always do this even if there was an error
+                    # so we don't get stuck
+                    if self.connected and self.channel_joined:
+                        logger.debug(f"Requesting next batch after seq={seq}")
+                        self._request_batch(seq + 1)
+                    else:
+                        logger.warning(
+                            "Cannot request next batch: not connected or not joined"
+                        )
+
                 except Exception as e:
                     logger.error(f"Error processing display_batch: {e}")
-                    # Attempt to request next batch anyway
+                    # Attempt to request next batch anyway to prevent stalling
                     try:
-                        seq = payload.get("sequence", 0)
-                        self._request_batch(seq + 1)
-                    except:
-                        pass
+                        if self.connected and self.channel_joined:
+                            seq = payload.get("sequence", 0)
+                            self._request_batch(seq + 1)
+                    except Exception as ex:
+                        logger.error(f"Failed to request next batch: {ex}")
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -494,6 +532,11 @@ class ConnectionManager:
             return False
 
         try:
+            # Verify ws object exists
+            if not self.ws:
+                logger.error("WebSocket connection is None, cannot request batch")
+                return False
+
             # Default request size
             space = 60  # Request up to 60 frames at a time
 
