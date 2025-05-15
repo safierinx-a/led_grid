@@ -1,0 +1,3 @@
+websocket-client>=1.3.0
+# Hardware libraries (optional, only needed on Raspberry Pi with actual LEDs)
+# adafruit-circuitpython-neopixel>=6.3.0 

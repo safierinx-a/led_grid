@@ -1,123 +1,75 @@
-# Legrid LED Matrix Controller
+# AtomVM LED Grid Controller
 
-A flexible and performant controller for driving LED matrix displays with patterns from a web-based server. The system supports both Raspberry Pi hardware control and a mock implementation for development without physical hardware.
+An Erlang implementation of the LED grid controller for ESP32 using AtomVM.
 
-## Features
+## Why AtomVM?
 
-- Real-time control of WS2812B/NeoPixel LED matrices
-- WebSocket communication with the Legrid server
-- Support for binary and JSON frame formats
-- Automatic reconnection and error handling
-- Configurable settings via command-line arguments
-- Mock implementation for development without hardware
-- Performance statistics and diagnostics
+Using AtomVM for the ESP32 controller offers several advantages:
 
-## Requirements
+1. **Native Erlang/Elixir compatibility**: Since your server is built with Elixir/Phoenix, the controller using Erlang creates a unified technology stack.
+2. **Concurrency model**: The Erlang process model is perfect for handling multiple concurrent tasks like WebSocket communication and LED updates.
+3. **Fault tolerance**: Erlang's supervisor patterns and error handling provide better reliability.
+4. **Efficiency**: The lightweight VM is designed for embedded systems.
 
-### Hardware
+## Setup
 
-- Raspberry Pi (3B+ or newer recommended)
-- WS2812B/NeoPixel LED strip/matrix
-- 5V power supply (adequate for your LED count)
-- Level shifter (recommended for reliable signal)
+### Prerequisites
 
-### Software
+1. Install AtomVM toolchain:
 
-- Python 3.6+
-- rpi_ws281x library (for hardware control)
-- websocket-client library
+   ```
+   git clone https://github.com/atomvm/AtomVM.git
+   cd AtomVM
+   mkdir build
+   cd build
+   cmake ..
+   make
+   ```
 
-## Installation
+2. Install the AtomVM ESP32 binary:
 
-1. Clone this repository:
+   ```
+   cd packbeam
+   ./PackBEAM -i ../build/lib/atomvm/ebin/atomvmlib.avm -i led_controller.beam -i neopixel.beam -i jsx.beam -o led_controller.avm
+   ```
 
-```bash
-git clone https://github.com/yourusername/legrid-controller.git
-cd legrid-controller
-```
+3. Flash AtomVM to your ESP32:
 
-2. Install dependencies:
+   ```
+   esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 115200 write_flash -z 0x1000 atomvm-esp32.bin
+   ```
 
-```bash
-pip install websocket-client
-```
+4. Upload your application:
+   ```
+   esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 115200 write_flash -z 0x3A0000 led_controller.avm
+   ```
 
-3. Install rpi_ws281x (on Raspberry Pi only):
+## ESP-IDF Native Function Requirements
 
-```bash
-pip install rpi_ws281x
-```
+The `neopixel.erl` module relies on two native functions that need to be implemented in AtomVM's ESP32 port:
+
+- `esp:rmt_neopixel_init(Pin, NumLeds)`: Initializes the RMT peripheral for NeoPixel control
+- `esp:rmt_neopixel_show(Buffer)`: Sends the RGB data to the NeoPixel strip
+
+These functions need to be added to AtomVM's ESP-IDF driver. A minimal implementation can be found in the `esp_neopixel.c` file.
 
 ## Configuration
 
-The controller accepts various command-line arguments:
+Edit the `led_controller.erl` file to configure:
 
-| Argument           | Description                                 | Default             |
-| ------------------ | ------------------------------------------- | ------------------- |
-| `--width`          | Grid width                                  | 25                  |
-| `--height`         | Grid height                                 | 24                  |
-| `--led-count`      | Number of LEDs                              | 600                 |
-| `--led-pin`        | GPIO pin                                    | 18                  |
-| `--led-brightness` | LED brightness (0-255)                      | 255                 |
-| `--server-url`     | Legrid server URL                           | ws://localhost:8080 |
-| `--log-level`      | Logging level (DEBUG, INFO, WARNING, ERROR) | INFO                |
+- WiFi credentials
+- Server host and port
+- LED count and pin
+- Grid dimensions
 
-## Usage
+## Troubleshooting
 
-### Basic Usage
+If the LEDs don't light up:
 
-Run the controller with default settings:
-
-```bash
-python raspberry-controller.py
-```
-
-### Custom Configuration
-
-```bash
-python raspberry-controller.py --width 32 --height 32 --led-count 1024 --led-pin 18 --led-brightness 128 --server-url ws://your-server:8080 --log-level INFO
-```
-
-### Development Mode
-
-For development without actual hardware, the controller automatically uses a mock implementation when the rpi_ws281x library is not available.
-
-## Wiring Diagram
-
-```
-Raspberry Pi    Level Shifter    LED Strip
------------    -------------    ---------
-5V  ---------> 5V (HV)
-GND ---------> GND
-Pin 18 -------> A1        ----> Data In
-               B1
-               VCC (LV) <----- 3.3V
-               HV  <----------- 5V (from power supply)
-               GND <----------- GND (from power supply)
-```
-
-## Protocol
-
-The controller supports two frame formats:
-
-### Binary Format
-
-- 1 byte: protocol version
-- 1 byte: message type (1 = frame, 2 = delta frame)
-- 4 bytes: frame ID (uint32)
-- 2 bytes: width (uint16)
-- 2 bytes: height (uint16)
-- Remaining bytes: RGB pixel data (1 byte per channel)
-
-### JSON Format
-
-```json
-{
-  "type": "frame",
-  "id": "12345678",
-  "pixels": [[r,g,b], [r,g,b], ...]
-}
-```
+1. Check hardware connections (GPIO pin, power supply)
+2. Verify you're using the correct pin in the configuration
+3. Monitor the ESP32 console output for error messages
+4. Try the `test_gpio()` function to verify GPIO functionality
 
 ### Batch Frame Format
 
@@ -144,36 +96,4 @@ python batch-test.py --frames 120 --pattern rainbow
 
 ## License
 
-MIT License
-
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
-
-## Integration with Infrastructure Repository
-
-This LED grid controller is designed to work with the infrastructure repository located at `../infra`. The integration provides:
-
-- MQTT message broker for communication
-- Nginx reverse proxy for web access
-- Cloudflare Tunnel for secure internet access
-
-### How to run with infrastructure
-
-1. Start the infrastructure services first:
-
-   ```bash
-   cd ../infra
-   docker compose up -d
-   ```
-
-2. Once the infrastructure is running, you can start the LED grid services:
-
-   ```bash
-   cd ../led_grid
-   docker compose up -d
-   ```
-
-3. Access the LED grid dashboard at: `http://ledgrid.yourdomain.com`
-
-Note: The docker-compose.yml in this repository is configured to connect to the external network created by the infrastructure repository. Make sure the USER environment variable is set correctly in both .env files.
+MIT

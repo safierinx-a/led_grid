@@ -9,7 +9,21 @@ defmodule Legrid.Patterns.Registry do
   use GenServer
 
   alias Legrid.Patterns.PatternBehaviour
-  alias Legrid.Patterns.{SineWave, Lissajous, GameOfLife, PixelArt, OpticalIllusion, Clock, RadarSweep, PatternHelpers, ComplexPixelArt, TheatreText, FlowField, WaveInterference, Spiral}
+  alias Legrid.Patterns.{
+    SineWave,
+    Lissajous,
+    GameOfLife,
+    PixelArt,
+    OpticalIllusion,
+    Clock,
+    RadarSweep,
+    PatternHelpers,
+    ComplexPixelArt,
+    GradientFlow,
+    AttractorTracer,
+    WaveModulation,
+    PolygonMorph
+  }
 
   # Client API
 
@@ -80,7 +94,20 @@ defmodule Legrid.Patterns.Registry do
 
   defp discover_patterns do
     # Register our built-in patterns
-    known_patterns = [SineWave, Lissajous, GameOfLife, PixelArt, OpticalIllusion, Clock, RadarSweep, ComplexPixelArt, TheatreText, FlowField, WaveInterference, Spiral]
+    known_patterns = [
+      SineWave,
+      Lissajous,
+      GameOfLife,
+      PixelArt,
+      OpticalIllusion,
+      Clock,
+      RadarSweep,
+      ComplexPixelArt,
+      GradientFlow,
+      AttractorTracer,
+      WaveModulation,
+      PolygonMorph
+    ]
 
     Enum.reduce(known_patterns, %{}, fn module, acc ->
       if implements_behaviour?(module, PatternBehaviour) do

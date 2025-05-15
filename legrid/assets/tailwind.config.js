@@ -5,6 +5,15 @@ const plugin = require("tailwindcss/plugin");
 const fs = require("fs");
 const path = require("path");
 
+// Check if @tailwindcss/forms is installed
+let hasFormsPlugin = false;
+try {
+  require.resolve("@tailwindcss/forms");
+  hasFormsPlugin = true;
+} catch (error) {
+  console.warn("@tailwindcss/forms plugin not found, skipping");
+}
+
 module.exports = {
   content: [
     "./js/**/*.js",
@@ -19,7 +28,8 @@ module.exports = {
     },
   },
   plugins: [
-    require("@tailwindcss/forms"),
+    // Only use forms plugin if it's available
+    ...(hasFormsPlugin ? [require("@tailwindcss/forms")] : []),
     // Allows prefixing tailwind classes with LiveView classes to add rules
     // only when LiveView classes are applied, for example:
     //
@@ -51,37 +61,33 @@ module.exports = {
       let iconsDir = path.join(__dirname, "../deps/heroicons/optimized");
       let values = {};
 
-      // Check if heroicons directory exists
-      if (!fs.existsSync(iconsDir)) {
-        console.warn(
-          "Warning: Heroicons directory not found. Icon components won't be available."
-        );
-        return; // Skip icon processing
+      // Only proceed if the heroicons directory exists
+      if (fs.existsSync(iconsDir)) {
+        let icons = [
+          ["", "/24/outline"],
+          ["-solid", "/24/solid"],
+          ["-mini", "/20/solid"],
+          ["-micro", "/16/solid"],
+        ];
+        icons.forEach(([suffix, dir]) => {
+          const fullDir = path.join(iconsDir, dir);
+          if (fs.existsSync(fullDir)) {
+            fs.readdirSync(fullDir).forEach((file) => {
+              let name = path.basename(file, ".svg") + suffix;
+              values[name] = { name, fullPath: path.join(fullDir, file) };
+            });
+          }
+        });
       }
-
-      let icons = [
-        ["", "/24/outline"],
-        ["-solid", "/24/solid"],
-        ["-mini", "/20/solid"],
-        ["-micro", "/16/solid"],
-      ];
-
-      icons.forEach(([suffix, dir]) => {
-        const fullDir = path.join(iconsDir, dir);
-        // Check if each subdirectory exists before reading
-        if (fs.existsSync(fullDir)) {
-          fs.readdirSync(fullDir).forEach((file) => {
-            let name = path.basename(file, ".svg") + suffix;
-            values[name] = { name, fullPath: path.join(iconsDir, dir, file) };
-          });
-        } else {
-          console.warn(`Warning: Heroicons directory not found: ${fullDir}`);
-        }
-      });
 
       matchComponents(
         {
           hero: ({ name, fullPath }) => {
+            // Skip if the path doesn't exist
+            if (!fullPath || !fs.existsSync(fullPath)) {
+              return {};
+            }
+
             let content = fs
               .readFileSync(fullPath)
               .toString()
