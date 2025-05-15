@@ -255,6 +255,10 @@ class ConnectionManager:
                     # Send controller info
                     self.send_controller_info()
 
+                    # Request initial batch of frames
+                    logger.info("Requesting initial batch of frames")
+                    self._request_batch(0)
+
             elif event == "frame":
                 # Handle frame message
                 if "binary" in payload:
@@ -296,6 +300,43 @@ class ConnectionManager:
                         }
                     )
                 )
+
+            elif event == "display_batch":
+                # Process batch of frames
+                logger.debug(
+                    f"Received display_batch event with {len(str(payload))} bytes of data"
+                )
+                try:
+                    seq = payload.get("sequence", 0)
+                    pattern = payload.get("pattern", "unknown")
+                    priority = payload.get("priority", 0)
+
+                    if "binary" in payload:
+                        # Extract and decode binary data
+                        binary_data = base64.b64decode(payload["binary"])
+                        logger.info(
+                            f"Processing batch: {len(binary_data)} bytes, seq={seq}, pattern={pattern}"
+                        )
+
+                        # Process the binary batch
+                        self.on_frame_callback(binary_data)
+                        self._update_frame_stats()
+                    else:
+                        # Fallback for non-binary payloads (less common)
+                        logger.debug("Processing batch data from payload (non-binary)")
+                        self.on_frame_callback(message)
+                        self._update_frame_stats()
+
+                    # Request the next batch of frames
+                    self._request_batch(seq + 1)
+                except Exception as e:
+                    logger.error(f"Error processing display_batch: {e}")
+                    # Attempt to request next batch anyway
+                    try:
+                        seq = payload.get("sequence", 0)
+                        self._request_batch(seq + 1)
+                    except:
+                        pass
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -445,6 +486,36 @@ class ConnectionManager:
         self.reconnect_timer = threading.Timer(delay, self.connect)
         self.reconnect_timer.daemon = True
         self.reconnect_timer.start()
+
+    def _request_batch(self, sequence=0):
+        """Request a new batch of frames from the server"""
+        if not self.connected or not self.channel_joined:
+            logger.warning("Cannot request batch: not connected or not joined")
+            return False
+
+        try:
+            # Default request size
+            space = 60  # Request up to 60 frames at a time
+
+            # Create batch request message
+            request_message = {
+                "topic": "controller:lobby",
+                "event": "batch_request",
+                "payload": {
+                    "sequence": sequence,
+                    "space": space,
+                    "urgent": sequence == 0,  # First request is urgent
+                },
+                "ref": None,
+            }
+
+            # Send the request
+            self.ws.send(json.dumps(request_message))
+            logger.debug(f"Sent batch request: seq={sequence}, space={space}")
+            return True
+        except Exception as e:
+            logger.error(f"Error requesting batch: {e}")
+            return False
 
     def _cancel_timers(self):
         """Cancel all timers"""
