@@ -1,10 +1,11 @@
-# LED Grid Controller
+# Python LED Grid Controller
 
-A clean, modular implementation of the controller for the LED grid system, designed to work seamlessly with the Elixir/Phoenix server.
+A modular Python implementation of the LED grid controller that works seamlessly with the Elixir/Phoenix server.
 
-## Features
+## Key Features
 
-- Full frame binary protocol implementation
+- Full binary frame protocol implementation with batch processing
+- Proper batch acknowledgment and sequence tracking
 - Configurable LED grid layout and orientation
 - Robust WebSocket connection with automatic reconnection
 - Phoenix Channel integration with proper event handling
@@ -30,7 +31,48 @@ pip install adafruit-circuitpython-neopixel
 ### Basic Usage
 
 ```bash
-python -m py_controller.main --server-url ws://your-server:4000/controller/websocket
+# Run from the main directory
+cd py_controller
+python main.py
+
+# Or with custom configuration
+python main.py --server-url ws://your-server:4000/controller/websocket --width 25 --height 24
+```
+
+## Batch Frame Processing
+
+This controller implements an advanced binary batch frame protocol:
+
+- Receives and processes batches of frames for better performance
+- Properly acknowledges received batches with sequence numbers
+- Tracks and requests the next batch in sequence
+- Handles binary data directly for maximum efficiency
+
+The batch protocol provides:
+
+- Improved network efficiency with reduced overhead
+- Better buffer management and playback during network instability
+- Higher frame rates for smooth animations
+
+## Architecture
+
+The controller is organized into several modular components:
+
+- **Main Controller**: Orchestrates all components and manages lifecycle
+- **Connection Manager**: Manages WebSocket communication and batch processing
+- **Frame Processor**: Handles binary frame decoding and LED layout mapping
+- **Hardware Interface**: Abstracts the LED hardware control
+
+### Binary Protocol
+
+The controller implements the Legrid binary protocol:
+
+```
+Batch format:
+<Batch marker:1><Frame count:4><Priority:1><Sequence:4><Timestamp:8><Frames...>
+
+Frame format:
+<Length:4><Version:1><Type:1><FrameID:4><Width:2><Height:2><Pixels:3*width*height>
 ```
 
 ## Configuration
@@ -41,14 +83,14 @@ The controller can be configured via command-line arguments, environment variabl
 
 ```
 --config PATH               Path to configuration file
---width WIDTH               Grid width
---height HEIGHT             Grid height
---led-count COUNT           Number of LEDs
---led-pin PIN               GPIO pin for LED data
---brightness BRIGHTNESS     LED brightness (0-255)
---server-url URL            WebSocket server URL
---log-level LEVEL           Logging level (DEBUG, INFO, WARNING, ERROR)
---layout LAYOUT             LED strip layout pattern (linear, serpentine)
+--width WIDTH               Grid width (default: 25)
+--height HEIGHT             Grid height (default: 24)
+--led-count COUNT           Number of LEDs (default: width*height)
+--led-pin PIN               GPIO pin for LED data (default: 18)
+--brightness BRIGHTNESS     LED brightness (0-255) (default: 255)
+--server-url URL            WebSocket server URL (default: ws://localhost:4000/controller/websocket)
+--log-level LEVEL           Logging level (DEBUG, INFO, WARNING, ERROR) (default: INFO)
+--layout LAYOUT             LED strip layout pattern (linear, serpentine) (default: serpentine)
 --flip-x                    Flip grid horizontally
 --flip-y                    Flip grid vertically
 --transpose                 Transpose grid (swap X and Y axes)
@@ -61,7 +103,6 @@ Environment variables follow the pattern `LEGRID_VARIABLE_NAME`, e.g.:
 - `LEGRID_WIDTH` - Grid width
 - `LEGRID_HEIGHT` - Grid height
 - `LEGRID_SERVER_URL` - WebSocket server URL
-- etc.
 
 ### Configuration File
 
@@ -82,25 +123,6 @@ You can specify a JSON configuration file with the `--config` argument:
   "log_level": "INFO"
 }
 ```
-
-## Architecture
-
-The controller is organized into several modular components:
-
-- **Main Controller**: Orchestrates all components and manages lifecycle
-- **Frame Processor**: Handles binary frame processing and LED layout mapping
-- **Hardware Interface**: Abstracts the LED hardware control
-- **Connection Manager**: Manages WebSocket communication with the server
-
-### Binary Protocol
-
-The controller implements the Legrid binary protocol for efficient frame transmission:
-
-```
-<Version:1><Type:1><FrameID:4><Width:2><Height:2><Pixels:3*width*height>
-```
-
-This implementation focuses on full frame processing (Type 1) for simplicity and reliability.
 
 ## Running as a Service
 
