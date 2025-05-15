@@ -13,21 +13,30 @@ logger = logging.getLogger("legrid-controller")
 class ConnectionManager:
     """Manages WebSocket connection to the Phoenix server"""
 
-    def __init__(self, server_url, on_frame_callback, controller_id=None):
+    def __init__(self, server_url, on_frame_callback, config):
+        """Initialize WebSocket connection manager"""
         self.server_url = server_url
         self.on_frame_callback = on_frame_callback
-        self.controller_id = controller_id or str(uuid.uuid4())
-
-        # WebSocket connection
+        self.config = config
         self.ws = None
         self.connected = False
-        self.reconnect_attempts = 0
+        self.channel_joined = False
         self.reconnect_timer = None
         self.heartbeat_timer = None
-        self.stats_timer = None  # Initialize stats_timer attribute
+        self.reconnect_attempts = 0
 
-        # Phoenix channel state
-        self.channel_joined = False
+        # Handle both object and dict-style configs
+        if isinstance(config, dict):
+            self.enable_stats = config.get("enable_stats", True)
+            self.controller_id = config.get("controller_id", str(uuid.uuid4()))
+        else:
+            self.enable_stats = getattr(config, "enable_stats", True)
+            self.controller_id = getattr(config, "controller_id", str(uuid.uuid4()))
+
+        self.stats_timer = None
+
+        # Added for _next_ref method
+        self.ref_counter = 0
 
         # Stats and monitoring
         self.stats = {
@@ -39,9 +48,13 @@ class ConnectionManager:
             "fps": 0,
         }
 
+        self.frames_received = 0
+        self.frames_per_second = 0
+        self.last_fps_time = time.time()
+        self.last_parameters = None
+
         # Last received data for potential reconnection recovery
         self.last_pattern_id = None
-        self.last_parameters = None
 
     def connect(self):
         """Connect to the Phoenix WebSocket server"""
@@ -162,35 +175,39 @@ class ConnectionManager:
             logger.error(f"Error sending detailed stats: {e}")
 
     def send_controller_info(self):
-        """Send controller information"""
+        """Send controller info to the server"""
         if not self.connected or not self.channel_joined:
+            logger.warning("Cannot send controller info: not connected or not joined")
             return
 
-        info = {
+        # Get current parameters to check if we need to resend
+        current_params = self._get_controller_params()
+        if self.last_parameters == current_params:
+            logger.debug("Parameters unchanged, skipping controller_info")
+            return
+
+        # Create controller info message
+        info_message = {
             "topic": "controller:lobby",
-            "event": "stats",
+            "event": "controller_info",
             "payload": {
                 "type": "controller_info",
                 "id": self.controller_id,
                 "width": getattr(self, "width", 25),
                 "height": getattr(self, "height", 24),
-                "version": "1.0.0",
-                "hardware": "Raspberry Pi"
-                if hasattr(self, "is_hardware_available") and self.is_hardware_available
-                else "Mock",
-                "layout": getattr(self, "layout", "serpentine"),
-                "orientation": {
-                    "flip_x": getattr(self, "flip_x", False),
-                    "flip_y": getattr(self, "flip_y", False),
-                    "transpose": getattr(self, "transpose", False),
-                },
+                "pattern": getattr(self, "pattern", "none"),
+                "parameters": current_params,
             },
-            "ref": None,
+            "ref": str(self._next_ref()),
         }
 
+        # Store parameters for comparison
+        self.last_parameters = current_params
+
         try:
-            self.ws.send(json.dumps(info))
-            logger.info("Sent controller info")
+            # Send the info message
+            logger.debug("Sending controller info")
+            self.ws.send(json.dumps(info_message))
         except Exception as e:
             logger.error(f"Error sending controller info: {e}")
 
@@ -216,7 +233,7 @@ class ConnectionManager:
         self.reconnect_attempts = 0
 
         # Join the Phoenix channel
-        self._send_join_message()
+        self._join_channel()
 
         # Set up heartbeat
         self._setup_heartbeat()
@@ -229,10 +246,20 @@ class ConnectionManager:
         try:
             # Check if message is binary
             if isinstance(message, bytes):
-                # Process binary frame directly
-                logger.debug(f"Received binary message ({len(message)} bytes)")
-                self.on_frame_callback(message)
-                self._update_frame_stats()
+                # Check the message type by looking at the first byte
+                if len(message) > 0 and message[0] == 0xB:
+                    # This is a batch message (0xB is the batch identifier)
+                    logger.debug(
+                        f"Received binary batch message ({len(message)} bytes)"
+                    )
+                    self._process_batch_data(message)
+                else:
+                    # This is a single frame, process directly
+                    logger.debug(
+                        f"Received binary frame message ({len(message)} bytes)"
+                    )
+                    self.on_frame_callback(message)
+                    self._update_frame_stats()
                 return
 
             # Handle text (JSON) messages
@@ -240,36 +267,39 @@ class ConnectionManager:
 
             # Extract Phoenix message components
             event = data.get("event")
+            topic = data.get("topic", "")
+            ref = data.get("ref")
             payload = data.get("payload", {})
 
-            logger.debug(f"Received event: {event}")
+            logger.debug(f"Received event: {event}, topic: {topic}")
 
-            if event == "phx_reply" and payload.get("status") == "ok":
-                # Join confirmation
-                if (
-                    "response" in payload
-                    and payload["response"].get("status") == "connected"
-                ):
-                    # Mark channel as joined
-                    self.channel_joined = True
-                    logger.info("Successfully joined controller channel")
+            # Check for successful channel join
+            if event == "phx_reply" and topic == "controller:lobby":
+                if payload.get("status") == "ok":
+                    # This is a successful reply to one of our requests
+                    logger.debug(f"Received successful reply with ref: {ref}")
 
-                    # Send controller info
-                    self.send_controller_info()
+                    # Check if this is a response to our join request
+                    if not self.channel_joined:
+                        logger.info("Successfully joined controller channel!")
+                        self.channel_joined = True
 
-                    # Request initial batch of frames
-                    logger.info("Requesting initial batch of frames")
-                    if self._request_batch(0):
-                        logger.info("Initial batch request sent successfully")
-                    else:
-                        logger.error("Failed to send initial batch request")
+                        # Send controller info
+                        self.send_controller_info()
 
-                # Also handle batch request confirmations
-                elif payload.get("response", {}).get("status") == "request_received":
-                    logger.debug(
-                        f"Server confirmed batch request: {payload['response']}"
-                    )
+                        # Request initial batch of frames
+                        logger.info("Requesting initial batch of frames")
+                        if self._request_batch(0):
+                            logger.info("Initial batch request sent")
+                        else:
+                            logger.error("Failed to request initial batch")
 
+                    # Also handle batch request confirmations
+                    response = payload.get("response", {})
+                    if response.get("status") == "request_received":
+                        logger.debug(f"Server confirmed batch request: {response}")
+
+            # Handle other Phoenix message types
             elif event == "frame":
                 # Handle frame message
                 if "binary" in payload:
@@ -322,54 +352,29 @@ class ConnectionManager:
                     pattern = payload.get("pattern", "unknown")
                     priority = payload.get("priority", 0)
 
-                    # The server sends data in 'binary' field (confirmed in server code)
+                    # Check if we have binary data in the payload
                     if "binary" in payload:
                         # The binary data is base64 encoded in JSON
                         binary_data = base64.b64decode(payload["binary"])
                         logger.info(
                             f"Processing batch: {len(binary_data)} bytes, seq={seq}, pattern={pattern}"
                         )
-
-                        # Process the binary batch - may need to parse batch format first
-                        # Batch format is described in controller_channel.ex:
-                        # - Byte 0: 0xB (batch identifier)
-                        # - Bytes 1-4: Frame count (uint32, little-endian)
-                        # - Byte 5: Priority flag (1 = priority, 0 = normal)
-                        # - Bytes 6-9: Sequence number (uint32, little-endian)
-                        # - Bytes 10-17: Timestamp (uint64, little-endian)
-                        # - For each frame:
-                        #   - 4 bytes: Frame length (uint32, little-endian)
-                        #   - N bytes: Frame data
                         self._process_batch_data(binary_data)
                     else:
-                        # No binary data found - log error
-                        logger.error(
-                            f"Missing binary data in display_batch event. Keys: {payload.keys()}"
-                        )
-
-                    # Always request the next batch to keep frames flowing - even if we had errors
-                    if self.connected and self.channel_joined:
-                        # If we have seq in the payload, use that; otherwise increment from last known
-                        next_seq = seq + 1
-                        logger.debug(f"Requesting next batch after seq={seq}")
-                        if self._request_batch(next_seq):
-                            logger.debug(f"Next batch request sent: seq={next_seq}")
-                        else:
-                            logger.error(f"Failed to request next batch seq={next_seq}")
-                    else:
+                        # Log message format issue
                         logger.warning(
-                            "Cannot request next batch: not connected or not joined"
+                            "No binary field found in payload, checking message format"
+                        )
+                        logger.warning(
+                            "JSON frame format not supported, server should use binary"
                         )
 
+                        # Try to be graceful - request next batch with incremented sequence
+                        self._request_batch(seq + 1)
                 except Exception as e:
-                    logger.error(f"Error processing display_batch: {e}")
-                    # Attempt to request next batch anyway to prevent stalling
-                    try:
-                        if self.connected and self.channel_joined:
-                            seq = payload.get("sequence", 0)
-                            self._request_batch(seq + 1)
-                    except Exception as ex:
-                        logger.error(f"Failed to request next batch: {ex}")
+                    logger.error(f"Error processing display_batch event: {e}")
+                    # Just try to keep going with sequential batch
+                    self._request_batch(seq + 1 if "seq" in locals() else 0)
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -409,20 +414,25 @@ class ConnectionManager:
         """Handle pong from server"""
         logger.debug("Received pong from server")
 
-    def _send_join_message(self):
-        """Send Phoenix channel join message"""
+    def _join_channel(self):
+        """Join the controller channel"""
+        if not self.ws or not self.connected:
+            logger.error("Cannot join channel: WebSocket not connected")
+            return
+
+        # Create join message
         join_message = {
             "topic": "controller:lobby",
             "event": "phx_join",
             "payload": {"controller_id": self.controller_id},
-            "ref": "1",
+            "ref": str(self._next_ref()),
         }
 
-        try:
-            self.ws.send(json.dumps(join_message))
-            logger.info("Sent join message")
-        except Exception as e:
-            logger.error(f"Error sending join message: {e}")
+        # Send join request
+        logger.info("Sent join message")
+        self.ws.send(json.dumps(join_message))
+
+        # Note that we'll set channel_joined=True when we receive the join confirmation
 
     def _send_leave_message(self):
         """Send Phoenix channel leave message"""
@@ -490,6 +500,7 @@ class ConnectionManager:
         """Update frame-related statistics"""
         current_time = time.time()
         self.stats["frames_received"] += 1
+        self.frames_received += 1
 
         # Calculate FPS
         if self.stats["last_frame_time"] > 0:
@@ -498,6 +509,7 @@ class ConnectionManager:
                 # Apply smoothing to FPS calculation
                 new_fps = 1.0 / time_diff
                 self.stats["fps"] = 0.8 * self.stats["fps"] + 0.2 * new_fps
+                self.frames_per_second = self.stats["fps"]
 
         self.stats["last_frame_time"] = current_time
 
@@ -522,16 +534,17 @@ class ConnectionManager:
 
     def _request_batch(self, sequence=0):
         """Request a new batch of frames from the server"""
+        # Check connection state
         if not self.ws:
             logger.error("WebSocket connection is None, cannot request batch")
             return False
 
         if not self.connected:
-            logger.warning("Cannot request batch: WebSocket not connected")
+            logger.debug("Cannot request batch: not connected")
             return False
 
         if not self.channel_joined:
-            logger.warning("Cannot request batch: Channel not joined")
+            logger.debug("Cannot request batch: channel not joined")
             return False
 
         try:
@@ -545,19 +558,18 @@ class ConnectionManager:
                 "payload": {
                     "sequence": sequence,
                     "space": space,
-                    "urgent": sequence == 0,  # First request is urgent
+                    "urgent": sequence == 0,  # First batch is urgent
                 },
-                "ref": str(
-                    int(time.time() * 1000)
-                ),  # Add a reference for tracking reply
+                "ref": str(self._next_ref()),
             }
 
-            # Send the request
-            self.ws.send(json.dumps(request_message))
+            # Send request
+            message_json = json.dumps(request_message)
+            self.ws.send(message_json)
             logger.debug(f"Sent batch request: seq={sequence}, space={space}")
             return True
         except Exception as e:
-            logger.error(f"Error requesting batch: {e}")
+            logger.error(f"Error sending batch request: {e}")
             return False
 
     def _cancel_timers(self):
@@ -575,17 +587,48 @@ class ConnectionManager:
             self.stats_timer.cancel()
             self.stats_timer = None
 
-    # Add new method to process batch data
+    def _send_batch_ack(self, sequence, frame_count):
+        """Send an acknowledgment to the server after processing a batch"""
+        if not self.connected or not self.channel_joined:
+            logger.warning("Cannot send batch_ack: not connected or not joined")
+            return False
+
+        try:
+            # Create batch acknowledgment message
+            ack_message = {
+                "topic": "controller:lobby",
+                "event": "batch_ack",
+                "payload": {
+                    "sequence": sequence,
+                    "frames_processed": frame_count,
+                    "timestamp": int(time.time() * 1000),
+                },
+                "ref": str(self._next_ref()),
+            }
+
+            # Send the acknowledgment
+            self.ws.send(json.dumps(ack_message))
+            logger.debug(
+                f"Sent batch_ack for sequence {sequence}, frames: {frame_count}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error sending batch acknowledgment: {e}")
+            return False
+
     def _process_batch_data(self, binary_data):
         """Process a batch of frames from binary data"""
         if len(binary_data) < 18:  # Minimum header size
             logger.error(f"Batch too small: {len(binary_data)} bytes")
             return
 
+        # We're not using the stored connection state anymore, as it's unreliable
+        # The channel_joined flag might have been updated by incoming messages during processing
+
         try:
             # Parse batch header
             batch_id = binary_data[0]
-            if batch_id != 0xB:  # Verify this is a batch
+            if batch_id != 0xB:  # Verify this is a batch (0xB = 11)
                 logger.error(f"Invalid batch identifier: {batch_id:02x}, expected 0x0B")
                 return
 
@@ -595,8 +638,8 @@ class ConnectionManager:
             sequence = struct.unpack("<I", binary_data[6:10])[0]
             timestamp = struct.unpack("<Q", binary_data[10:18])[0]
 
-            logger.debug(
-                f"Batch header: frames={frame_count}, priority={priority_flag}, seq={sequence}"
+            logger.info(
+                f"Batch header: frames={frame_count}, priority={priority_flag}, seq={sequence}, timestamp={timestamp}"
             )
 
             # Process each frame in the batch
@@ -622,8 +665,13 @@ class ConnectionManager:
                     )
                     break
 
-                # Process this frame
+                # Extract this frame's data
                 frame_data = binary_data[offset : offset + frame_length]
+
+                # Process this frame
+                logger.debug(
+                    f"Processing frame {frames_processed + 1}/{frame_count} ({frame_length} bytes)"
+                )
                 self.on_frame_callback(frame_data)
 
                 # Move to next frame
@@ -633,11 +681,69 @@ class ConnectionManager:
                 # Update statistics
                 self._update_frame_stats()
 
-            logger.debug(
+            logger.info(
                 f"Processed {frames_processed}/{frame_count} frames from batch, next batch seq={sequence + 1}"
             )
 
+            # Send batch acknowledgment - check current connection state
+            if self.connected and self.channel_joined:
+                self._send_batch_ack(sequence, frames_processed)
+
+                # Request next batch
+                logger.debug(f"Requesting next batch after seq={sequence}")
+                if self._request_batch(sequence + 1):
+                    logger.debug(f"Next batch request sent: seq={sequence + 1}")
+                else:
+                    logger.error(f"Failed to request next batch (seq={sequence + 1})")
+            else:
+                logger.warning(
+                    f"Cannot request next batch: current state is connected={self.connected}, channel_joined={self.channel_joined}"
+                )
+                # Try one more time with current state
+                if self.connected and self.channel_joined:
+                    logger.info(
+                        "Connection state recovered, attempting to request next batch"
+                    )
+                    self._request_batch(sequence + 1)
+
         except Exception as e:
             logger.error(f"Error processing batch: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
             if len(binary_data) > 30:
                 logger.debug(f"First 30 bytes of batch: {binary_data[:30].hex()}")
+
+            # Try to request next batch even if processing failed
+            if self.connected and self.channel_joined:
+                try:
+                    # Extract sequence if possible, or use 0
+                    seq = 0
+                    if len(binary_data) >= 10:
+                        seq = struct.unpack("<I", binary_data[6:10])[0]
+                    logger.info(
+                        f"Attempting to request next batch after error (seq={seq + 1})"
+                    )
+                    self._request_batch(seq + 1)
+                except Exception as e2:
+                    logger.error(f"Failed to request next batch after error: {e2}")
+
+    def _next_ref(self):
+        """Generate a new reference ID for Phoenix messages"""
+        self.ref_counter += 1
+        return self.ref_counter
+
+    def _get_controller_params(self):
+        """Get controller parameters for info message"""
+        params = {
+            "version": "1.0.0",
+            "hardware": "Raspberry Pi"
+            if (hasattr(self, "is_hardware_available") and self.is_hardware_available)
+            else "Mock",
+            "layout": getattr(self, "layout", "serpentine"),
+            "flip_x": getattr(self, "flip_x", False),
+            "flip_y": getattr(self, "flip_y", False),
+            "transpose": getattr(self, "transpose", False),
+            "led_count": getattr(self, "led_count", 600),
+        }
+        return params

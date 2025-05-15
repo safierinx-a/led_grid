@@ -340,6 +340,45 @@ defmodule Legrid.Controller.Interface do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_info({:controller_info, controller_id, width, height, pattern, parameters}, state) do
+    Logger.info("Received controller info update: #{controller_id} (#{width}x#{height}), pattern: #{pattern}")
+    Logger.debug("Controller parameters: #{inspect(parameters)}")
+
+    # Store relevant controller information in state if needed
+    # For now, we're just logging it and acknowledging receipt
+
+    # You could update state here if you need to track controller-specific details
+    # new_state = %{state | controller_info: Map.put(state.controller_info || %{}, controller_id, %{width: width, height: height, pattern: pattern, parameters: parameters})}
+
+    # Broadcast to any UI components that might need this info
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller_stats", {:controller_config, controller_id, %{
+      width: width,
+      height: height,
+      pattern: pattern,
+      parameters: parameters
+    }})
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:batch_acknowledged, controller_id, sequence, rendered, received_at}, state) do
+    Logger.debug("Controller #{controller_id} acknowledged batch #{sequence}, rendered: #{rendered}, received at: #{received_at}")
+
+    # This could be used to track performance metrics, latency, etc.
+    # For now we'll just log it
+
+    # Could forward to FrameBuffer to adjust batch timing, etc. if needed
+    # try do
+    #   Legrid.Controller.FrameBuffer.batch_acknowledged(controller_id, sequence, rendered, received_at)
+    # rescue
+    #   _ -> :ok
+    # end
+
+    {:noreply, state}
+  end
+
   # Helper functions
 
   defp maybe_get_buffer_status do

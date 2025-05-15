@@ -73,7 +73,9 @@ class LegridController:
 
         # Initialize connection manager
         self.connection = ConnectionManager(
-            server_url=self.server_url, on_frame_callback=self._process_frame
+            server_url=self.server_url,
+            on_frame_callback=self._process_frame,
+            config=self.config,
         )
 
         # Add grid configuration to connection for stats reporting

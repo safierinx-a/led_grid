@@ -215,6 +215,8 @@ class ConnectionManager:
 
     def monitor_connection(self):
         """Monitor connection health and send heartbeats"""
+        last_batch_request_time = 0
+
         while running and (self.connecting or self.connected):
             try:
                 now = time.time()
@@ -237,11 +239,7 @@ class ConnectionManager:
                         self.close(reconnect=True)
                         break
 
-                    # Try sending a ping to check connection
-                    if self.ws and self.ws.sock and self.ws.sock.connected:
-                        self.ws.ping("ping")
-
-                # If we're connected, send Phoenix heartbeat
+                # Send Phoenix heartbeat every 10 seconds to keep the connection alive
                 if (
                     self.connected
                     and self.ws
@@ -259,6 +257,17 @@ class ConnectionManager:
                         logger.debug("Sent Phoenix heartbeat")
                     except Exception as e:
                         logger.error(f"Error sending Phoenix heartbeat: {e}")
+
+                # If we're connected and joined, but haven't received frames in a while,
+                # periodically request a new batch (but not too frequently)
+                if (
+                    self.connected
+                    and self.controller.channel_joined
+                    and now - last_batch_request_time > 15.0
+                ):  # every 15 seconds
+                    last_batch_request_time = now
+                    logger.info("Monitor: requesting new batch (no frames received)")
+                    self.controller.batch_manager.request_batch(urgent=True)
 
             except Exception as e:
                 logger.error(f"Error in monitor thread: {e}")
@@ -306,15 +315,17 @@ class ConnectionManager:
             self.reconnect_timer.start()
 
     def on_open(self, ws):
-        """Handle WebSocket connection open"""
+        """WebSocket connection opened callback"""
         logger.info("WebSocket connection established")
         self.connected = True
         self.connecting = False
         self.state = "connected"
+        self.connection_attempts = 0
         self.missing_pong_count = 0
         self.last_pong_time = time.time()
-
-        # Forward to controller
+        # Reset reconnect delay after successful connection
+        self.reconnect_delay = 1.0
+        # Tell controller to handle the connection event
         self.controller.handle_connection_open()
 
     def on_message(self, ws, message):
@@ -322,23 +333,59 @@ class ConnectionManager:
         # Update connection health
         self.last_pong_time = time.time()
 
-        # Forward to controller for processing
-        self.controller.handle_message(message)
+        # Check if the message is binary by checking if it's a bytes object
+        if isinstance(message, bytes):
+            logger.debug(f"Received binary message ({len(message)} bytes)")
+
+            # Log the first few bytes for debugging
+            if len(message) > 0:
+                prefix = " ".join([f"{b:02x}" for b in message[:16]])
+                logger.debug(f"Binary message starts with: {prefix}...")
+
+            # Forward to controller for processing
+            self.controller.handle_binary_message(message)
+        else:
+            # Text/JSON message
+            logger.debug(f"Received text message ({len(message)} chars)")
+            # Forward to controller for processing
+            self.controller.handle_message(message)
 
     def on_error(self, ws, error):
-        """Handle WebSocket errors"""
+        """WebSocket error callback"""
         logger.error(f"WebSocket error: {error}")
-        self.state = "error"
+        # Reset controller state for channel joining
+        self.controller.channel_joined = False
 
     def on_close(self, ws, close_status_code, close_msg):
-        """Handle WebSocket connection close"""
-        logger.info(f"WebSocket connection closed: {close_status_code} - {close_msg}")
+        """WebSocket connection closed callback"""
+        was_connected = self.connected
         self.connected = False
         self.connecting = False
         self.state = "disconnected"
 
-        # Forward to controller
-        self.controller.handle_connection_close()
+        # Reset controller state for channel joining
+        if was_connected:
+            self.controller.channel_joined = False
+
+        # Log the disconnection
+        if close_status_code or close_msg:
+            logger.info(f"WebSocket connection closed: {close_status_code} {close_msg}")
+        else:
+            logger.info("WebSocket connection closed")
+
+        # Tell controller to handle the disconnection event
+        if was_connected:
+            self.controller.handle_connection_close()
+
+        # Schedule reconnection if still running
+        if running:
+            delay = min(
+                self.reconnect_delay * (1 + (self.connection_attempts / 10)), 30
+            )
+            logger.info(f"Scheduling reconnection in {delay:.1f} seconds")
+            self.reconnect_timer = threading.Timer(delay, self.connect)
+            self.reconnect_timer.daemon = True
+            self.reconnect_timer.start()
 
     def on_pong(self, ws, message):
         """Handle pong responses from the server"""
@@ -354,22 +401,34 @@ class ConnectionManager:
             or not self.ws.sock
             or not self.ws.sock.connected
         ):
-            logger.warning("Cannot send message - not connected")
+            logger.error("Cannot send message - not connected")
             return False
 
         try:
             if isinstance(message, dict):
+                # Check if this is a batch acknowledgment
+                if message.get("event") == "batch_ack":
+                    seq = message.get("payload", {}).get("sequence", "unknown")
+                    logger.debug(f"Sending batch_ack for sequence #{seq}")
+
                 # Send as JSON
-                self.ws.send(json.dumps(message))
+                json_data = json.dumps(message)
+                logger.debug(f"Sending JSON message: {json_data[:100]}...")
+                self.ws.send(json_data)
             elif isinstance(message, bytes):
                 # Send as binary
+                logger.debug(f"Sending binary message: {len(message)} bytes")
                 self.ws.send(message, opcode=websocket.ABNF.OPCODE_BINARY)
             else:
                 # Send as text
+                logger.debug(f"Sending text message: {str(message)[:100]}...")
                 self.ws.send(str(message))
             return True
         except Exception as e:
             logger.error(f"Error sending message: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
             return False
 
     def is_connected(self):
@@ -720,6 +779,16 @@ class BatchRequestManager:
     def _send_request(self, urgent=False, space_override=None):
         """Send a batch request to the server"""
         try:
+            # Check connection and channel state
+            if not self.controller.connection.is_connected():
+                logger.debug("Cannot request batch: not connected to server")
+                return False
+
+            # Check if channel is joined
+            if not self.controller.channel_joined:
+                logger.debug("Cannot request batch: channel not joined")
+                return False
+
             # Get current buffer status
             frame_buffer = self.controller.frame_buffer
             buffer_status = frame_buffer.get_status()
@@ -762,7 +831,10 @@ class BatchRequestManager:
                     f"space: {space_available}, urgent: {urgent}, "
                     f"buffer: {buffer_fullness:.1f}%"
                 )
-            return success
+                return success
+            else:
+                logger.warning("Failed to send batch request")
+                return False
         except Exception as e:
             logger.error(f"Error sending batch request: {e}")
             return False
@@ -773,6 +845,11 @@ class BatchRequestManager:
         if self.pending_request and not urgent:
             logger.debug("Batch request already pending, ignoring duplicate request")
             return False
+
+        # Debug channel state
+        logger.debug(
+            f"Requesting batch - channel_joined={self.controller.channel_joined}, urgent={urgent}"
+        )
 
         try:
             # Add the request to the queue
@@ -810,6 +887,9 @@ class LegridController:
         self.brightness = args.led_brightness
         self.server_url = args.server_url
         self.controller_id = args.controller_id or str(uuid.uuid4())
+
+        # Track channel join state
+        self.channel_joined = False
 
         # Store controller ID to a file for persistence
         if not args.controller_id:
@@ -1022,18 +1102,19 @@ class LegridController:
         }
 
         # Send join message
+        logger.info("Sending channel join request...")
         self.connection.send(join_message)
 
         # Send controller info
         self.send_controller_info()
 
-        # Request first batch after a short delay
-        time.sleep(0.5)
-        self.batch_manager.request_batch(urgent=True)
+        # The batch request will be sent after join confirmation in handle_json_message
+        # instead of here to ensure proper timing
 
     def handle_connection_close(self):
         """Handle WebSocket connection close"""
         self.stats["connection_drops"] += 1
+        self.channel_joined = False
 
     def handle_message(self, message):
         """Handle incoming WebSocket messages"""
@@ -1054,22 +1135,31 @@ class LegridController:
     def handle_binary_message(self, message):
         """Handle binary WebSocket messages"""
         # Check for WebSocket control frames
-        if len(message) >= 1:
-            # Check if this is a batch frame message (starts with byte 0xB)
-            if message[0] == 0xB and len(message) >= 9:
-                logger.info(f"Received batch frame message ({len(message)} bytes)")
-                self.process_batch_frames(message)
-                return
+        if len(message) < 1:
+            logger.warning(f"Received empty binary message")
+            return
 
-            # Check if this might be a frame with protocol version 1
-            if (message[0] == 1 or message[0] == 123) and len(message) >= 10:
-                logger.info(f"Received binary frame ({len(message)} bytes)")
-                # Add directly to buffer
-                self.frame_buffer.add_frame(message, priority=True)
-                return
+        # Log the first few bytes for debugging
+        prefix = " ".join([f"{b:02x}" for b in message[:16]])
+        logger.debug(f"Binary message starts with: {prefix}...")
+
+        # Check if this is a batch frame message (starts with byte 0xB)
+        if message[0] == 0xB and len(message) >= 9:
+            logger.info(f"Received batch frame message ({len(message)} bytes)")
+            self.process_batch_frames(message)
+            return
+
+        # Check if this might be a frame with protocol version 1
+        if (message[0] == 1 or message[0] == 123) and len(message) >= 10:
+            logger.info(f"Received binary frame ({len(message)} bytes)")
+            # Add directly to buffer
+            self.frame_buffer.add_frame(message, priority=True)
+            return
 
         # Unknown binary message
-        logger.warning(f"Received unknown binary message ({len(message)} bytes)")
+        logger.warning(
+            f"Received unknown binary message: type=0x{message[0]:02x}, size={len(message)} bytes"
+        )
 
     def handle_json_message(self, message):
         """Handle JSON WebSocket messages"""
@@ -1077,12 +1167,42 @@ class LegridController:
 
         # Extract event and payload
         event = data.get("event")
+        topic = data.get("topic", "")
+        ref = data.get("ref")
         payload = data.get("payload", {})
 
         # Handle different event types
-        if event == "phx_reply" and payload.get("status") == "ok":
-            # Join confirmation
-            logger.info("Successfully joined channel")
+        if event == "phx_reply":
+            # Check what kind of reply this is by examining the ref and topic
+            if topic == "controller:lobby" and payload.get("status") == "ok":
+                response_to = payload.get("response", {}).get("event", "")
+
+                # If this is a response to our join request
+                if response_to == "phx_join" or ref == "1":
+                    if not self.channel_joined:
+                        logger.info("Successfully joined channel")
+                        self.channel_joined = True
+                        # Re-request batch since we're now joined
+                        self.batch_manager.request_batch(urgent=True)
+                # Other replies we can handle here
+                elif response_to == "heartbeat":
+                    logger.debug("Received heartbeat reply")
+                    # Update last_pong_time to prevent reconnection
+                    if hasattr(self.connection, "last_pong_time"):
+                        self.connection.last_pong_time = time.time()
+                        self.connection.missing_pong_count = 0
+                else:
+                    logger.debug(f"Received phx_reply for {response_to}")
+
+        # If we receive any message on the controller topic, we're joined
+        elif topic == "controller:lobby" and not self.channel_joined:
+            logger.info(
+                "Received message on controller topic, marking channel as joined"
+            )
+            self.channel_joined = True
+
+            # Request a batch now that we're joined
+            self.batch_manager.request_batch(urgent=True)
 
         elif event == "frame":
             # Handle frame message - contains binary data in payload["binary"]
@@ -1136,19 +1256,36 @@ class LegridController:
                     logger.error(f"Error processing binary frame data: {e}")
 
         elif event == "display_batch":
-            # Handle batch display message
+            # Handle batch display message that contains JSON+base64 data
+            # This is the legacy method, but we keep it for compatibility
             if "frames" in payload:
                 try:
                     # Decode the base64 batch data
                     batch_data = base64.b64decode(payload["frames"])
                     logger.info(
-                        f"Received display_batch with {len(batch_data)} bytes of batch data"
+                        f"Received display_batch with {len(batch_data)} bytes of base64 batch data"
                     )
 
                     # Process the batch frames
                     self.process_batch_frames(batch_data)
                 except Exception as e:
                     logger.error(f"Error processing display_batch: {e}")
+                    import traceback
+
+                    logger.error(traceback.format_exc())
+
+        elif event == "batch_sent":
+            # Handle notification that a binary batch was sent separately
+            # This is just informational - the actual data comes via a binary WebSocket frame
+            logger.info(
+                f"Received batch_sent notification: {payload.get('count')} frames, sequence {payload.get('sequence')}"
+            )
+
+            # If we don't have use_binary=true, the batch might have been sent in an incompatible way
+            if not payload.get("use_binary", False):
+                logger.warning(
+                    "Server indicated batch was not sent as binary - might not receive properly"
+                )
 
         elif event == "initiate_polling":
             # Server is asking us to start polling for frames
@@ -1165,13 +1302,28 @@ class LegridController:
             self.clear_leds()
             self.frame_buffer.clear()
 
+        elif event == "phx_error":
+            # Phoenix channel error
+            logger.error(f"Received Phoenix error: {payload}")
+            # Reset our channel state since there was an error
+            self.channel_joined = False
+
+        elif event == "phx_close":
+            # Phoenix channel closed
+            logger.info("Phoenix channel closed")
+            self.channel_joined = False
+
         else:
             # Unknown event
-            logger.debug(f"Received unknown event: {event}")
+            logger.debug(f"Received unknown event: {event} for topic: {topic}")
 
     def process_batch_frames(self, message):
         """Process a batch of frames sent in a single message"""
         try:
+            # Store connection state at the beginning of batch processing
+            connected = self.connection.is_connected()
+            channel_joined = self.channel_joined
+
             # Parse batch header
             if len(message) < 10:
                 logger.warning("Batch message too short to contain header")
@@ -1202,7 +1354,7 @@ class LegridController:
                 )
                 offset = 10  # Start of frame data
 
-            # Acknowledge the batch
+            # Acknowledge the batch internally
             self.batch_manager.acknowledge_batch(batch_sequence)
 
             # Extract frames
@@ -1240,12 +1392,19 @@ class LegridController:
                     frames, batch_sequence, is_priority
                 )
 
-                # After successful processing, send acknowledgment
-                self.send_batch_ack(batch_sequence, len(frames))
+                # Send acknowledgment to the server indicating we processed the batch
+                self.send_batch_ack(batch_sequence, frames_processed)
 
-                # Request next batch based on buffer fullness
+                # Request next batch based on buffer fullness and connection state
                 buffer_status = self.frame_buffer.get_status()
                 buffer_fullness = buffer_status["buffer_fullness"]
+
+                # Verify we're still connected before requesting next batch
+                if not self.connection.is_connected() or not self.channel_joined:
+                    logger.warning(
+                        "Cannot request next batch: connection state changed during processing"
+                    )
+                    return
 
                 # Schedule next batch request soon if buffer is getting low
                 if buffer_fullness < 50:
@@ -1470,26 +1629,43 @@ class LegridController:
 
     def send_batch_ack(self, sequence, frame_count):
         """Send acknowledgment for a batch"""
-        # Get buffer status
-        buffer_status = self.frame_buffer.get_status()
+        # Debug log before any checks
+        logger.debug(f"Attempting to send batch_ack for sequence #{sequence}")
 
-        # Create acknowledgment message
+        # Check connection status
+        connected = self.connection.is_connected()
+        if not connected:
+            logger.error("Failed to send batch_ack: not connected to server")
+            return False
+
+        # Check channel join status
+        if not self.channel_joined:
+            logger.error("Failed to send batch_ack: channel not joined")
+            return False
+
+        # Create batch ack message
         ack = {
             "topic": "controller:lobby",
             "event": "batch_ack",
             "payload": {
                 "sequence": sequence,
-                "buffer_fullness": buffer_status["buffer_fullness"],
-                "buffer_capacity": buffer_status["buffer_size"],
                 "frames_received": frame_count,
-                "timestamp": int(time.time() * 1000),
+                "received_at": int(time.time() * 1000),
+                "rendered": True,
             },
-            "ref": None,
+            "ref": str(int(time.time())),  # Add a unique reference for tracking
         }
 
+        # Send the acknowledgment
         success = self.connection.send(ack)
         if success:
-            logger.debug(f"Sent acknowledgment for batch {sequence}")
+            logger.info(
+                f"Sent acknowledgment for batch {sequence} with {frame_count} frames"
+            )
+        else:
+            logger.error(f"Failed to send acknowledgment for batch {sequence}")
+
+        return success
 
 
 def parse_args():

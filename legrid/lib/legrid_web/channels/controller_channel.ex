@@ -63,6 +63,26 @@ defmodule LegridWeb.ControllerChannel do
 
     Logger.info("Sent diagnostic_ping to controller #{controller_id}")
 
+    # Start a default pattern if one is not already running
+    try do
+      # Try to start a simple pattern - we'll use the sine wave pattern
+      # If it's not already running
+      case Legrid.Patterns.Runner.current_pattern() do
+        {:error, _} ->
+          # No pattern is running, start one
+          pattern_id = "sine_wave"  # Default pattern
+          Logger.info("Starting default pattern (#{pattern_id}) for controller #{controller_id}")
+          Legrid.Patterns.Runner.start_pattern(pattern_id)
+        {:ok, _} ->
+          # Pattern already running, don't start another one
+          Logger.info("A pattern is already running, not starting default pattern")
+      end
+    rescue
+      e ->
+        # Log the error but continue anyway
+        Logger.error("Error starting default pattern: #{inspect(e)}")
+    end
+
     # Explicitly trigger a batch request to get initial frames
     # This will ensure the controller starts receiving frames even if it doesn't poll immediately
     FrameBuffer.handle_batch_request(controller_id, 0, 60, true)
@@ -217,16 +237,20 @@ defmodule LegridWeb.ControllerChannel do
       # Log batch details
       Logger.info("Created batch binary: #{byte_size(batch_data)} bytes, #{frame_count} frames, priority=#{priority_flag}, sequence=#{sequence}")
 
-      # Send to controller using the display_batch event
-      push(socket, "display_batch", %{
-        binary: Base.encode64(batch_data),
+      # CHANGED: Send the binary data directly on the raw websocket instead of using JSON+base64
+      socket.transport_pid |> send({:socket_push, :binary, batch_data})
+
+      # Also send a smaller notification as JSON for controllers that might not support binary frames
+      # This provides backwards compatibility
+      push(socket, "batch_sent", %{
         count: frame_count,
         priority: is_priority,
-        sequence: sequence
+        sequence: sequence,
+        use_binary: true  # Flag to indicate binary frame was sent
       })
 
       # Log that the batch was sent
-      Logger.info("Batch sent to controller #{controller_id}")
+      Logger.info("Binary batch sent to controller #{controller_id}")
     end
 
     {:noreply, socket}
@@ -370,6 +394,29 @@ defmodule LegridWeb.ControllerChannel do
       Legrid.PubSub,
       "controller:events",
       {:batch_acknowledged, controller_id, sequence, rendered, received_at}
+    )
+
+    {:reply, {:ok, %{received: true}}, socket}
+  end
+
+  @impl true
+  def handle_in("controller_info", payload, socket) do
+    controller_id = socket.assigns.controller_id
+
+    # Extract controller info details
+    width = Map.get(payload, "width", 25)
+    height = Map.get(payload, "height", 24)
+    pattern = Map.get(payload, "pattern", "none")
+    parameters = Map.get(payload, "parameters", %{})
+
+    Logger.info("Received controller info from #{controller_id}: #{width}x#{height}, pattern: #{pattern}")
+    Logger.debug("Controller parameters: #{inspect(parameters)}")
+
+    # Forward controller info to the system
+    Phoenix.PubSub.broadcast(
+      Legrid.PubSub,
+      "controller:events",
+      {:controller_info, controller_id, width, height, pattern, parameters}
     )
 
     {:reply, {:ok, %{received: true}}, socket}

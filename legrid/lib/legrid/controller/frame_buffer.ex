@@ -137,34 +137,12 @@ defmodule Legrid.Controller.FrameBuffer do
       if pattern_changed do
         Logger.debug("Pattern changed from #{state.current_pattern_id} to #{pattern_id}, flushing frames")
 
-        # Send to all known controllers, not just those with pending requests
-        known_controllers = Phoenix.PubSub.subscribers(Legrid.PubSub, "controller:socket")
-        Enum.each(known_controllers, fn pid ->
-          try do
-            # Try to extract controller_id from process dictionary or state
-            # This is a best-effort attempt
-            controller_id = Process.info(pid, :dictionary)
-                           |> case do
-                                {:dictionary, dict} ->
-                                  case Keyword.get(dict, :"$socket") do
-                                    %{assigns: %{controller_id: id}} -> id
-                                    _ -> nil
-                                  end
-                                _ -> nil
-                              end
+        # Instead of trying to use private Phoenix.PubSub function subscribers/2
+        # we'll use the controllers we already know about from pending_requests
 
-            if controller_id do
-              Logger.debug("Notifying controller #{controller_id} of pattern change")
-              Process.send_after(self(), {:batch_requested, controller_id, 0, 60, true}, 50)
-            end
-          rescue
-            _ -> :ok  # Ignore errors trying to extract controller_id
-          end
-        end)
-
-        # Also notify controllers we already know about from pending requests
-        Enum.each(state.pending_requests, fn {controller_id, _} ->
-          # Trigger a batch request to ensure frames are sent immediately
+        # Notify controllers we know about from pending requests
+        Enum.each(Map.keys(state.pending_requests), fn controller_id ->
+          Logger.debug("Notifying controller #{controller_id} of pattern change")
           Process.send_after(self(), {:batch_requested, controller_id, 0, 60, true}, 50)
         end)
 
