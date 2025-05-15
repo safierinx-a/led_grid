@@ -5,6 +5,7 @@ import uuid
 import logging
 import threading
 import websocket
+import struct
 
 logger = logging.getLogger("legrid-controller")
 
@@ -263,6 +264,12 @@ class ConnectionManager:
                     else:
                         logger.error("Failed to send initial batch request")
 
+                # Also handle batch request confirmations
+                elif payload.get("response", {}).get("status") == "request_received":
+                    logger.debug(
+                        f"Server confirmed batch request: {payload['response']}"
+                    )
+
             elif event == "frame":
                 # Handle frame message
                 if "binary" in payload:
@@ -315,7 +322,7 @@ class ConnectionManager:
                     pattern = payload.get("pattern", "unknown")
                     priority = payload.get("priority", 0)
 
-                    # Check if we have binary data in the payload
+                    # The server sends data in 'binary' field (confirmed in server code)
                     if "binary" in payload:
                         # The binary data is base64 encoded in JSON
                         binary_data = base64.b64decode(payload["binary"])
@@ -323,44 +330,32 @@ class ConnectionManager:
                             f"Processing batch: {len(binary_data)} bytes, seq={seq}, pattern={pattern}"
                         )
 
-                        # Process the binary batch
-                        self.on_frame_callback(binary_data)
-                        self._update_frame_stats()
+                        # Process the binary batch - may need to parse batch format first
+                        # Batch format is described in controller_channel.ex:
+                        # - Byte 0: 0xB (batch identifier)
+                        # - Bytes 1-4: Frame count (uint32, little-endian)
+                        # - Byte 5: Priority flag (1 = priority, 0 = normal)
+                        # - Bytes 6-9: Sequence number (uint32, little-endian)
+                        # - Bytes 10-17: Timestamp (uint64, little-endian)
+                        # - For each frame:
+                        #   - 4 bytes: Frame length (uint32, little-endian)
+                        #   - N bytes: Frame data
+                        self._process_batch_data(binary_data)
                     else:
-                        # This might be JSON data containing the batch
-                        # Try to extract it from the message
-                        try:
-                            # The message might be the original WebSocket message
-                            if isinstance(message, bytes):
-                                # Direct binary data
-                                logger.debug("Processing raw binary message")
-                                self.on_frame_callback(message)
-                            else:
-                                # If we have full JSON message, try to find binary content
-                                logger.debug(
-                                    "No binary field found in payload, checking message format"
-                                )
-                                if "frames" in payload:
-                                    # This might be a list of frames in JSON format
-                                    # Not currently implemented - server should use binary
-                                    logger.warning(
-                                        "JSON frame format not supported, server should use binary"
-                                    )
-                                else:
-                                    logger.error(
-                                        "Missing binary data in batch, cannot process frames"
-                                    )
+                        # No binary data found - log error
+                        logger.error(
+                            f"Missing binary data in display_batch event. Keys: {payload.keys()}"
+                        )
 
-                            # Update stats if we processed anything
-                            self._update_frame_stats()
-                        except Exception as e:
-                            logger.error(f"Failed to process non-binary batch: {e}")
-
-                    # Request the next batch of frames - always do this even if there was an error
-                    # so we don't get stuck
+                    # Always request the next batch to keep frames flowing - even if we had errors
                     if self.connected and self.channel_joined:
+                        # If we have seq in the payload, use that; otherwise increment from last known
+                        next_seq = seq + 1
                         logger.debug(f"Requesting next batch after seq={seq}")
-                        self._request_batch(seq + 1)
+                        if self._request_batch(next_seq):
+                            logger.debug(f"Next batch request sent: seq={next_seq}")
+                        else:
+                            logger.error(f"Failed to request next batch seq={next_seq}")
                     else:
                         logger.warning(
                             "Cannot request next batch: not connected or not joined"
@@ -527,16 +522,19 @@ class ConnectionManager:
 
     def _request_batch(self, sequence=0):
         """Request a new batch of frames from the server"""
-        if not self.connected or not self.channel_joined:
-            logger.warning("Cannot request batch: not connected or not joined")
+        if not self.ws:
+            logger.error("WebSocket connection is None, cannot request batch")
+            return False
+
+        if not self.connected:
+            logger.warning("Cannot request batch: WebSocket not connected")
+            return False
+
+        if not self.channel_joined:
+            logger.warning("Cannot request batch: Channel not joined")
             return False
 
         try:
-            # Verify ws object exists
-            if not self.ws:
-                logger.error("WebSocket connection is None, cannot request batch")
-                return False
-
             # Default request size
             space = 60  # Request up to 60 frames at a time
 
@@ -549,7 +547,9 @@ class ConnectionManager:
                     "space": space,
                     "urgent": sequence == 0,  # First request is urgent
                 },
-                "ref": None,
+                "ref": str(
+                    int(time.time() * 1000)
+                ),  # Add a reference for tracking reply
             }
 
             # Send the request
@@ -574,3 +574,70 @@ class ConnectionManager:
         if hasattr(self, "stats_timer") and self.stats_timer:
             self.stats_timer.cancel()
             self.stats_timer = None
+
+    # Add new method to process batch data
+    def _process_batch_data(self, binary_data):
+        """Process a batch of frames from binary data"""
+        if len(binary_data) < 18:  # Minimum header size
+            logger.error(f"Batch too small: {len(binary_data)} bytes")
+            return
+
+        try:
+            # Parse batch header
+            batch_id = binary_data[0]
+            if batch_id != 0xB:  # Verify this is a batch
+                logger.error(f"Invalid batch identifier: {batch_id:02x}, expected 0x0B")
+                return
+
+            # Extract header fields
+            frame_count = struct.unpack("<I", binary_data[1:5])[0]
+            priority_flag = binary_data[5]
+            sequence = struct.unpack("<I", binary_data[6:10])[0]
+            timestamp = struct.unpack("<Q", binary_data[10:18])[0]
+
+            logger.debug(
+                f"Batch header: frames={frame_count}, priority={priority_flag}, seq={sequence}"
+            )
+
+            # Process each frame in the batch
+            offset = 18  # Start after header
+            frames_processed = 0
+
+            while offset < len(binary_data) and frames_processed < frame_count:
+                # Check if we have enough data for frame length
+                if offset + 4 > len(binary_data):
+                    logger.warning(
+                        f"Incomplete batch: missing frame length at offset {offset}"
+                    )
+                    break
+
+                # Get frame length
+                frame_length = struct.unpack("<I", binary_data[offset : offset + 4])[0]
+                offset += 4
+
+                # Check if we have enough data for the frame
+                if offset + frame_length > len(binary_data):
+                    logger.warning(
+                        f"Incomplete batch: truncated frame at offset {offset}, needed {frame_length} bytes"
+                    )
+                    break
+
+                # Process this frame
+                frame_data = binary_data[offset : offset + frame_length]
+                self.on_frame_callback(frame_data)
+
+                # Move to next frame
+                offset += frame_length
+                frames_processed += 1
+
+                # Update statistics
+                self._update_frame_stats()
+
+            logger.debug(
+                f"Processed {frames_processed}/{frame_count} frames from batch, next batch seq={sequence + 1}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing batch: {e}")
+            if len(binary_data) > 30:
+                logger.debug(f"First 30 bytes of batch: {binary_data[:30].hex()}")

@@ -72,10 +72,19 @@ class FrameProcessor:
             width = struct.unpack("<H", width_bytes)[0]
             height = struct.unpack("<H", height_bytes)[0]
 
+            # Log raw header values to debug
+            logger.debug(
+                f"Frame header: version={version}, type={msg_type}, id={frame_id}, dimensions={width}x{height}"
+            )
+
             # Validate dimensions
             if width == 0 or height == 0 or width > 1000 or height > 1000:
-                logger.warning(f"Invalid frame dimensions: {width}x{height}")
-                return None
+                logger.warning(
+                    f"Invalid frame dimensions: {width}x{height}, using defaults"
+                )
+                # Use default dimensions instead of failing
+                width = self.width
+                height = self.height
 
             # Make sure we only process full frames (type 1)
             # We're simplifying by ignoring delta frames as requested
@@ -116,6 +125,9 @@ class FrameProcessor:
 
         except Exception as e:
             logger.error(f"Error processing frame: {e}")
+            # Print first few bytes of data to help debug binary format issues
+            if len(binary_data) > 20:
+                logger.debug(f"First 20 bytes of frame data: {binary_data[:20].hex()}")
             return None
 
     def map_led_layout(self, frame):

@@ -168,9 +168,9 @@ defmodule LegridWeb.ControllerChannel do
     binary_data = frames_batch_to_binary(frames, pattern_id, sequence, timestamp)
 
     push(socket, "display_batch", %{
-      "frames" => Base.encode64(binary_data),
-      "count" => length(frames),
-      "priority" => is_priority
+      binary: Base.encode64(binary_data),
+      count: length(frames),
+      priority: is_priority
     })
 
     {:noreply, socket}
@@ -219,7 +219,7 @@ defmodule LegridWeb.ControllerChannel do
 
       # Send to controller using the display_batch event
       push(socket, "display_batch", %{
-        frames: Base.encode64(batch_data),
+        binary: Base.encode64(batch_data),
         count: frame_count,
         priority: is_priority,
         sequence: sequence
