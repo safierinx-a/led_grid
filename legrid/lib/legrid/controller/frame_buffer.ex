@@ -80,6 +80,14 @@ defmodule Legrid.Controller.FrameBuffer do
     GenServer.cast(__MODULE__, {:controller_ready, controller_id, sequence, buffer_fullness, buffer_capacity})
   end
 
+  @doc """
+  Increment the parameter version counter.
+  Called when pattern parameters change significantly.
+  """
+  def increment_parameter_version do
+    GenServer.call(__MODULE__, :increment_parameter_version)
+  end
+
   # Server callbacks
 
   @impl true
@@ -98,6 +106,7 @@ defmodule Legrid.Controller.FrameBuffer do
       priority_frames: [],
       current_sequence: 0,
       current_pattern_id: nil,
+      parameter_version: 1,  # Track parameter changes with version
       batch_size: batch_size,
       priority_batch_size: priority_batch_size,
       max_delay: max_delay,
@@ -111,6 +120,14 @@ defmodule Legrid.Controller.FrameBuffer do
 
   @impl true
   def handle_cast({:add_frame, frame, priority, pattern_id}, state) do
+    # Add parameter version to frame metadata
+    frame = if frame.metadata do
+      metadata = Map.put(frame.metadata, "parameter_version", state.parameter_version)
+      %{frame | metadata: metadata}
+    else
+      %{frame | metadata: %{"parameter_version" => state.parameter_version}}
+    end
+
     # Check if pattern has changed
     pattern_changed = state.current_pattern_id != nil &&
                       pattern_id != nil &&
@@ -222,6 +239,13 @@ defmodule Legrid.Controller.FrameBuffer do
     }
 
     {:reply, status, state}
+  end
+
+  @impl true
+  def handle_call(:increment_parameter_version, _from, state) do
+    new_version = state.parameter_version + 1
+    Logger.info("Incrementing parameter version to #{new_version}")
+    {:reply, new_version, %{state | parameter_version: new_version}}
   end
 
   # Private functions
