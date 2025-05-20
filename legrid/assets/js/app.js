@@ -22,6 +22,9 @@ import { Socket } from "phoenix";
 import { LiveSocket } from "phoenix_live_view";
 import topbar from "../vendor/topbar";
 
+// Import our hooks
+import GridControlHook from "./hooks/grid_control_hook";
+
 // Define Hooks for LiveView interactions
 const Hooks = {
   UpdateDisplay: {
@@ -37,6 +40,8 @@ const Hooks = {
       });
     },
   },
+  // Register our GridControlHook
+  GridControl: GridControlHook,
 };
 
 let csrfToken = document

@@ -198,19 +198,24 @@ defmodule Legrid.Controller.Interface do
   @impl true
   def handle_info({:frame, frame}, state) do
     # Forward the frame to the buffer instead of broadcasting directly
-    if state.connected do
-      # Get pattern ID from metadata if available
-      pattern_id = if frame.metadata && Map.has_key?(frame.metadata, "pattern_id") do
-        frame.metadata["pattern_id"]
-      else
-        nil
-      end
+    send_frame(frame)
+    {:noreply, state}
+  end
 
-      # Add to buffer - will be sent in batches
-      Legrid.Controller.FrameBuffer.add_frame(frame, pattern_id: pattern_id)
+  @impl true
+  def handle_info({:clear_display, _}, state) do
+    # Broadcast clear display command to all controllers
+    Logger.info("Broadcasting clear display command to all controllers")
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:socket", {:clear_display, true})
+
+    # Also flush the frame buffer to ensure no old frames are sent
+    try do
+      Legrid.Controller.FrameBuffer.flush()
+    rescue
+      _ -> :ok
     end
 
-    {:noreply, %{state | last_frame: frame}}
+    {:noreply, state}
   end
 
   @impl true
@@ -375,6 +380,36 @@ defmodule Legrid.Controller.Interface do
     # rescue
     #   _ -> :ok
     # end
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pattern_changed, _pattern_id}, state) do
+    # Simply ignore pattern_changed messages on this topic
+    # They're meant for LiveView clients, not the controller interface
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pattern_changed, _pattern_id, _params}, state) do
+    # Also ignore pattern_changed messages with parameters
+    # They're meant for LiveView clients, not the controller interface
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:parameter_change, params}, state) do
+    # Broadcast parameter change command to all controllers
+    Logger.info("Broadcasting parameter change command to all controllers")
+    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:socket", {:parameter_change, params})
+
+    # Also flush the frame buffer to ensure no old frames are sent
+    try do
+      Legrid.Controller.FrameBuffer.flush()
+    rescue
+      _ -> :ok
+    end
 
     {:noreply, state}
   end
