@@ -14,10 +14,10 @@ class Config:
         "brightness": 255,
         "server_url": "ws://localhost:4000/controller/websocket",
         "layout": "serpentine",
-        "flip_x": False,
-        "flip_y": False,
+        "flip_x": True,
+        "flip_y": True,
         "transpose": False,
-        "log_level": "INFO",
+        "log_level": "ERROR",
     }
 
     @classmethod

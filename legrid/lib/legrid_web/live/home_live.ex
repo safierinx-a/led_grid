@@ -9,6 +9,7 @@ defmodule LegridWeb.HomeLive do
   @grid_width 25
   @grid_height 24
   @pixel_size 20 # Size of each LED in the web interface
+  @param_batch_delay 25 # Delay in ms for batching parameter updates
 
   @impl true
   def mount(_params, _session, socket) do
@@ -16,6 +17,7 @@ defmodule LegridWeb.HomeLive do
     if connected?(socket) do
       Runner.subscribe()
       Phoenix.PubSub.subscribe(Legrid.PubSub, "controller_stats")
+      Phoenix.PubSub.subscribe(Legrid.PubSub, "pattern_updates")
       # Attempt to activate monitoring safely
       try do
         Interface.activate_monitor()
@@ -36,16 +38,43 @@ defmodule LegridWeb.HomeLive do
       _ -> %{connected: false, url: nil, width: @grid_width, height: @grid_height}
     end
 
+    # Get the current active pattern and its parameters
+    {current_pattern, pattern_metadata, pattern_params} = try do
+      case Runner.current_pattern() do
+        {:ok, active_pattern} ->
+          pattern_id = active_pattern.id
+          {:ok, metadata} = Registry.get_pattern(pattern_id)
+
+          # Extract default params from pattern definition
+          default_params = metadata.parameters
+          |> Enum.map(fn {key, param} -> {key, param.default} end)
+          |> Enum.into(%{})
+
+          # Merge with active pattern params (active params take precedence)
+          merged_params = Map.merge(default_params, active_pattern.params)
+
+          {pattern_id, metadata, merged_params}
+
+        {:error, _} ->
+          {nil, nil, %{}}
+      end
+    rescue
+      error ->
+        IO.inspect(error, label: "Error getting current pattern")
+        {nil, nil, %{}}
+    end
+
     socket = socket
     |> assign(:patterns, patterns)
-    |> assign(:current_pattern, nil)
-    |> assign(:pattern_metadata, nil)
+    |> assign(:current_pattern, current_pattern)
+    |> assign(:pattern_metadata, pattern_metadata)
     |> assign(:pixels, blank_pixels())
     |> assign(:controller_status, controller_status)
-    |> assign(:pattern_params, %{})
+    |> assign(:pattern_params, pattern_params)
     |> assign(:grid_width, @grid_width)
     |> assign(:grid_height, @grid_height)
     |> assign(:pixel_size, @pixel_size)
+    |> assign(:param_update_timer, nil) # Initialize timer reference for parameter batching
     |> assign(:stats, %{
       fps: 0,
       frames_received: 0,
@@ -59,6 +88,7 @@ defmodule LegridWeb.HomeLive do
     |> assign(:stats_history, [])
     |> assign(:monitoring_active, true) # Start with monitoring active
     |> assign(:controller_enabled, true) # Start with controller enabled
+    |> assign(:theme, "dark") # Default theme
 
     {:ok, socket}
   end
@@ -84,9 +114,29 @@ defmodule LegridWeb.HomeLive do
           |> Enum.map(fn {key, param} -> {key, param.default} end)
           |> Enum.into(%{})
 
+          # Preserve shared parameters from previous pattern if they exist
+          preserved_params = if socket.assigns.current_pattern do
+            # List of global parameters to preserve
+            global_params = ["brightness", "color_scheme", "speed"]
+
+            # Keep values of global parameters from current pattern
+            socket.assigns.pattern_params
+            |> Map.take(global_params)
+            |> Enum.filter(fn {key, _value} ->
+              # Only preserve if the new pattern also has this parameter
+              Map.has_key?(metadata.parameters, key)
+            end)
+            |> Enum.into(%{})
+          else
+            %{}
+          end
+
+          # Merge the preserved params with default params (preserved takes precedence)
+          merged_params = Map.merge(default_params, preserved_params)
+
           # First update the socket
           socket = assign(socket,
-            pattern_params: default_params,
+            pattern_params: merged_params,
             current_pattern: pattern_id,
             pattern_metadata: metadata
           )
@@ -95,7 +145,7 @@ defmodule LegridWeb.HomeLive do
           # Do this after socket is already updated to prevent UI lockup
           if socket.assigns.controller_enabled do
             try do
-              Runner.start_pattern(pattern_id, default_params)
+              Runner.start_pattern(pattern_id, merged_params)
             rescue
               error ->
                 IO.inspect(error, label: "Error starting pattern")
@@ -145,10 +195,20 @@ defmodule LegridWeb.HomeLive do
 
         # Apply if controller enabled - auto-apply changes
         if socket.assigns.controller_enabled do
-          Runner.update_pattern_params(pattern_params)
-        end
+          # Cancel any pending update timer if there is one
+          if socket.assigns[:param_update_timer] do
+            Process.cancel_timer(socket.assigns.param_update_timer)
+          end
 
-        {:noreply, assign(socket, pattern_params: pattern_params)}
+          # Schedule a new timer to apply the parameter updates after a short delay (10ms)
+          # This allows multiple parameter changes to be batched together
+          update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
+
+          # Return the socket with updated parameters and the timer reference
+          {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
+        else
+          {:noreply, assign(socket, pattern_params: pattern_params)}
+        end
       rescue
         error ->
           IO.inspect(error, label: "Error in update-form-params")
@@ -157,6 +217,26 @@ defmodule LegridWeb.HomeLive do
     else
       {:noreply, socket}
     end
+  end
+
+  # Add a handler for the apply_parameter_updates message
+  @impl true
+  def handle_info({:apply_parameter_updates, params}, socket) do
+    # Apply the batched parameter updates with error handling
+    try do
+      # Only apply if the controller is enabled and connected
+      if socket.assigns.controller_enabled &&
+         socket.assigns.controller_status.connected do
+        Runner.update_pattern_params(params)
+      end
+    rescue
+      error ->
+        IO.inspect(error, label: "Error applying batched parameter updates")
+        # Continue execution - don't crash the LiveView process
+    end
+
+    # Clear the update timer reference
+    {:noreply, assign(socket, param_update_timer: nil)}
   end
 
   @impl true
@@ -176,12 +256,20 @@ defmodule LegridWeb.HomeLive do
       # Update the parameter
       pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
 
-      # Apply if controller enabled
+      # Apply if controller enabled - use the same batching mechanism
       if socket.assigns.controller_enabled do
-        Runner.update_pattern_params(pattern_params)
-      end
+        # Cancel any pending update timer if there is one
+        if socket.assigns[:param_update_timer] do
+          Process.cancel_timer(socket.assigns.param_update_timer)
+        end
 
-      {:noreply, assign(socket, pattern_params: pattern_params)}
+        # Schedule a new timer to apply the parameter updates
+        update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
+
+        {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
+      else
+        {:noreply, assign(socket, pattern_params: pattern_params)}
+      end
     else
       # Parameter not found - possibly a checkbox which doesn't use value
       IO.puts("Parameter definition not found for direct update: #{key}")
@@ -207,12 +295,20 @@ defmodule LegridWeb.HomeLive do
       # Update the parameter
       pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
 
-      # Apply if controller enabled
+      # Apply if controller enabled - use the same batching mechanism
       if socket.assigns.controller_enabled do
-        Runner.update_pattern_params(pattern_params)
-      end
+        # Cancel any pending update timer if there is one
+        if socket.assigns[:param_update_timer] do
+          Process.cancel_timer(socket.assigns.param_update_timer)
+        end
 
-      {:noreply, assign(socket, pattern_params: pattern_params)}
+        # Schedule a new timer to apply the parameter updates
+        update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
+
+        {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
+      else
+        {:noreply, assign(socket, pattern_params: pattern_params)}
+      end
     else
       IO.puts("Parameter definition not found for: #{key}")
       {:noreply, socket}
@@ -241,12 +337,20 @@ defmodule LegridWeb.HomeLive do
           # Update parameter
           pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
 
-          # Apply if controller enabled
+          # Apply if controller enabled - use the same batching mechanism
           if socket.assigns.controller_enabled do
-            Runner.update_pattern_params(pattern_params)
-          end
+            # Cancel any pending update timer if there is one
+            if socket.assigns[:param_update_timer] do
+              Process.cancel_timer(socket.assigns.param_update_timer)
+            end
 
-          {:noreply, assign(socket, pattern_params: pattern_params)}
+            # Schedule a new timer to apply the parameter updates
+            update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
+
+            {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
+          else
+            {:noreply, assign(socket, pattern_params: pattern_params)}
+          end
         else
           IO.puts("Parameter definition not found: #{key}")
           {:noreply, socket}
@@ -364,13 +468,20 @@ defmodule LegridWeb.HomeLive do
         # Update the parameter value in the pattern params
         pattern_params = Map.put(socket.assigns.pattern_params, param_key, converted_value)
 
-        # Apply parameter changes if the controller is enabled
+        # Apply parameter changes if the controller is enabled - use the same batching mechanism
         if socket.assigns.controller_enabled do
-          Runner.update_pattern_params(pattern_params)
-        end
+          # Cancel any pending update timer if there is one
+          if socket.assigns[:param_update_timer] do
+            Process.cancel_timer(socket.assigns.param_update_timer)
+          end
 
-        # Update the UI
-        {:noreply, assign(socket, pattern_params: pattern_params)}
+          # Schedule a new timer to apply the parameter updates
+          update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
+
+          {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
+        else
+          {:noreply, assign(socket, pattern_params: pattern_params)}
+        end
       else
         # Parameter definition not found, just log and return
         IO.puts("Parameter definition not found for #{param_key}")
@@ -421,6 +532,95 @@ defmodule LegridWeb.HomeLive do
     new_stats = Map.put(socket.assigns.stats, :clients, get_in(detailed, [:system, "clients"]) || 0)
 
     {:noreply, assign(socket, detailed_stats: detailed, stats: new_stats)}
+  end
+
+  @impl true
+  def handle_info({:pattern_changed, pattern_id, params}, socket) do
+    # Called when a pattern is started from elsewhere (another tab/client)
+    # Load the pattern metadata and update the UI
+    try do
+      case Registry.get_pattern(pattern_id) do
+        {:ok, metadata} ->
+          # Get default parameters from pattern metadata
+          default_params = metadata.parameters
+          |> Enum.map(fn {key, param} -> {key, param.default} end)
+          |> Enum.into(%{})
+
+          # Merge with any provided params (which take precedence)
+          # Check if params is a map and if it contains actual parameter values
+          merged_params = if is_map(params) && map_size(params) > 0 do
+            Map.merge(default_params, params)
+          else
+            default_params
+          end
+
+          socket = assign(socket,
+            current_pattern: pattern_id,
+            pattern_metadata: metadata,
+            pattern_params: merged_params
+          )
+          {:noreply, socket}
+
+        {:error, _} ->
+          # Pattern not found, just ignore
+          {:noreply, socket}
+      end
+    rescue
+      error ->
+        # Log and ignore errors for safety
+        IO.inspect(error, label: "Error handling pattern_changed event")
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("batch-param-update", %{"params" => params}, socket) do
+    # Handle batched parameter updates from the client-side JavaScript
+    pattern_id = socket.assigns.current_pattern
+
+    if pattern_id do
+      try do
+        {:ok, metadata} = Registry.get_pattern(pattern_id)
+
+        # Convert string keys to atoms for lookup in metadata
+        converted_params = params
+        |> Enum.reduce(%{}, fn {key, value}, acc ->
+          # Check if parameter exists in metadata
+          param_def = metadata.parameters[key]
+
+          if param_def do
+            # Value should already be properly typed from JS
+            Map.put(acc, key, value)
+          else
+            acc
+          end
+        end)
+
+        # Update the parameter values in the socket
+        pattern_params = Map.merge(socket.assigns.pattern_params, converted_params)
+
+        # Apply if controller enabled - but don't use the batching mechanism since
+        # batching is already handled client-side
+        if socket.assigns.controller_enabled && socket.assigns.controller_status.connected do
+          # Apply directly without additional batching
+          try do
+            Runner.update_pattern_params(pattern_params)
+          rescue
+            error ->
+              IO.inspect(error, label: "Error applying parameter updates from batch")
+          end
+        end
+
+        # Return updated socket
+        {:noreply, assign(socket, pattern_params: pattern_params)}
+      rescue
+        error ->
+          IO.inspect(error, label: "Error in batch-param-update")
+          {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
+    end
   end
 
   # Helper functions
