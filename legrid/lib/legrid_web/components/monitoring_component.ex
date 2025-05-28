@@ -8,24 +8,24 @@ defmodule LegridWeb.Components.MonitoringComponent do
 
   def monitoring_panel(assigns) do
     ~H"""
-    <div class={"monitoring-panel #{@class}"}>
-      <div class="panel-header">
-        <h3>
+    <div class={"stats-panel #{@class}"}>
+      <div class="stats-header">
+        <h2>
           <span class="material-icons">monitoring</span>
           System Monitoring
-        </h3>
-        <div class="panel-actions">
-          <button phx-click="request_stats" title="Refresh Stats" class="btn-icon">
+        </h2>
+        <div class="stats-actions">
+          <button phx-click="request_stats" class="icon-btn" title="Refresh">
             <span class="material-icons">refresh</span>
           </button>
-          <button phx-click="clear_history" title="Clear History" class="btn-icon">
-            <span class="material-icons">clear_all</span>
+          <button phx-click="clear_history" class="icon-btn" title="Clear History">
+            <span class="material-icons">delete_sweep</span>
           </button>
         </div>
       </div>
 
-      <div class="stats-overview">
-        <div class="stat-card">
+      <div class="stats-cards">
+        <div class="stat-card highlight">
           <div class="stat-value"><%= @stats.fps %></div>
           <div class="stat-label">FPS</div>
         </div>
@@ -35,19 +35,19 @@ defmodule LegridWeb.Components.MonitoringComponent do
           <div class="stat-label">Frames</div>
         </div>
 
-        <div class="stat-card">
+        <div class={["stat-card", @stats.frames_dropped > 0 && "danger"]}>
           <div class="stat-value"><%= @stats.frames_dropped %></div>
           <div class="stat-label">Dropped</div>
         </div>
 
         <div class="stat-card">
-          <div class="stat-value"><%= format_bandwidth(@stats.bandwidth_in) %></div>
-          <div class="stat-label">IN</div>
+          <div class="stat-value"><%= @stats.bandwidth_in %></div>
+          <div class="stat-label">IN B/s</div>
         </div>
 
         <div class="stat-card">
-          <div class="stat-value"><%= format_bandwidth(@stats.bandwidth_out) %></div>
-          <div class="stat-label">OUT</div>
+          <div class="stat-value"><%= @stats.bandwidth_out %></div>
+          <div class="stat-label">OUT B/s</div>
         </div>
 
         <div class="stat-card">
@@ -58,94 +58,49 @@ defmodule LegridWeb.Components.MonitoringComponent do
 
       <%= if @detailed_stats do %>
         <div class="stats-details">
-          <div class="stat-section">
-            <h4>System</h4>
-            <div class="stat-row">
-              <div class="stat-name">Uptime:</div>
-              <div class="stat-value"><%= format_duration(get_in(@detailed_stats, [:system, "uptime"])) %></div>
+          <div class="detail-section">
+            <h3><span class="material-icons">memory</span> System</h3>
+            <div class="detail-row">
+              <div class="detail-label">Uptime:</div>
+              <div class="detail-value"><%= format_duration(get_in(@detailed_stats, [:system, "uptime"])) %></div>
             </div>
-            <div class="stat-row">
-              <div class="stat-name">RSS Memory:</div>
-              <div class="stat-value"><%= format_bytes(get_in(@detailed_stats, [:system, "memory", "rss"])) %></div>
-            </div>
-            <div class="stat-row">
-              <div class="stat-name">Heap Memory:</div>
-              <div class="stat-value"><%= format_bytes(get_in(@detailed_stats, [:system, "memory", "heapTotal"])) %></div>
+            <div class="detail-row">
+              <div class="detail-label">Memory:</div>
+              <div class="detail-value"><%= format_bytes(get_in(@detailed_stats, [:system, "memory", "rss"])) %></div>
             </div>
           </div>
 
-          <div class="stat-section">
-            <h4>Performance</h4>
-            <div class="stat-row">
-              <div class="stat-name">Total Received:</div>
-              <div class="stat-value"><%= format_bytes(get_in(@detailed_stats, [:performance, "bytes_received"])) %></div>
+          <div class="detail-section">
+            <h3><span class="material-icons">lan</span> Network</h3>
+            <div class="detail-row">
+              <div class="detail-label">Total Received:</div>
+              <div class="detail-value"><%= format_bytes(get_in(@detailed_stats, [:performance, "bytes_received"])) %></div>
             </div>
-            <div class="stat-row">
-              <div class="stat-name">Total Sent:</div>
-              <div class="stat-value"><%= format_bytes(get_in(@detailed_stats, [:performance, "bytes_sent"])) %></div>
+            <div class="detail-row">
+              <div class="detail-label">Total Sent:</div>
+              <div class="detail-value"><%= format_bytes(get_in(@detailed_stats, [:performance, "bytes_sent"])) %></div>
             </div>
           </div>
-
-          <%= if get_in(@detailed_stats, [:buffer]) do %>
-            <div class="stat-section">
-              <h4>Frame Buffer</h4>
-              <div class="stat-row">
-                <div class="stat-name">Fullness:</div>
-                <div class="stat-value"><%= format_percentage(get_in(@detailed_stats, [:buffer, "fullness"])) %></div>
-              </div>
-              <div class="stat-row">
-                <div class="stat-name">FPS:</div>
-                <div class="stat-value"><%= format_number(get_in(@detailed_stats, [:buffer, "fps"])) %> fps</div>
-              </div>
-              <div class="stat-row">
-                <div class="stat-name">Queue:</div>
-                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer, "queue_length"]) || 0 %> frames</div>
-              </div>
-            </div>
-          <% end %>
-
-          <%= if get_in(@detailed_stats, [:buffer_status]) do %>
-            <div class="stat-section">
-              <h4>Server Buffer</h4>
-              <div class="stat-row">
-                <div class="stat-name">Frames In Buffer:</div>
-                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :frames_in_buffer]) || 0 %></div>
-              </div>
-              <div class="stat-row">
-                <div class="stat-name">Batch Size:</div>
-                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :batch_size]) || 0 %> frames</div>
-              </div>
-              <div class="stat-row">
-                <div class="stat-name">Batches Sent:</div>
-                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :batches_sent]) || 0 %></div>
-              </div>
-              <div class="stat-row">
-                <div class="stat-name">Current Sequence:</div>
-                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :current_sequence]) || 0 %></div>
-              </div>
-              <div class="stat-row">
-                <div class="stat-name">Controllers:</div>
-                <div class="stat-value"><%= get_in(@detailed_stats, [:buffer_status, :controllers_count]) || 0 %> (<%= get_in(@detailed_stats, [:buffer_status, :ready_controllers]) || 0 %> ready)</div>
-              </div>
-              <div class="stat-row">
-                <div class="stat-name">Avg. Buffer Fullness:</div>
-                <div class="stat-value"><%= format_percentage(get_in(@detailed_stats, [:buffer_status, :avg_buffer_fullness])) %></div>
-              </div>
-            </div>
-          <% end %>
         </div>
       <% end %>
 
-      <div class="simulation-controls">
-        <h4>Network Simulation</h4>
+      <div class="network-simulation">
+        <h3><span class="material-icons">science</span> Network Simulation</h3>
         <div class="simulation-options">
-          <label class="simulation-option">
-            <input type="checkbox" phx-click="simulate_latency" phx-value-enabled="true" />
+          <label class="toggle-option">
             <span>Simulate Latency</span>
+            <label class="toggle-switch">
+              <input type="checkbox" phx-click="simulate_latency" phx-value-enabled="true" />
+              <span class="toggle-slider"></span>
+            </label>
           </label>
-          <label class="simulation-option">
-            <input type="checkbox" phx-click="simulate_packet_loss" phx-value-enabled="true" />
+
+          <label class="toggle-option">
             <span>Simulate Packet Loss</span>
+            <label class="toggle-switch">
+              <input type="checkbox" phx-click="simulate_packet_loss" phx-value-enabled="true" />
+              <span class="toggle-slider"></span>
+            </label>
           </label>
         </div>
       </div>

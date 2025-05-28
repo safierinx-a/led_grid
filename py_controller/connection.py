@@ -24,6 +24,7 @@ class ConnectionManager:
         self.reconnect_timer = None
         self.heartbeat_timer = None
         self.reconnect_attempts = 0
+        self.frame_queue = []  # Queue for frames to be processed
 
         # Handle both object and dict-style configs
         if isinstance(config, dict):
@@ -375,6 +376,72 @@ class ConnectionManager:
                     logger.error(f"Error processing display_batch event: {e}")
                     # Just try to keep going with sequential batch
                     self._request_batch(seq + 1 if "seq" in locals() else 0)
+
+            elif event == "clear_display":
+                # Handle clear display command during pattern transitions
+                logger.info("Received clear display command - clearing frame queue")
+                try:
+                    # Clear our frame queue
+                    self.frame_queue.clear()
+                    # Call the frame callback with an all-black frame to reset display
+                    width, height = (
+                        getattr(self, "width", 25),
+                        getattr(self, "height", 24),
+                    )
+                    black_pixels = [(0, 0, 0) for _ in range(width * height)]
+                    from frame import Frame
+
+                    black_frame = Frame(width=width, height=height, pixels=black_pixels)
+                    self.on_frame_callback(black_frame.pixels)
+                    logger.info("Display cleared to black for pattern transition")
+                except Exception as e:
+                    logger.error(f"Error handling clear_display: {e}")
+
+            elif event == "parameter_change":
+                # Handle parameter change command during config updates
+                logger.info("Received parameter change command")
+                try:
+                    # Get the new parameters
+                    new_params = payload if isinstance(payload, dict) else {}
+
+                    # Skip if parameters haven't actually changed
+                    if self.last_parameters == new_params:
+                        logger.debug("Parameters unchanged, ignoring")
+                        return
+
+                    # Check if any significant parameters changed
+                    significant_change = self._is_significant_parameter_change(
+                        self.last_parameters, new_params
+                    )
+
+                    if significant_change:
+                        logger.info(
+                            "Significant parameter change detected, clearing frame queue"
+                        )
+                        # Clear our frame queue
+                        self.frame_queue.clear()
+                        # Call the frame callback with an all-black frame to reset display
+                        width, height = (
+                            getattr(self, "width", 25),
+                            getattr(self, "height", 24),
+                        )
+                        black_pixels = [(0, 0, 0) for _ in range(width * height)]
+                        from frame import Frame
+
+                        black_frame = Frame(
+                            width=width, height=height, pixels=black_pixels
+                        )
+                        self.on_frame_callback(black_frame.pixels)
+                        logger.info("Display cleared to black for parameter transition")
+                    else:
+                        logger.info(
+                            "Minor parameter change, allowing smooth transition"
+                        )
+
+                    # Update our stored parameters
+                    self.last_parameters = new_params
+                except Exception as e:
+                    logger.error(f"Error handling parameter_change: {e}")
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
@@ -747,3 +814,74 @@ class ConnectionManager:
             "led_count": getattr(self, "led_count", 600),
         }
         return params
+
+    def _is_significant_parameter_change(self, old_params, new_params):
+        """Check if a parameter change is significant enough to warrant a display reset
+
+        Significant changes include:
+        - Color scheme changes
+        - Major brightness or color adjustments
+        - Animation type changes
+        - Anything that would cause a jarring visual transition
+        """
+        if not old_params or not new_params:
+            # If either is None/empty, it's a significant change
+            return True
+
+        # Define parameters that cause significant visual changes when modified
+        significant_params = [
+            "color_scheme",
+            "pattern_type",
+            "animation_mode",
+            "display_mode",
+            "invert",
+            "mirror",
+            "grid_style",
+        ]
+
+        # Check if any significant parameter was changed
+        for param in significant_params:
+            if param in old_params and param in new_params:
+                if old_params[param] != new_params[param]:
+                    logger.info(
+                        f"Significant parameter change detected: {param} changed from {old_params[param]} to {new_params[param]}"
+                    )
+                    return True
+
+        # Check for major numerical parameter changes (greater than 50% change)
+        numerical_params = [
+            "brightness",
+            "contrast",
+            "saturation",
+            "speed",
+            "intensity",
+        ]
+        for param in numerical_params:
+            if param in old_params and param in new_params:
+                old_val = (
+                    float(old_params[param])
+                    if isinstance(old_params[param], (int, float, str))
+                    else 0
+                )
+                new_val = (
+                    float(new_params[param])
+                    if isinstance(new_params[param], (int, float, str))
+                    else 0
+                )
+
+                # Skip if both values are 0 to avoid division by zero
+                if old_val == 0 and new_val == 0:
+                    continue
+
+                # Calculate percent change
+                base = max(abs(old_val), 0.0001)  # Avoid division by zero
+                percent_change = abs(new_val - old_val) / base
+
+                if percent_change > 0.5:  # More than 50% change
+                    logger.info(
+                        f"Major parameter change detected: {param} changed by {percent_change * 100:.0f}%"
+                    )
+                    return True
+
+        # No significant changes detected
+        return False

@@ -65,8 +65,28 @@ defmodule LegridWeb.GridLive do
         |> Enum.map(fn {key, param} -> {key, param.default} end)
         |> Enum.into(%{})
 
+        # Preserve shared parameters from previous pattern if they exist
+        preserved_params = if socket.assigns.current_pattern do
+          # List of global parameters to preserve
+          global_params = ["brightness", "color_scheme", "speed"]
+
+          # Keep values of global parameters from current pattern
+          socket.assigns.pattern_params
+          |> Map.take(global_params)
+          |> Enum.filter(fn {key, _value} ->
+            # Only preserve if the new pattern also has this parameter
+            Map.has_key?(metadata.parameters, key)
+          end)
+          |> Enum.into(%{})
+        else
+          %{}
+        end
+
+        # Merge the preserved params with default params (preserved takes precedence)
+        merged_params = Map.merge(default_params, preserved_params)
+
         {:noreply, assign(socket,
-          pattern_params: default_params,
+          pattern_params: merged_params,
           current_pattern: pattern_id,
           pattern_metadata: metadata
         )}

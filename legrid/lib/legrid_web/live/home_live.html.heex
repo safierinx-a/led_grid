@@ -1,8 +1,15 @@
 <div class="dashboard">
   <nav class="dashboard-nav">
     <div class="brand">
-      <span class="logo-icon">🔲</span>
-      <span class="logo-text">LEGrid</span>
+      <span class="logo-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="2" y="2" width="5" height="5" rx="1" fill="white"/>
+          <rect x="9" y="2" width="5" height="5" rx="1" fill="white"/>
+          <rect x="2" y="9" width="5" height="5" rx="1" fill="white"/>
+          <rect x="9" y="9" width="5" height="5" rx="1" fill="white"/>
+        </svg>
+      </span>
+      <span class="logo-text">Legrid LED Controller</span>
     </div>
     
     <div class="connection-status">
@@ -22,14 +29,46 @@
       <button phx-click="toggle_monitoring" class={"control-btn #{if @monitoring_active, do: "active", else: ""}"} title="Stats">
         <span class="material-icons">assessment</span>
       </button>
+      <a href="/control" class="control-btn" title="New Control Interface">
+        <span class="material-icons">upgrade</span>
+      </a>
+      <a href="https://github.com/safierinx/led_grid" class="control-btn github-link" title="GitHub" target="_blank">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+        </svg>
+      </a>
+      <button class="control-btn theme-toggle" id="theme-toggle" title="Toggle Dark/Light Mode">
+        <span class="material-icons">dark_mode</span>
+      </button>
     </div>
   </nav>
 
   <div class="dashboard-content">
-    <div class="sidebar">
+    <div class="new-interface-banner">
+      <div class="banner-content">
+        <div class="banner-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3" y="3" width="7" height="7" rx="1" fill="currentColor"/>
+            <rect x="14" y="3" width="7" height="7" rx="1" fill="currentColor"/>
+            <rect x="3" y="14" width="7" height="7" rx="1" fill="currentColor"/>
+            <rect x="14" y="14" width="7" height="7" rx="1" fill="currentColor"/>
+          </svg>
+        </div>
+        <div class="banner-text">
+          <h2>Try Our New Control Interface</h2>
+          <p>Experience a more responsive design with improved parameter controls and instant visual feedback.</p>
+        </div>
+        <a href="/control" class="banner-button">
+          <span>Launch New Interface</span>
+          <span class="material-icons">arrow_forward</span>
+        </a>
+      </div>
+    </div>
+    
+    <div class="sidebar left-sidebar">
       <div class="section">
         <div class="section-header">
-          <h2><span class="material-icons">bubble_chart</span> Patterns</h2>
+          <h2><span class="material-icons">auto_awesome</span> Patterns</h2>
         </div>
         <div class="pattern-list">
           <%= for pattern <- @patterns do %>
@@ -42,65 +81,6 @@
           <% end %>
         </div>
       </div>
-      
-      <%= if @current_pattern do %>
-        <div class="section">
-          <div class="section-header">
-            <h2><span class="material-icons">tune</span> Parameters</h2>
-            <button type="button" class="stop-btn" phx-click="stop-pattern">
-              <span class="material-icons">stop</span>
-            </button>
-          </div>
-          <div class="parameters-container">
-            <form phx-change="update-form-params" phx-debounce="100">
-              <%= for {key, param} <- @pattern_metadata.parameters do %>
-                <div class="parameter-row">
-                  <div class="parameter-header">
-                    <label for={key}><%= key %></label>
-                    <span class="param-value" id={"display-#{key}"}><%= Map.get(@pattern_params, key, param.default) %></span>
-                  </div>
-                  <p class="parameter-desc"><%= param.description %></p>
-                  
-                  <%= case param.type do %>
-                    <% :integer -> %>
-                      <input type="range" id={key} name={"params[#{key}]"}
-                             class="range-slider"
-                             min={param.min} max={param.max} step="1"
-                             value={Map.get(@pattern_params, key, param.default)} />
-                    
-                    <% :float -> %>
-                      <input type="range" id={key} name={"params[#{key}]"}
-                             class="range-slider"
-                             min={param.min} max={param.max} step="0.01"
-                             value={Map.get(@pattern_params, key, param.default)} />
-                    
-                    <% :boolean -> %>
-                      <label class="toggle-switch">
-                        <input type="checkbox" id={key} name={"params[#{key}]"}
-                               checked={Map.get(@pattern_params, key, param.default)} />
-                        <span class="toggle-slider"></span>
-                      </label>
-                    
-                    <% :string -> %>
-                      <input type="text" id={key} name={"params[#{key}]"}
-                             class="text-input"
-                             value={Map.get(@pattern_params, key, param.default)} />
-                    
-                    <% :enum -> %>
-                      <select id={key} name={"params[#{key}]"} class="select-input">
-                        <%= for option <- param.options do %>
-                          <option value={option} selected={Map.get(@pattern_params, key, param.default) == option}>
-                            <%= option %>
-                          </option>
-                        <% end %>
-                      </select>
-                  <% end %>
-                </div>
-              <% end %>
-            </form>
-          </div>
-        </div>
-      <% end %>
     </div>
 
     <div class="main-panel">
@@ -118,14 +98,36 @@
                 left = x * @pixel_size
                 top = y * @pixel_size
                 color = rgb_to_css({r, g, b})
-                brightness = r + g + b
-                border_color = if brightness > 30, do: "rgba(255,255,255,0.08)", else: "rgba(0,0,0,0.3)"
-                glow = if brightness > 100, do: "0 0 #{brightness / 20}px rgba(#{r},#{g},#{b},0.8)", else: "none"
-                is_active = brightness > 10
+                
+                # Improved brightness calculation using perceived brightness formula
+                # Uses non-linear perceived brightness based on human vision and LED physics
+                # Formula: 0.299*R + 0.587*G + 0.114*B (standard luminance formula)
+                perceived_brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+                
+                # Apply gamma correction to better match LED physics (gamma ~2.2)
+                # WS2812B LEDs have nonlinear brightness response
+                corrected_brightness = :math.pow(perceived_brightness, 1/2.2)
+                brightness_percent = round(corrected_brightness * 100)
+                
+                # Improved active detection with lower threshold (real LEDs visible at lower brightness)
+                is_active = perceived_brightness > 0.03
+                
+                # Enhanced glow effect based on perceived brightness
+                glow_radius = if corrected_brightness > 0.3, do: corrected_brightness * 30, else: 0
+                glow_intensity = corrected_brightness * 0.9
+                glow = if glow_radius > 0, 
+                  do: "0 0 #{glow_radius}px rgba(#{r},#{g},#{b},#{glow_intensity})",
+                  else: "none"
+                  
+                # Dynamic border color based on brightness
+                border_color = if perceived_brightness > 0.12, 
+                  do: "rgba(255,255,255,#{perceived_brightness * 0.12})",
+                  else: "rgba(0,0,0,0.3)"
               %>
               <div class={"pixel #{if is_active, do: "active", else: ""}"} 
                    style={"left: #{left}px; top: #{top}px; background-color: #{color}; width: #{@pixel_size-2}px; height: #{@pixel_size-2}px; border: 1px solid #{border_color}; box-shadow: #{glow};"}
-                   data-x={x} data-y={y} data-rgb="#{r},#{g},#{b}" data-pos={position_index}></div>
+                   data-x={x} data-y={y} data-rgb="#{r},#{g},#{b}" data-pos={position_index} data-brightness={brightness_percent}>
+              </div>
             <% end %>
             <div class="grid-overlay"></div>
             
@@ -152,97 +154,66 @@
       </div>
       
       <%= if @monitoring_active do %>
-        <div class="stats-panel">
-          <div class="stats-header">
-            <h2><span class="material-icons">monitoring</span> Performance Monitor</h2>
-            <div class="stats-actions">
-              <button phx-click="request_stats" class="icon-btn" title="Refresh">
-                <span class="material-icons">refresh</span>
-              </button>
-              <button phx-click="clear_history" class="icon-btn" title="Clear History">
-                <span class="material-icons">delete_sweep</span>
-              </button>
-            </div>
+        <.monitoring_panel stats={@stats} detailed_stats={@detailed_stats} stats_history={@stats_history} />
+      <% end %>
+    </div>
+    
+    <div class="sidebar right-sidebar">
+      <%= if @current_pattern do %>
+        <div class="section">
+          <div class="section-header">
+            <h2><span class="material-icons">settings</span> Parameters</h2>
+            <button type="button" class="stop-btn" phx-click="stop-pattern">
+              <span class="material-icons">stop</span>
+            </button>
           </div>
-          
-          <div class="stats-cards">
-            <div class="stat-card highlight">
-              <div class="stat-value"><%= @stats.fps %></div>
-              <div class="stat-label">FPS</div>
-            </div>
-
-            <div class="stat-card">
-              <div class="stat-value"><%= @stats.frames_received %></div>
-              <div class="stat-label">Frames</div>
-            </div>
-
-            <div class={["stat-card", @stats.frames_dropped > 0 && "danger"]}>
-              <div class="stat-value"><%= @stats.frames_dropped %></div>
-              <div class="stat-label">Dropped</div>
-            </div>
-
-            <div class="stat-card">
-              <div class="stat-value"><%= @stats.bandwidth_in %></div>
-              <div class="stat-label">IN kB/s</div>
-            </div>
-
-            <div class="stat-card">
-              <div class="stat-value"><%= @stats.bandwidth_out %></div>
-              <div class="stat-label">OUT kB/s</div>
-            </div>
-
-            <div class="stat-card">
-              <div class="stat-value"><%= @stats.clients %></div>
-              <div class="stat-label">Clients</div>
-            </div>
-          </div>
-          
-          <%= if @detailed_stats do %>
-            <div class="stats-details">
-              <div class="detail-section">
-                <h3><span class="material-icons">memory</span> System</h3>
-                <div class="detail-row">
-                  <div class="detail-label">Uptime:</div>
-                  <div class="detail-value"><%= get_in(@detailed_stats, [:system, "uptime"]) %> sec</div>
+          <div class="parameters-container">
+            <div id="parameter-controls" phx-update="ignore" data-pattern-id={@current_pattern}>
+              <%= for {key, param} <- @pattern_metadata.parameters do %>
+                <div class="parameter-row" data-param-key={key} data-param-type={param.type} data-param-default={param.default}>
+                  <div class="parameter-header">
+                    <label for={key}><%= key %></label>
+                    <span class="param-value" id={"display-#{key}"}><%= Map.get(@pattern_params, key, param.default) %></span>
+                  </div>
+                  <p class="parameter-desc"><%= param.description %></p>
+                  
+                  <%= case param.type do %>
+                    <% :integer -> %>
+                      <input type="range" id={key} name={key} class="range-slider responsive-control"
+                             min={param.min} max={param.max} step="1"
+                             value={Map.get(@pattern_params, key, param.default)}
+                             data-param-type="integer" />
+                    
+                    <% :float -> %>
+                      <input type="range" id={key} name={key} class="range-slider responsive-control"
+                             min={param.min} max={param.max} step="0.01"
+                             value={Map.get(@pattern_params, key, param.default)}
+                             data-param-type="float" />
+                    
+                    <% :boolean -> %>
+                      <label class="toggle-switch">
+                        <input type="checkbox" id={key} name={key} class="responsive-control"
+                               checked={Map.get(@pattern_params, key, param.default)}
+                               data-param-type="boolean" />
+                        <span class="toggle-slider"></span>
+                      </label>
+                    
+                    <% :string -> %>
+                      <input type="text" id={key} name={key} class="text-input responsive-control"
+                             value={Map.get(@pattern_params, key, param.default)}
+                             data-param-type="string" />
+                    
+                    <% :enum -> %>
+                      <select id={key} name={key} class="select-input responsive-control" data-param-type="enum">
+                        <%= for option <- param.options do %>
+                          <option value={option} selected={Map.get(@pattern_params, key, param.default) == option}>
+                            <%= option %>
+                          </option>
+                        <% end %>
+                      </select>
+                  <% end %>
                 </div>
-                <div class="detail-row">
-                  <div class="detail-label">Memory:</div>
-                  <div class="detail-value"><%= get_in(@detailed_stats, [:system, "memory", "rss"]) %> MB</div>
-                </div>
-              </div>
-              
-              <div class="detail-section">
-                <h3><span class="material-icons">lan</span> Network</h3>
-                <div class="detail-row">
-                  <div class="detail-label">Total Received:</div>
-                  <div class="detail-value"><%= get_in(@detailed_stats, [:performance, "bytes_received"]) %> KB</div>
-                </div>
-                <div class="detail-row">
-                  <div class="detail-label">Total Sent:</div>
-                  <div class="detail-value"><%= get_in(@detailed_stats, [:performance, "bytes_sent"]) %> KB</div>
-                </div>
-              </div>
-            </div>
-          <% end %>
-          
-          <div class="network-simulation">
-            <h3><span class="material-icons">science</span> Network Simulation</h3>
-            <div class="simulation-options">
-              <label class="toggle-option">
-                <span>Simulate Latency</span>
-                <label class="toggle-switch">
-                  <input type="checkbox" phx-click="simulate_latency" phx-value-enabled="true" />
-                  <span class="toggle-slider"></span>
-                </label>
-              </label>
-              
-              <label class="toggle-option">
-                <span>Simulate Packet Loss</span>
-                <label class="toggle-switch">
-                  <input type="checkbox" phx-click="simulate_packet_loss" phx-value-enabled="true" />
-                  <span class="toggle-slider"></span>
-                </label>
-              </label>
+              <% end %>
             </div>
           </div>
         </div>
@@ -258,11 +229,151 @@ document.addEventListener('DOMContentLoaded', () => {
     // Setup sliders
     setupSliders();
     
+    // Setup responsive parameter controls
+    setupResponsiveControls();
+    
     // Setup pixel hover effects
     setupPixelHover();
     
     // Setup global events
     setupGlobalEvents();
+    
+    // Setup theme toggle
+    setupThemeToggle();
+  }
+  
+  // Setup all responsive controls with optimized update handling
+  function setupResponsiveControls() {
+    // Get LiveView socket from window
+    const liveSocket = window.liveSocket;
+    if (!liveSocket) return;
+    
+    // Track parameter changes for batching
+    const pendingChanges = {};
+    let updateTimer = null;
+    const updateDelay = 50; // ms delay for batching updates
+    
+    // Handle parameter changes from any control
+    document.querySelectorAll('.responsive-control').forEach(control => {
+      // Update display immediately when control changes
+      control.addEventListener('input', e => {
+        // Update the display value immediately
+        const key = control.id;
+        const displayEl = document.getElementById(`display-${key}`);
+        
+        // Get the current value based on control type
+        let value;
+        if (control.type === 'checkbox') {
+          value = control.checked;
+        } else if (control.type === 'select-one') {
+          value = control.options[control.selectedIndex].value;
+        } else {
+          value = control.value;
+        }
+        
+        // Update the display value
+        if (displayEl) {
+          displayEl.textContent = value;
+        }
+        
+        // Queue the change for batched sending to server
+        pendingChanges[key] = value;
+        
+        // Schedule update if not already scheduled
+        if (updateTimer) {
+          clearTimeout(updateTimer);
+        }
+        
+        // Send batch update after delay
+        updateTimer = setTimeout(() => {
+          sendBatchUpdate(pendingChanges);
+          // Clear pending changes after sending
+          for (const key in pendingChanges) {
+            delete pendingChanges[key];
+          }
+          updateTimer = null;
+        }, updateDelay);
+      });
+      
+      // Add specific handlers for different control types
+      if (control.type === 'range') {
+        // For sliders, also update on pointer up (end of drag)
+        control.addEventListener('pointerup', () => {
+          // Trigger immediate send on pointer up for better responsiveness
+          if (updateTimer) {
+            clearTimeout(updateTimer);
+            sendBatchUpdate(pendingChanges);
+            // Clear pending changes after sending
+            for (const key in pendingChanges) {
+              delete pendingChanges[key];
+            }
+            updateTimer = null;
+          }
+        });
+      }
+    });
+    
+    // Function to send batched parameter updates to the server
+    function sendBatchUpdate(params) {
+      if (Object.keys(params).length === 0) return;
+      
+      // Convert parameters to the format expected by the server
+      const convertedParams = {};
+      
+      for (const [key, value] of Object.entries(params)) {
+        const controlEl = document.getElementById(key);
+        if (!controlEl) continue;
+        
+        // Convert based on parameter type
+        const paramType = controlEl.getAttribute('data-param-type');
+        let convertedValue = value;
+        
+        // Convert to proper type
+        if (paramType === 'integer') {
+          convertedValue = parseInt(value, 10);
+        } else if (paramType === 'float') {
+          convertedValue = parseFloat(value);
+        } else if (paramType === 'boolean') {
+          convertedValue = Boolean(value);
+        }
+        
+        convertedParams[key] = convertedValue;
+      }
+      
+      // Send update through LiveView
+      const view = liveSocket.getViewByEl(document.getElementById('parameter-controls'));
+      if (view) {
+        view.pushEvent('batch-param-update', { params: convertedParams });
+      }
+    }
+  }
+  
+  // Setup theme toggle functionality
+  function setupThemeToggle() {
+    const themeToggle = document.getElementById('theme-toggle');
+    if (themeToggle) {
+      themeToggle.addEventListener('click', () => {
+        document.documentElement.classList.toggle('light-mode');
+        const icon = themeToggle.querySelector('.material-icons');
+        if (icon) {
+          icon.textContent = document.documentElement.classList.contains('light-mode') ? 'dark_mode' : 'light_mode';
+        }
+        
+        // Save preference
+        const theme = document.documentElement.classList.contains('light-mode') ? 'light' : 'dark';
+        localStorage.setItem('theme', theme);
+      });
+      
+      // Check for saved preference
+      const savedTheme = localStorage.getItem('theme');
+      if (savedTheme === 'light') {
+        document.documentElement.classList.add('light-mode');
+        const icon = themeToggle.querySelector('.material-icons');
+        if (icon) {
+          icon.textContent = 'dark_mode';
+        }
+      }
+    }
   }
   
   // Setup all range sliders
@@ -296,9 +407,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const x = this.getAttribute('data-x');
         const y = this.getAttribute('data-y');
         const rgb = this.getAttribute('data-rgb');
+        const brightness = this.getAttribute('data-brightness');
         
-        // Update the coords display
-        coordsDisplay.textContent = `Pixel (${x},${y}) | Position: ${pos} | RGB: ${rgb}`;
+        // Update the coords display with new brightness info
+        coordsDisplay.textContent = `Pixel (${x},${y}) | Position: ${pos} | RGB: ${rgb} | Brightness: ${brightness}%`;
         coordsDisplay.style.color = `rgb(${rgb})`;
         
         // Highlight the path to this pixel
@@ -318,6 +430,24 @@ document.addEventListener('DOMContentLoaded', () => {
         coordsDisplay.textContent = 'Hover to see pixel data';
         coordsDisplay.style.color = '';
       });
+    }
+    
+    // Setup observer to apply diffusion when pixels change
+    const pixelObserver = new MutationObserver(() => {
+      applyLightDiffusion();
+    });
+    
+    // Observe changes to pixels for color changes
+    if (gridContainer) {
+      pixelObserver.observe(gridContainer, { 
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class']
+      });
+      
+      // Apply initial diffusion
+      applyLightDiffusion();
     }
   }
   
@@ -474,8 +604,93 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   
+  // Apply light diffusion effect for more realistic LED appearance
+  function applyLightDiffusion() {
+    const gridContainer = document.querySelector('.grid-container');
+    if (!gridContainer) return;
+    
+    // First check if the diffusion canvas already exists
+    let diffusionCanvas = document.getElementById('led-diffusion-canvas');
+    if (!diffusionCanvas) {
+      // Create canvas for light diffusion
+      diffusionCanvas = document.createElement('canvas');
+      diffusionCanvas.id = 'led-diffusion-canvas';
+      diffusionCanvas.style.position = 'absolute';
+      diffusionCanvas.style.top = '0';
+      diffusionCanvas.style.left = '0';
+      diffusionCanvas.style.width = '100%';
+      diffusionCanvas.style.height = '100%';
+      diffusionCanvas.style.pointerEvents = 'none';
+      diffusionCanvas.style.opacity = '0.8';
+      diffusionCanvas.style.zIndex = '3';
+      diffusionCanvas.style.mixBlendMode = 'screen';
+      gridContainer.appendChild(diffusionCanvas);
+    }
+
+    // Set canvas dimensions to match the grid
+    const gridRect = gridContainer.getBoundingClientRect();
+    const width = gridRect.width;
+    const height = gridRect.height;
+    
+    // Set canvas resolution
+    diffusionCanvas.width = width;
+    diffusionCanvas.height = height;
+    
+    // Get canvas context
+    const ctx = diffusionCanvas.getContext('2d');
+    ctx.clearRect(0, 0, width, height);
+    
+    // Get all active pixels
+    const activePixels = document.querySelectorAll('.pixel.active');
+    if (!activePixels.length) return;
+    
+    // Draw light diffusion for each active pixel
+    activePixels.forEach(pixel => {
+      const pixelRect = pixel.getBoundingClientRect();
+      const rgb = pixel.getAttribute('data-rgb').split(',');
+      const brightness = parseFloat(pixel.getAttribute('data-brightness')) / 100;
+      if (brightness <= 0.05) return; // Skip very dim pixels
+      
+      // Calculate relative position to the grid
+      const x = pixelRect.left - gridRect.left + pixelRect.width / 2;
+      const y = pixelRect.top - gridRect.top + pixelRect.height / 2;
+      
+      // Create radial gradient for diffuse glow
+      const maxRadius = Math.max(25, brightness * 40);
+      const gradient = ctx.createRadialGradient(x, y, 0, x, y, maxRadius);
+      
+      // Create colored gradient based on LED color and brightness
+      const diffuseIntensity = Math.min(0.9, brightness * 1.2);
+      gradient.addColorStop(0, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${diffuseIntensity})`);
+      gradient.addColorStop(0.5, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${diffuseIntensity * 0.4})`);
+      gradient.addColorStop(1, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0)`);
+      
+      // Draw diffuse light
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(x, y, maxRadius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+  
   // Initialize everything
   setupUI();
   setupObservers();
+  applyLightDiffusion(); // Apply initial light diffusion effect
+  
+  // Highlight active pattern on load
+  function highlightActivePattern() {
+    const activePatternId = document.querySelector('.pattern-card.active')?.getAttribute('phx-value-pattern_id');
+    if (activePatternId) {
+      // Scroll to the active pattern card for better UX
+      const activePattern = document.querySelector(`.pattern-card[phx-value-pattern_id="${activePatternId}"]`);
+      if (activePattern) {
+        activePattern.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  }
+  
+  // Run after a short delay to ensure DOM is fully loaded
+  setTimeout(highlightActivePattern, 300);
 });
 </script> 

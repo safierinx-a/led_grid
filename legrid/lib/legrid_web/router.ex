@@ -17,8 +17,10 @@ defmodule LegridWeb.Router do
   scope "/", LegridWeb do
     pipe_through :browser
 
-    live "/", HomeLive
-    # Keep these routes for backward compatibility but they're not the main UI
+    live "/", GridControlLive
+    # Old home now at /legacy
+    live "/legacy", HomeLive
+    # Control is now the main interface
     live "/grid", GridLive
     live "/monitor", MonitorLive
   end
@@ -28,6 +30,7 @@ defmodule LegridWeb.Router do
     pipe_through :api
 
     get "/patterns", ApiController, :list_patterns
+    get "/patterns/current", ApiController, :get_current_pattern
     get "/patterns/:id", ApiController, :get_pattern
     post "/patterns/active", ApiController, :set_active_pattern
     get "/status", ApiController, :status

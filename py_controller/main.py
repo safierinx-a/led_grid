@@ -49,6 +49,8 @@ class LegridController:
         self.hardware = None
         self.frame_processor = None
         self.connection = None
+        self.last_pattern_id = None
+        self.last_parameters_version = None
 
         # Set up signal handling for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -140,6 +142,35 @@ class LegridController:
             if not frame:
                 self.logger.warning("Failed to process frame data")
                 return
+
+            # Check if this is a frame from a different pattern than what we expect
+            if (
+                frame.pattern_id
+                and self.last_pattern_id
+                and frame.pattern_id != self.last_pattern_id
+            ):
+                self.logger.warning(
+                    f"Dropping frame from old pattern {frame.pattern_id} (current: {self.last_pattern_id})"
+                )
+                return
+
+            # Update last pattern ID if different
+            if frame.pattern_id and frame.pattern_id != self.last_pattern_id:
+                self.logger.info(f"Pattern changed to {frame.pattern_id}")
+                self.last_pattern_id = frame.pattern_id
+
+            # Check if parameters are available and if we have a parameters version
+            if (
+                hasattr(frame, "parameters")
+                and frame.parameters
+                and hasattr(self, "last_parameters_version")
+            ):
+                # If this frame was generated with old parameters, drop it
+                if frame.parameters.get("version", 0) < self.last_parameters_version:
+                    self.logger.debug(
+                        f"Dropping frame with outdated parameters version {frame.parameters.get('version', 0)} (current: {self.last_parameters_version})"
+                    )
+                    return
 
             # Map logical frame to physical LED layout
             physical_pixels = self.frame_processor.map_led_layout(frame)
