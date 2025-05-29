@@ -16,11 +16,11 @@ defmodule Legrid.Controller.FrameBuffer do
   require Logger
 
   @topic "controller:interface"
-  @default_batch_size 60
-  @default_priority_batch_size 120
-  @default_max_delay 100
-  @default_min_frames 20
-  @default_min_request_interval 50
+  @default_batch_size 30
+  @default_priority_batch_size 60
+  @default_max_delay 200
+  @default_min_frames 10
+  @default_min_request_interval 100
 
   # Client API
 
@@ -28,11 +28,11 @@ defmodule Legrid.Controller.FrameBuffer do
   Starts the frame buffer.
 
   Options:
-  - batch_size: Maximum frames per batch (default: 60)
-  - priority_batch_size: Maximum frames per priority batch (default: 120)
-  - max_delay: Maximum delay in ms before sending a partial batch (default: 100)
-  - min_frames: Minimum frames before sending a partial batch (default: 20)
-  - min_request_interval: Minimum ms between batch sends to same controller (default: 50)
+  - batch_size: Maximum frames per batch (default: 30)
+  - priority_batch_size: Maximum frames per priority batch (default: 60)
+  - max_delay: Maximum delay in ms before sending a partial batch (default: 200)
+  - min_frames: Minimum frames before sending a partial batch (default: 10)
+  - min_request_interval: Minimum ms between batch sends to same controller (default: 100)
   """
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -285,63 +285,67 @@ defmodule Legrid.Controller.FrameBuffer do
     request = Map.get(state.pending_requests, controller_id)
 
     if request do
-      # Determine which frames to send and how many
-      {frames, max_frames} =
-        if is_priority do
-          {state.priority_frames, min(state.priority_batch_size, request.space_available)}
-        else
-          {state.frames, min(state.batch_size, request.space_available)}
-        end
+      # Add rate limiting check
+      now = System.monotonic_time(:millisecond)
+      last_batch_time = state.last_batch_time || 0
 
-      # Take the requested number of frames
-      frames_to_send = frames
-                      |> Enum.take(max_frames)
-                      |> Enum.reverse()
-
-      if length(frames_to_send) > 0 do
-        # Prepare the batch
-        sequence = state.current_sequence + 1
-        timestamp = System.system_time(:millisecond)
-
-        Logger.info("FrameBuffer: sending batch to controller #{controller_id}: #{length(frames_to_send)} frames, sequence #{sequence}, pattern #{inspect(state.current_pattern_id)}")
-
-        # Log sample frame data
-        if length(frames_to_send) > 0 do
-          first_frame = List.first(frames_to_send)
-          Logger.debug("FrameBuffer: first frame pixels: #{length(first_frame.pixels)}, metadata: #{inspect(first_frame.metadata)}")
-        end
-
-        # Broadcast the batch to the specific controller
-        Phoenix.PubSub.broadcast(
-          Legrid.PubSub,
-          "controller:socket",
-          {:controller_batch, controller_id, frames_to_send, is_priority, state.current_pattern_id, sequence, timestamp}
-        )
-
-        # Update state
-        remaining_frames = Enum.drop(frames, max_frames)
-
-        new_state =
+      if now - last_batch_time < state.min_request_interval do
+        # Too soon to send another batch, leave state unchanged
+        Logger.debug("FrameBuffer: rate limiting batch to controller #{controller_id}")
+        state
+      else
+        # Determine which frames to send and how many
+        {frames, max_frames} =
           if is_priority do
-            %{state |
-              priority_frames: remaining_frames,
-              current_sequence: sequence,
-              last_batch_time: System.monotonic_time(:millisecond)
-            }
+            {state.priority_frames, min(state.priority_batch_size, request.space_available)}
           else
-            %{state |
-              frames: remaining_frames,
-              current_sequence: sequence,
-              last_batch_time: System.monotonic_time(:millisecond)
-            }
+            {state.frames, min(state.batch_size, request.space_available)}
           end
 
-        # Remove this controller from pending requests
-        %{new_state | pending_requests: Map.delete(new_state.pending_requests, controller_id)}
-      else
-        # No frames to send, leave state unchanged
-        Logger.info("FrameBuffer: no frames to send to controller #{controller_id}")
-        state
+        # Take the requested number of frames
+        frames_to_send = frames
+                        |> Enum.take(max_frames)
+                        |> Enum.reverse()
+
+        if length(frames_to_send) > 0 do
+          # Prepare the batch
+          sequence = state.current_sequence + 1
+          timestamp = System.system_time(:millisecond)
+
+          Logger.info("FrameBuffer: sending batch to controller #{controller_id}: #{length(frames_to_send)} frames, sequence #{sequence}, pattern #{inspect(state.current_pattern_id)}")
+
+          # Broadcast the batch to the specific controller
+          Phoenix.PubSub.broadcast(
+            Legrid.PubSub,
+            "controller:socket",
+            {:controller_batch, controller_id, frames_to_send, is_priority, state.current_pattern_id, sequence, timestamp}
+          )
+
+          # Update state
+          remaining_frames = Enum.drop(frames, max_frames)
+
+          new_state =
+            if is_priority do
+              %{state |
+                priority_frames: remaining_frames,
+                current_sequence: sequence,
+                last_batch_time: now
+              }
+            else
+              %{state |
+                frames: remaining_frames,
+                current_sequence: sequence,
+                last_batch_time: now
+              }
+            end
+
+          # Remove this controller from pending requests
+          %{new_state | pending_requests: Map.delete(new_state.pending_requests, controller_id)}
+        else
+          # No frames to send, leave state unchanged
+          Logger.info("FrameBuffer: no frames to send to controller #{controller_id}")
+          state
+        end
       end
     else
       # No request for this controller, leave state unchanged

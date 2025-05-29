@@ -8,6 +8,8 @@ defmodule LegridWeb.GridControlLive do
   @grid_width 25
   @grid_height 24
   @pixel_size 20
+  @frame_update_interval 50  # Only update frame display every 50ms
+  @stats_update_interval 1000  # Only update stats every 1000ms
 
   def mount(_params, _session, socket) do
     # Connect to all necessary PubSub topics when the LiveView connects
@@ -87,6 +89,9 @@ defmodule LegridWeb.GridControlLive do
       })
       |> assign(:detailed_stats, nil)
       |> assign(:stats_history, [])
+      |> assign(:last_frame_update, 0)
+      |> assign(:last_stats_update, 0)
+      |> assign(:pending_frame, nil)
 
     if pattern_id && connected?(socket) do
       # Immediately notify client of current pattern
@@ -401,29 +406,77 @@ defmodule LegridWeb.GridControlLive do
     {:noreply, assign(socket, :show_stats, show_stats)}
   end
 
+  def handle_event("update-param", %{"value" => value, "_target" => [key]}, socket) do
+    # Handle direct value change
+    pattern_id = socket.assigns.current_pattern
+    {:ok, metadata} = Registry.get_pattern(pattern_id)
+    param_def = metadata.parameters[key]
+
+    if param_def do
+      # Convert based on parameter type
+      converted_value = convert_param_value(value, param_def.type)
+
+      # Update the parameter
+      pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
+
+      # Apply if controller enabled - use async updates
+      if socket.assigns.controller_enabled do
+        # Use Task.start to make parameter updates non-blocking
+        Task.start(fn ->
+          Runner.update_pattern_params_immediate(pattern_params)
+        end)
+      end
+
+      {:noreply, assign(socket, pattern_params: pattern_params)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   # PubSub Event Handlers
 
   def handle_info({:frame, frame}, socket) do
-    {:noreply, assign(socket, :pixels, frame.pixels)}
+    now = System.monotonic_time(:millisecond)
+    last_update = socket.assigns.last_frame_update
+
+    if now - last_update >= @frame_update_interval do
+      # Update immediately if enough time has passed
+      {:noreply, assign(socket, pixels: frame.pixels, last_frame_update: now)}
+    else
+      # Store the frame for later update
+      {:noreply, assign(socket, pending_frame: frame)}
+    end
   end
 
   def handle_info({:controller_stats, stats}, socket) do
-    # Basic stats update
-    new_stats = %{
-      fps: stats["fps"] || 0,
-      frames_received: stats["frames_received"] || 0,
-      frames_dropped: stats["frames_dropped"] || 0,
-      bandwidth_in: get_in(stats, ["bandwidth", "in"]) || 0,
-      bandwidth_out: get_in(stats, ["bandwidth", "out"]) || 0,
-      clients: socket.assigns.stats.clients,
-      last_updated: System.system_time(:second)
-    }
+    now = System.monotonic_time(:millisecond)
+    last_update = socket.assigns.last_stats_update
 
-    # Add to history (keep limited history)
-    history = [new_stats | socket.assigns.stats_history]
-      |> Enum.take(60)
+    if now - last_update >= @stats_update_interval do
+      # Only update stats if enough time has passed
+      new_stats = %{
+        fps: stats["fps"] || 0,
+        frames_received: stats["frames_received"] || 0,
+        frames_dropped: stats["frames_dropped"] || 0,
+        bandwidth_in: get_in(stats, ["bandwidth", "in"]) || 0,
+        bandwidth_out: get_in(stats, ["bandwidth", "out"]) || 0,
+        clients: socket.assigns.stats.clients,
+        last_updated: System.system_time(:second)
+      }
 
-    {:noreply, assign(socket, stats: new_stats, stats_history: history)}
+      # Only update if stats have changed significantly
+      if should_update_stats?(socket.assigns.stats, new_stats) do
+        # Add to history (keep limited history)
+        history = [new_stats | socket.assigns.stats_history]
+          |> Enum.take(30)  # Reduced from 60
+
+        {:noreply, assign(socket, stats: new_stats, stats_history: history, last_stats_update: now)}
+      else
+        {:noreply, assign(socket, last_stats_update: now)}
+      end
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:controller_stats_detailed, stats}, socket) do
@@ -433,10 +486,15 @@ defmodule LegridWeb.GridControlLive do
       client: stats["client"] || %{}
     }
 
-    # Update client count
-    new_stats = Map.put(socket.assigns.stats, :clients, get_in(detailed, [:system, "clients"]) || 0)
+    # Only update if detailed stats have changed significantly
+    if should_update_detailed_stats?(socket.assigns.detailed_stats, detailed) do
+      # Update client count
+      new_stats = Map.put(socket.assigns.stats, :clients, get_in(detailed, [:system, "clients"]) || 0)
 
-    {:noreply, assign(socket, detailed_stats: detailed, stats: new_stats)}
+      {:noreply, assign(socket, detailed_stats: detailed, stats: new_stats)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:pattern_changed, pattern_id, params}, socket) do
@@ -486,4 +544,41 @@ defmodule LegridWeb.GridControlLive do
       _ -> :ok
     end
   end
+
+  # Helper function to determine if stats should be updated
+  defp should_update_stats?(old_stats, new_stats) do
+    # Only update if significant changes occurred
+    abs(old_stats.fps - new_stats.fps) > 1 ||
+    abs(old_stats.frames_received - new_stats.frames_received) > 10 ||
+    abs(old_stats.frames_dropped - new_stats.frames_dropped) > 5 ||
+    abs(old_stats.bandwidth_in - new_stats.bandwidth_in) > 1000 ||
+    abs(old_stats.bandwidth_out - new_stats.bandwidth_out) > 1000
+  end
+
+  # Helper function to determine if detailed stats should be updated
+  defp should_update_detailed_stats?(old_stats, new_stats) do
+    # If we don't have old stats, always update
+    if is_nil(old_stats) do
+      true
+    else
+      # Check if any significant changes in system stats
+      system_changed = old_stats.system != new_stats.system
+      performance_changed = old_stats.performance != new_stats.performance
+      client_changed = old_stats.client != new_stats.client
+
+      system_changed || performance_changed || client_changed
+    end
+  end
+
+  # Helper function to convert parameter values to appropriate types
+  defp convert_param_value(value, :integer) when is_binary(value), do: String.to_integer(value)
+  defp convert_param_value(value, :integer) when is_integer(value), do: value
+  defp convert_param_value(value, :float) when is_binary(value), do: String.to_float(value)
+  defp convert_param_value(value, :float) when is_float(value), do: value
+  defp convert_param_value("true", :boolean), do: true
+  defp convert_param_value("false", :boolean), do: false
+  defp convert_param_value(value, :boolean) when is_boolean(value), do: value
+  defp convert_param_value(value, :string) when is_binary(value), do: value
+  defp convert_param_value(value, :enum) when is_binary(value), do: value
+  defp convert_param_value(value, _), do: value
 end

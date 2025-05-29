@@ -234,22 +234,19 @@ defmodule LegridWeb.ControllerChannel do
       # Combined batch data
       batch_data = <<batch_header::binary, frames_binary::binary>>
 
-      # Log batch details
-      Logger.info("Created batch binary: #{byte_size(batch_data)} bytes, #{frame_count} frames, priority=#{priority_flag}, sequence=#{sequence}")
-
-      # CHANGED: Send the binary data directly on the raw websocket instead of using JSON+base64
+      # Send the binary data directly on the raw websocket
       socket.transport_pid |> send({:socket_push, :binary, batch_data})
 
-      # Also send a smaller notification as JSON for controllers that might not support binary frames
-      # This provides backwards compatibility
-      push(socket, "batch_sent", %{
-        count: frame_count,
-        priority: is_priority,
-        sequence: sequence,
-        use_binary: true  # Flag to indicate binary frame was sent
-      })
+      # Only send JSON notification for non-priority batches to reduce overhead
+      if !is_priority do
+        push(socket, "batch_sent", %{
+          count: frame_count,
+          priority: is_priority,
+          sequence: sequence,
+          use_binary: true
+        })
+      end
 
-      # Log that the batch was sent
       Logger.info("Binary batch sent to controller #{controller_id}")
     end
 
@@ -420,6 +417,25 @@ defmodule LegridWeb.ControllerChannel do
     )
 
     {:reply, {:ok, %{received: true}}, socket}
+  end
+
+  @impl true
+  def handle_info({:stats_update, controller_id, stats}, socket) do
+    # Throttle stats updates to reduce overhead
+    now = System.monotonic_time(:millisecond)
+    last_update = get_in(socket.assigns, [:last_stats_update]) || 0
+
+    if now - last_update >= 1000 do  # Only update stats once per second
+      # Forward stats to interface
+      Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:events", {:stats_update, controller_id, stats})
+
+      # Log stats at debug level to avoid noise
+      Logger.debug("Received stats from controller #{controller_id}: #{inspect(stats)}")
+
+      {:noreply, assign(socket, :last_stats_update, now)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # Helper to convert frames to binary format
