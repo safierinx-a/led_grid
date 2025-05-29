@@ -9,7 +9,7 @@ defmodule Legrid.Patterns.Spiral do
   @behaviour Legrid.Patterns.PatternBehaviour
 
   alias Legrid.Frame
-  alias Legrid.Patterns.PatternHelpers
+  alias Legrid.Patterns.{PatternHelpers, SpatialHelpers}
 
   @default_width 25
   @default_height 24
@@ -122,37 +122,64 @@ defmodule Legrid.Patterns.Spiral do
     delta_time = elapsed_ms / 1000.0 * state.speed
     time = state.time + delta_time
 
-    # Calculate center of grid
-    center_x = div(state.width, 2)
-    center_y = div(state.height, 2)
+    # Create frame
+    frame = %Frame{width: state.width, height: state.height, pixels: []}
+    center = {state.width / 2.0, state.height / 2.0}
 
-    # Calculate maximum radius to ensure spiral fits in grid
-    max_radius = min(center_x, center_y) - 1
+    # Generate spatial fields
+    distance_field = SpatialHelpers.distance_field(frame, center)
+    angle_field = SpatialHelpers.angle_field(frame, center)
 
-    # Generate spiral points
-    spiral_points = generate_spiral_points(
-      center_x,
-      center_y,
-      max_radius,
-      state.turns,
-      state.expansion_rate,
-      state.pulse_amplitude,
-      state.pulse_frequency,
-      state.rotation_speed,
-      state.points,
-      time
-    )
+    # Calculate max radius for normalization
+    max_radius = SpatialHelpers.max_dimension(frame) / 2.0
 
-    # Generate pixels for the frame
-    pixels = render_pixels(state.width, state.height, spiral_points, time, state.brightness, state.color_scheme)
+    # Create spiral field using spatial operations
+    pixels = SpatialHelpers.spatial_to_frame(frame, [distance_field, angle_field],
+      fn [distance, angle], _x, _y ->
+        # Normalize distance and angle
+        norm_distance = distance / max_radius
+        norm_angle = (angle + :math.pi) / (2 * :math.pi)  # 0 to 1
+
+        # Calculate spiral parameter
+        # Combine angle and distance to create spiral effect
+        spiral_t = PatternHelpers.rem_float(
+          norm_angle * state.turns +
+          norm_distance * state.expansion_rate +
+          time * state.rotation_speed,
+          1.0
+        )
+
+        # Apply pulsation
+        pulse = :math.sin(time * state.pulse_frequency + norm_distance * 4 * :math.pi) * state.pulse_amplitude
+
+        # Calculate spiral intensity - creates the "arms" of the spiral
+        spiral_intensity = :math.pow(:math.sin(spiral_t * 2 * :math.pi), 2)
+
+        # Apply pulsation to intensity
+        final_intensity = spiral_intensity * (1.0 + pulse)
+
+        # Only render if intensity is above threshold
+        if final_intensity > 0.1 do
+          # Color based on position in spiral
+          color_value = PatternHelpers.rem_float(spiral_t + time * 0.1, 1.0)
+
+          # Brightness based on distance (fade toward edges) and intensity
+          brightness = final_intensity * (0.4 + norm_distance * 0.6) * state.brightness
+
+          PatternHelpers.get_color(state.color_scheme, color_value, brightness)
+        else
+          # Background
+          {0, 0, 0}
+        end
+      end)
 
     # Create the frame
-    frame = Frame.new("spiral", state.width, state.height, pixels)
+    frame_with_pixels = %{frame | pixels: pixels}
 
     # Update state
     new_state = %{state | time: time}
 
-    {:ok, frame, new_state}
+    {:ok, frame_with_pixels, new_state}
   end
 
   @impl true

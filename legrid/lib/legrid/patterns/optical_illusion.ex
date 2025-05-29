@@ -9,7 +9,7 @@ defmodule Legrid.Patterns.OpticalIllusion do
   @behaviour Legrid.Patterns.PatternBehaviour
 
   alias Legrid.Frame
-  alias Legrid.Patterns.PatternHelpers
+  alias Legrid.Patterns.{PatternHelpers, SpatialHelpers}
 
   @default_width 25
   @default_height 24
@@ -170,39 +170,41 @@ defmodule Legrid.Patterns.OpticalIllusion do
     end
   end
 
-  # Rotating Rings: Concentric rings that appear to rotate
+  # Rotating Rings: Creates concentric rings with rotation effect using spatial operations
   defp render_rotating_rings(width, height, time, state) do
-    center_x = width / 2.0
-    center_y = height / 2.0
-    max_radius = :math.sqrt(center_x * center_x + center_y * center_y)
+    frame = %Frame{width: width, height: height, pixels: []}
+    center = {width / 2.0, height / 2.0}
 
-    for y <- 0..(height-1), x <- 0..(width-1) do
-      # Calculate polar coordinates
-      dx = x - center_x
-      dy = y - center_y
-      radius = :math.sqrt(dx * dx + dy * dy)
-      angle = :math.atan2(dy, dx)
+    # Generate spatial fields
+    distance_field = SpatialHelpers.distance_field(frame, center)
+    angle_field = SpatialHelpers.angle_field(frame, center)
 
-      # Number of rings based on density
-      ring_count = trunc(max_radius * state.density * 1.5) + 3
-      ring_thickness = max_radius / ring_count
+    max_radius = SpatialHelpers.max_dimension(frame) / 2.0
+    ring_count = trunc(max_radius * state.density * 1.5) + 3
+    ring_thickness = max_radius / ring_count
 
-      # Calculate ring value with rotation
-      ring_value = rem_float(radius / ring_thickness +
-                           angle / (2.0 * :math.pi) +
-                           time * 0.5, 1.0)
+    # Create rings using spatial operations
+    SpatialHelpers.spatial_to_frame(frame, [distance_field, angle_field],
+      fn [distance, angle], _x, _y ->
+        # Calculate ring value with rotation
+        ring_value = PatternHelpers.rem_float(
+          distance / ring_thickness +
+          angle / (2.0 * :math.pi) +
+          time * 0.5,
+          1.0
+        )
 
-      # Apply contrast - rings have sharp transitions
-      ring_pulse = if ring_value > 0.5, do: 1.0, else: 0.0
+        # Apply contrast - rings have sharp transitions
+        ring_pulse = if ring_value > 0.5, do: 1.0, else: 0.0
 
-      # Apply additional rotation based on radius
-      color_angle = angle + radius * state.phase_shift * :math.sin(time)
-      color_value = PatternHelpers.rem_float(color_angle / (2.0 * :math.pi) + time * 0.2, 1.0)
+        # Apply additional rotation based on radius
+        color_angle = angle + distance * state.phase_shift * :math.sin(time)
+        color_value = PatternHelpers.rem_float(color_angle / (2.0 * :math.pi) + time * 0.2, 1.0)
 
-      # Mix dark and light colors based on ring value
-      final_brightness = ring_pulse * state.contrast * state.brightness
-      PatternHelpers.get_color(state.color_scheme, color_value, final_brightness)
-    end
+        # Mix dark and light colors based on ring value
+        final_brightness = ring_pulse * state.contrast * state.brightness
+        PatternHelpers.get_color(state.color_scheme, color_value, final_brightness)
+      end)
   end
 
   # Moving Waves: Creates wave patterns that appear to move across the grid
@@ -236,34 +238,33 @@ defmodule Legrid.Patterns.OpticalIllusion do
     end
   end
 
-  # Expanding Circles: Circles that expand outward from the center
+  # Expanding Circles: Creates expanding circle patterns using spatial operations
   defp render_expanding_circles(width, height, time, state) do
-    center_x = width / 2.0
-    center_y = height / 2.0
-    max_radius = :math.sqrt(center_x * center_x + center_y * center_y)
+    frame = %Frame{width: width, height: height, pixels: []}
+    center = {width / 2.0, height / 2.0}
 
-    # Calculate how many circles to display based on density
+    # Generate spatial fields
+    distance_field = SpatialHelpers.distance_field(frame, center)
+    angle_field = SpatialHelpers.angle_field(frame, center)
+
+    max_radius = SpatialHelpers.max_dimension(frame) / 2.0
     circle_count = trunc(state.density * 10.0) + 2
 
-    for y <- 0..(height-1), x <- 0..(width-1) do
-      # Calculate distance from center
-      dx = x - center_x
-      dy = y - center_y
-      radius = :math.sqrt(dx * dx + dy * dy)
+    # Create expanding circles using spatial operations
+    SpatialHelpers.spatial_to_frame(frame, [distance_field, angle_field],
+      fn [distance, angle], _x, _y ->
+        # Normalize distance and create expanding effect
+        norm_distance = distance / max_radius
+        expanding_value = PatternHelpers.rem_float(norm_distance * circle_count - time, 1.0)
 
-      # Normalize radius and create expanding effect
-      norm_radius = radius / max_radius
-      expanding_value = rem_float(norm_radius * circle_count - time, 1.0)
+        # Create sharp transitions between circles
+        circle_edge = if abs(expanding_value - 0.5) < state.contrast * 0.3, do: 1.0, else: 0.0
 
-      # Create sharp transitions between circles
-      circle_edge = if abs(expanding_value - 0.5) < state.contrast * 0.3, do: 1.0, else: 0.0
+        # Add some variation based on angle
+        color_value = PatternHelpers.rem_float(angle / (2.0 * :math.pi) + time * 0.1, 1.0)
 
-      # Add some variation based on angle
-      angle = :math.atan2(dy, dx)
-      color_value = PatternHelpers.rem_float(angle / (2.0 * :math.pi) + time * 0.1, 1.0)
-
-      PatternHelpers.get_color(state.color_scheme, color_value, circle_edge * state.brightness)
-    end
+        PatternHelpers.get_color(state.color_scheme, color_value, circle_edge * state.brightness)
+      end)
   end
 
   # Spiral: Creates a spinning spiral pattern
