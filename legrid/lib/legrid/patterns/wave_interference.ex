@@ -9,6 +9,7 @@ defmodule Legrid.Patterns.WaveInterference do
 
   alias Legrid.Frame
   alias Legrid.Patterns.PatternHelpers
+  alias Legrid.Patterns.SpatialHelpers
 
   @default_width 25
   @default_height 24
@@ -119,29 +120,61 @@ defmodule Legrid.Patterns.WaveInterference do
 
   @impl true
   def render(state, elapsed_ms) do
-    # Update time - apply speed multiplier from global parameters
-    delta_time = elapsed_ms / 1000.0 * state.speed
-    time = state.time + delta_time
-
-    # Update wave source positions
-    updated_sources = update_wave_sources(state.wave_sources, state.width, state.height,
-                                         time, state.source_movement)
-
-    # Generate pixels for the frame
-    pixels = render_pixels(state.width, state.height, updated_sources, time,
-                          state.frequency, state.amplitude, state.wave_speed,
-                          state.interference_mode, state.brightness, state.color_scheme)
-
-    # Create the frame
-    frame = Frame.new("wave_interference", state.width, state.height, pixels)
-
-    # Update state
-    new_state = %{state |
-      time: time,
-      wave_sources: updated_sources
+    # Create empty frame
+    frame = %Frame{
+      width: state.width,
+      height: state.height,
+      pixels: []
     }
 
-    {:ok, frame, new_state}
+    time = elapsed_ms / 1000
+
+    # Update wave source positions
+    wave_sources = update_wave_sources(
+      state.wave_sources,
+      state.width,
+      state.height,
+      time,
+      state.source_movement
+    )
+
+    # Generate distance fields for each source
+    fields = Enum.map(wave_sources, fn source ->
+      SpatialHelpers.distance_field(frame, {source.x, source.y})
+    end)
+
+    # Apply wave function to each field
+    wave_fields = Enum.map(fields, fn field ->
+      SpatialHelpers.apply_wave(
+        field,
+        state.frequency,
+        time * state.wave_speed,
+        state.amplitude
+      )
+    end)
+
+    # Combine fields based on interference mode
+    combine_fn = case state.interference_mode do
+      "additive" -> &SpatialHelpers.combine_additive/2
+      "multiplicative" -> &SpatialHelpers.combine_multiplicative/2
+      "maximum" -> &SpatialHelpers.combine_maximum/2
+    end
+
+    combined_field = SpatialHelpers.combine_fields(wave_fields, combine_fn)
+
+    # Map field to colors and convert to frame format
+    pixels = combined_field
+    |> Enum.with_index()
+    |> Enum.map(fn {value, i} ->
+      x = rem(i, state.width)
+      y = div(i, state.width)
+      # Get color and apply wave intensity to brightness
+      intensity = (abs(value) + 1) / 2
+      PatternHelpers.get_color(state.color_scheme, intensity, state.brightness)
+    end)
+
+    # Return frame with updated pixels and state
+    {:ok, %{frame | pixels: pixels}, %{state | wave_sources: wave_sources}}
   end
 
   @impl true
@@ -204,7 +237,7 @@ defmodule Legrid.Patterns.WaveInterference do
       new_y = source.y + :math.sin(source.angle) * movement_speed * 0.1
 
       # Check boundaries and bounce if needed
-      {new_x, new_angle_x} = bounce_coordinate(new_x, source.angle, 0, width - 1)
+      {new_x, _} = bounce_coordinate(new_x, source.angle, 0, width - 1)
       {new_y, new_angle_y} = bounce_coordinate(new_y, source.angle, 0, height - 1)
 
       # Apply slight direction change over time for more organic movement
@@ -252,58 +285,6 @@ defmodule Legrid.Patterns.WaveInterference do
     # Apply distance falloff
     attenuation = 1.0 / (1.0 + distance * 0.1)
     wave_val * attenuation
-  end
-
-  # Helper function to render pixels
-  defp render_pixels(width, height, sources, time, frequency, amplitude, wave_speed,
-                    interference_mode, brightness, color_scheme) do
-    for y <- 0..(height - 1) do
-      for x <- 0..(width - 1) do
-        # Calculate combined wave value from all sources
-        wave_value = case interference_mode do
-          "additive" ->
-            # Sum all wave values
-            sources
-            |> Enum.map(fn source ->
-              calculate_wave(x, y, source, time, frequency, amplitude, wave_speed)
-            end)
-            |> Enum.sum()
-            |> normalize_wave()
-
-          "multiplicative" ->
-            # Multiply all wave values
-            sources
-            |> Enum.map(fn source ->
-              (calculate_wave(x, y, source, time, frequency, amplitude, wave_speed) * 0.5) + 0.5
-            end)
-            |> Enum.reduce(1.0, fn val, acc -> val * acc end)
-            |> normalize_wave()
-
-          "maximum" ->
-            # Take maximum wave value
-            sources
-            |> Enum.map(fn source ->
-              calculate_wave(x, y, source, time, frequency, amplitude, wave_speed)
-            end)
-            |> Enum.max()
-            |> normalize_wave()
-        end
-
-        # Map wave value to color
-        # Offset the color value with time for color animation
-        color_value = PatternHelpers.rem_float(wave_value * 0.5 + 0.5 + time * 0.05, 1.0)
-
-        # Adjust brightness based on wave intensity
-        wave_intensity = abs(wave_value)
-        point_brightness = wave_intensity * brightness
-
-        # Get color based on scheme and brightness
-        {r, g, b} = PatternHelpers.get_color(color_scheme, color_value, point_brightness)
-
-        {r, g, b}
-      end
-    end
-    |> List.flatten()
   end
 
   # Normalize wave value to range [-1, 1]
