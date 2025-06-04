@@ -90,7 +90,7 @@ defmodule LegridWeb.GridControlLive do
 
     if pattern_id && connected?(socket) do
       # Immediately notify client of current pattern
-      socket = socket |> push_event("pattern_changed", %{pattern_id: pattern_id})
+      socket = push_event(socket, "pattern_changed", %{pattern_id: pattern_id})
     end
 
     {:ok, socket}
@@ -203,7 +203,7 @@ defmodule LegridWeb.GridControlLive do
               <h2>Parameters</h2>
               <button class="stop-btn" phx-click="stop-pattern">Stop</button>
             </div>
-            <div id="parameter-controls" data-pattern-id={@current_pattern}>
+            <div id="parameter-controls" data-pattern-id={@current_pattern} phx-hook="ParameterControls">
               <%= for {key, param} <- @pattern_metadata.parameters do %>
                 <div class="parameter-item" data-param-key={key} data-param-type={param.type} data-param-default={param.default}>
                   <div class="param-header">
@@ -404,6 +404,7 @@ defmodule LegridWeb.GridControlLive do
   # PubSub Event Handlers
 
   def handle_info({:frame, frame}, socket) do
+    # Extract pixels from the frame and update socket
     {:noreply, assign(socket, :pixels, frame.pixels)}
   end
 
