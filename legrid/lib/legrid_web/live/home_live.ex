@@ -12,11 +12,13 @@ defmodule LegridWeb.HomeLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    # Subscribe to frame updates and controller stats
+    # Subscribe to NON-FRAME updates only (performance optimization)
     if connected?(socket) do
-      Runner.subscribe()
+      # Don't subscribe to frames - let Canvas handle that via DisplayChannel
+      # Runner.subscribe()  # REMOVED - this was causing the bottleneck
       Phoenix.PubSub.subscribe(Legrid.PubSub, "controller_stats")
       Phoenix.PubSub.subscribe(Legrid.PubSub, "pattern_updates")
+
       # Attempt to activate monitoring safely
       try do
         Interface.activate_monitor()
@@ -67,7 +69,6 @@ defmodule LegridWeb.HomeLive do
     |> assign(:patterns, patterns)
     |> assign(:current_pattern, current_pattern)
     |> assign(:pattern_metadata, pattern_metadata)
-    |> assign(:pixels, blank_pixels())
     |> assign(:controller_status, controller_status)
     |> assign(:pattern_params, pattern_params)
     |> assign(:grid_width, @grid_width)
@@ -87,6 +88,7 @@ defmodule LegridWeb.HomeLive do
     |> assign(:monitoring_active, true) # Start with monitoring active
     |> assign(:controller_enabled, true) # Start with controller enabled
     |> assign(:theme, "dark") # Default theme
+    |> assign(:canvas_mode, true) # Enable canvas rendering
 
     {:ok, socket}
   end
@@ -431,11 +433,6 @@ defmodule LegridWeb.HomeLive do
   end
 
   @impl true
-  def handle_info({:frame, frame}, socket) do
-    {:noreply, assign(socket, pixels: frame.pixels)}
-  end
-
-  @impl true
   def handle_info({:controller_stats, stats}, socket) do
     # Update basic stats - don't log every update
     new_stats = %{
@@ -550,6 +547,12 @@ defmodule LegridWeb.HomeLive do
     else
       {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("toggle-render-mode", _params, socket) do
+    new_canvas_mode = !socket.assigns.canvas_mode
+    {:noreply, assign(socket, canvas_mode: new_canvas_mode)}
   end
 
   # Helper functions
