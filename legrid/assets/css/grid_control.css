@@ -180,18 +180,55 @@
   background-color: var(--bg-panel-light);
   border-radius: var(--border-radius);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   border: 1px solid transparent;
+  user-select: none;
 }
 
 .pattern-item:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  background-color: var(--bg-panel);
+}
+
+.pattern-item:active {
+  transform: translateY(0px);
+  transition: all 0.05s ease;
 }
 
 .pattern-item.active {
   border-color: var(--color-primary);
   background-color: rgba(58, 110, 165, 0.15);
+  box-shadow: 0 0 0 1px var(--color-primary-light);
+}
+
+/* Loading state for pattern items */
+.pattern-item.loading {
+  opacity: 0.7;
+  pointer-events: none; /* Prevent additional clicks while loading */
+}
+
+.pattern-item.loading::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: var(--spacing-md);
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border: 2px solid transparent;
+  border-top: 2px solid var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: translateY(-50%) rotate(0deg);
+  }
+  100% {
+    transform: translateY(-50%) rotate(360deg);
+  }
 }
 
 .pattern-item h3 {

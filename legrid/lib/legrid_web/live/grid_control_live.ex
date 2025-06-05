@@ -90,7 +90,7 @@ defmodule LegridWeb.GridControlLive do
 
     if pattern_id && connected?(socket) do
       # Immediately notify client of current pattern
-      socket = socket |> push_event("pattern_changed", %{pattern_id: pattern_id})
+      socket = push_event(socket, "pattern_changed", %{pattern_id: pattern_id})
     end
 
     {:ok, socket}
@@ -138,7 +138,7 @@ defmodule LegridWeb.GridControlLive do
               <div
                 class={"pattern-item #{if @current_pattern == pattern.id, do: "active"}"}
                 phx-click="select-pattern"
-                phx-value-id={pattern.id}
+                phx-value-pattern_id={pattern.id}
               >
                 <h3><%= pattern.name %></h3>
                 <p><%= pattern.description %></p>
@@ -203,7 +203,7 @@ defmodule LegridWeb.GridControlLive do
               <h2>Parameters</h2>
               <button class="stop-btn" phx-click="stop-pattern">Stop</button>
             </div>
-            <div id="parameter-controls" data-pattern-id={@current_pattern}>
+            <div id="parameter-controls" data-pattern-id={@current_pattern} phx-hook="ParameterControls">
               <%= for {key, param} <- @pattern_metadata.parameters do %>
                 <div class="parameter-item" data-param-key={key} data-param-type={param.type} data-param-default={param.default}>
                   <div class="param-header">
@@ -267,44 +267,49 @@ defmodule LegridWeb.GridControlLive do
 
   # Event Handlers
 
-  def handle_event("select-pattern", %{"id" => pattern_id}, socket) do
+  def handle_event("select-pattern", %{"pattern_id" => pattern_id}, socket) do
     case Registry.get_pattern(pattern_id) do
       {:ok, metadata} ->
-        # Extract default parameters and preserve common ones
-        default_params = metadata.parameters
-          |> Enum.map(fn {key, param} -> {key, param.default} end)
-          |> Enum.into(%{})
+        # Quick parameter setup - optimize this for speed
+        default_params = for {key, param} <- metadata.parameters, into: %{} do
+          {key, param.default}
+        end
 
-        # Preserve shared parameters if possible
+        # Simplified parameter preservation for common settings
         preserved_params = if socket.assigns.current_pattern do
-          common_params = ["brightness", "color_scheme", "speed"]
-
-          # Keep common parameters that exist in both patterns
-          socket.assigns.pattern_params
-          |> Map.take(common_params)
-          |> Enum.filter(fn {key, _} -> Map.has_key?(metadata.parameters, key) end)
-          |> Enum.into(%{})
+          # Only preserve these common parameters quickly
+          for key <- ["brightness", "color_scheme", "speed"],
+              Map.has_key?(metadata.parameters, key),
+              Map.has_key?(socket.assigns.pattern_params, key),
+              into: %{} do
+            {key, socket.assigns.pattern_params[key]}
+          end
         else
           %{}
         end
 
-        # Merge preserving common values
+        # Fast merge
         params = Map.merge(default_params, preserved_params)
 
-        # Update socket first for immediate UI response
+        # Update socket immediately for instant UI feedback
         socket = socket
           |> assign(:current_pattern, pattern_id)
           |> assign(:pattern_metadata, metadata)
           |> assign(:pattern_params, params)
           |> push_event("pattern_changed", %{pattern_id: pattern_id})
 
-        # Start pattern if controller is enabled
+        # Start pattern asynchronously to prevent UI blocking
         if socket.assigns.controller_enabled do
-          try do
-            Runner.start_pattern(pattern_id, params)
-          rescue
-            e -> IO.inspect(e, label: "Error starting pattern")
-          end
+          # Use Task.start to make this completely non-blocking
+          Task.start(fn ->
+            try do
+              Runner.start_pattern(pattern_id, params)
+            rescue
+              e ->
+                # Log error but don't crash
+                IO.inspect(e, label: "Error starting pattern #{pattern_id}")
+            end
+          end)
         end
 
         {:noreply, socket}
@@ -315,25 +320,13 @@ defmodule LegridWeb.GridControlLive do
   end
 
   def handle_event("batch-param-update", %{"params" => params}, socket) do
-    if socket.assigns.current_pattern && socket.assigns.controller_enabled do
-      # Convert string keys to atoms for proper merging
-      params_with_string_keys = params
+    # Simple, reliable parameter update handler
+    if socket.assigns.current_pattern && socket.assigns.controller_enabled && map_size(params) > 0 do
+      # Update local params for UI responsiveness
+      updated_params = Map.merge(socket.assigns.pattern_params, params)
 
-      # Update local params immediately for UI responsiveness
-      updated_params = Map.merge(socket.assigns.pattern_params, params_with_string_keys)
-
-      # Send to pattern runner if controller is active
-      if socket.assigns.controller_enabled && socket.assigns.controller_status.connected do
-        try do
-          Runner.update_pattern_params(params_with_string_keys)
-        rescue
-          e -> IO.inspect(e, label: "Error updating pattern")
-        end
-      end
-
-      # Debug output
-      IO.inspect(params_with_string_keys, label: "Parameter update")
-      IO.inspect(updated_params, label: "Updated params")
+      # Send to pattern runner asynchronously
+      Runner.update_pattern_params_immediate(params)
 
       {:noreply, assign(socket, :pattern_params, updated_params)}
     else
@@ -411,6 +404,7 @@ defmodule LegridWeb.GridControlLive do
   # PubSub Event Handlers
 
   def handle_info({:frame, frame}, socket) do
+    # Extract pixels from the frame and update socket
     {:noreply, assign(socket, :pixels, frame.pixels)}
   end
 
@@ -462,36 +456,18 @@ defmodule LegridWeb.GridControlLive do
           default_params
         end
 
-        # First update the socket with the new pattern and parameters
+        # Update the socket with the new pattern and parameters
         socket = socket
           |> assign(:current_pattern, pattern_id)
           |> assign(:pattern_metadata, metadata)
           |> assign(:pattern_params, merged_params)
           |> push_event("pattern_changed", %{pattern_id: pattern_id})
 
-        # Also send individual parameter updates to allow the client to selectively handle them
-        if connected?(socket) do
-          for {key, value} <- merged_params do
-            Process.send_after(self(), {:push_param_update, key, value}, 200)
-          end
-        end
-
         {:noreply, socket}
 
       {:error, _} ->
         {:noreply, socket}
     end
-  end
-
-  # Handle individual parameter updates to avoid race conditions
-  def handle_info({:push_param_update, key, value}, socket) do
-    socket =
-      if connected?(socket) do
-        socket |> push_event("parameter_update", %{key: key, value: value})
-      else
-        socket
-      end
-    {:noreply, socket}
   end
 
   # Helper Functions

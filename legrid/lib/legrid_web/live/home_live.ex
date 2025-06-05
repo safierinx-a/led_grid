@@ -9,15 +9,16 @@ defmodule LegridWeb.HomeLive do
   @grid_width 25
   @grid_height 24
   @pixel_size 20 # Size of each LED in the web interface
-  @param_batch_delay 25 # Delay in ms for batching parameter updates
 
   @impl true
   def mount(_params, _session, socket) do
-    # Subscribe to frame updates and controller stats
+    # Subscribe to NON-FRAME updates only (performance optimization)
     if connected?(socket) do
-      Runner.subscribe()
+      # Don't subscribe to frames - let Canvas handle that via DisplayChannel
+      # Runner.subscribe()  # REMOVED - this was causing the bottleneck
       Phoenix.PubSub.subscribe(Legrid.PubSub, "controller_stats")
       Phoenix.PubSub.subscribe(Legrid.PubSub, "pattern_updates")
+
       # Attempt to activate monitoring safely
       try do
         Interface.activate_monitor()
@@ -68,13 +69,11 @@ defmodule LegridWeb.HomeLive do
     |> assign(:patterns, patterns)
     |> assign(:current_pattern, current_pattern)
     |> assign(:pattern_metadata, pattern_metadata)
-    |> assign(:pixels, blank_pixels())
     |> assign(:controller_status, controller_status)
     |> assign(:pattern_params, pattern_params)
     |> assign(:grid_width, @grid_width)
     |> assign(:grid_height, @grid_height)
     |> assign(:pixel_size, @pixel_size)
-    |> assign(:param_update_timer, nil) # Initialize timer reference for parameter batching
     |> assign(:stats, %{
       fps: 0,
       frames_received: 0,
@@ -89,6 +88,7 @@ defmodule LegridWeb.HomeLive do
     |> assign(:monitoring_active, true) # Start with monitoring active
     |> assign(:controller_enabled, true) # Start with controller enabled
     |> assign(:theme, "dark") # Default theme
+    |> assign(:canvas_mode, true) # Enable canvas rendering
 
     {:ok, socket}
   end
@@ -193,22 +193,12 @@ defmodule LegridWeb.HomeLive do
         # Update the socket with new parameters
         pattern_params = Map.merge(socket.assigns.pattern_params, converted_params)
 
-        # Apply if controller enabled - auto-apply changes
+        # Apply if controller enabled - use async updates
         if socket.assigns.controller_enabled do
-          # Cancel any pending update timer if there is one
-          if socket.assigns[:param_update_timer] do
-            Process.cancel_timer(socket.assigns.param_update_timer)
-          end
-
-          # Schedule a new timer to apply the parameter updates after a short delay (10ms)
-          # This allows multiple parameter changes to be batched together
-          update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
-
-          # Return the socket with updated parameters and the timer reference
-          {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
-        else
-          {:noreply, assign(socket, pattern_params: pattern_params)}
+          Runner.update_pattern_params_immediate(pattern_params)
         end
+
+        {:noreply, assign(socket, pattern_params: pattern_params)}
       rescue
         error ->
           IO.inspect(error, label: "Error in update-form-params")
@@ -217,26 +207,6 @@ defmodule LegridWeb.HomeLive do
     else
       {:noreply, socket}
     end
-  end
-
-  # Add a handler for the apply_parameter_updates message
-  @impl true
-  def handle_info({:apply_parameter_updates, params}, socket) do
-    # Apply the batched parameter updates with error handling
-    try do
-      # Only apply if the controller is enabled and connected
-      if socket.assigns.controller_enabled &&
-         socket.assigns.controller_status.connected do
-        Runner.update_pattern_params(params)
-      end
-    rescue
-      error ->
-        IO.inspect(error, label: "Error applying batched parameter updates")
-        # Continue execution - don't crash the LiveView process
-    end
-
-    # Clear the update timer reference
-    {:noreply, assign(socket, param_update_timer: nil)}
   end
 
   @impl true
@@ -256,20 +226,12 @@ defmodule LegridWeb.HomeLive do
       # Update the parameter
       pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
 
-      # Apply if controller enabled - use the same batching mechanism
+      # Apply if controller enabled - use async updates
       if socket.assigns.controller_enabled do
-        # Cancel any pending update timer if there is one
-        if socket.assigns[:param_update_timer] do
-          Process.cancel_timer(socket.assigns.param_update_timer)
-        end
-
-        # Schedule a new timer to apply the parameter updates
-        update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
-
-        {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
-      else
-        {:noreply, assign(socket, pattern_params: pattern_params)}
+        Runner.update_pattern_params_immediate(pattern_params)
       end
+
+      {:noreply, assign(socket, pattern_params: pattern_params)}
     else
       # Parameter not found - possibly a checkbox which doesn't use value
       IO.puts("Parameter definition not found for direct update: #{key}")
@@ -295,20 +257,12 @@ defmodule LegridWeb.HomeLive do
       # Update the parameter
       pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
 
-      # Apply if controller enabled - use the same batching mechanism
+      # Apply if controller enabled - use async updates
       if socket.assigns.controller_enabled do
-        # Cancel any pending update timer if there is one
-        if socket.assigns[:param_update_timer] do
-          Process.cancel_timer(socket.assigns.param_update_timer)
-        end
-
-        # Schedule a new timer to apply the parameter updates
-        update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
-
-        {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
-      else
-        {:noreply, assign(socket, pattern_params: pattern_params)}
+        Runner.update_pattern_params_immediate(pattern_params)
       end
+
+      {:noreply, assign(socket, pattern_params: pattern_params)}
     else
       IO.puts("Parameter definition not found for: #{key}")
       {:noreply, socket}
@@ -337,20 +291,12 @@ defmodule LegridWeb.HomeLive do
           # Update parameter
           pattern_params = Map.put(socket.assigns.pattern_params, key, converted_value)
 
-          # Apply if controller enabled - use the same batching mechanism
+          # Apply if controller enabled - use async updates
           if socket.assigns.controller_enabled do
-            # Cancel any pending update timer if there is one
-            if socket.assigns[:param_update_timer] do
-              Process.cancel_timer(socket.assigns.param_update_timer)
-            end
-
-            # Schedule a new timer to apply the parameter updates
-            update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
-
-            {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
-          else
-            {:noreply, assign(socket, pattern_params: pattern_params)}
+            Runner.update_pattern_params_immediate(pattern_params)
           end
+
+          {:noreply, assign(socket, pattern_params: pattern_params)}
         else
           IO.puts("Parameter definition not found: #{key}")
           {:noreply, socket}
@@ -468,20 +414,12 @@ defmodule LegridWeb.HomeLive do
         # Update the parameter value in the pattern params
         pattern_params = Map.put(socket.assigns.pattern_params, param_key, converted_value)
 
-        # Apply parameter changes if the controller is enabled - use the same batching mechanism
+        # Apply parameter changes if the controller is enabled - use async updates
         if socket.assigns.controller_enabled do
-          # Cancel any pending update timer if there is one
-          if socket.assigns[:param_update_timer] do
-            Process.cancel_timer(socket.assigns.param_update_timer)
-          end
-
-          # Schedule a new timer to apply the parameter updates
-          update_timer = Process.send_after(self(), {:apply_parameter_updates, pattern_params}, @param_batch_delay)
-
-          {:noreply, assign(socket, pattern_params: pattern_params, param_update_timer: update_timer)}
-        else
-          {:noreply, assign(socket, pattern_params: pattern_params)}
+          Runner.update_pattern_params_immediate(pattern_params)
         end
+
+        {:noreply, assign(socket, pattern_params: pattern_params)}
       else
         # Parameter definition not found, just log and return
         IO.puts("Parameter definition not found for #{param_key}")
@@ -492,11 +430,6 @@ defmodule LegridWeb.HomeLive do
       IO.puts("Could not determine parameter from event: #{inspect(params)}")
       {:noreply, socket}
     end
-  end
-
-  @impl true
-  def handle_info({:frame, frame}, socket) do
-    {:noreply, assign(socket, pixels: frame.pixels)}
   end
 
   @impl true
@@ -582,7 +515,7 @@ defmodule LegridWeb.HomeLive do
       try do
         {:ok, metadata} = Registry.get_pattern(pattern_id)
 
-        # Convert string keys to atoms for lookup in metadata
+        # Convert and validate parameters
         converted_params = params
         |> Enum.reduce(%{}, fn {key, value}, acc ->
           # Check if parameter exists in metadata
@@ -599,16 +532,9 @@ defmodule LegridWeb.HomeLive do
         # Update the parameter values in the socket
         pattern_params = Map.merge(socket.assigns.pattern_params, converted_params)
 
-        # Apply if controller enabled - but don't use the batching mechanism since
-        # batching is already handled client-side
-        if socket.assigns.controller_enabled && socket.assigns.controller_status.connected do
-          # Apply directly without additional batching
-          try do
-            Runner.update_pattern_params(pattern_params)
-          rescue
-            error ->
-              IO.inspect(error, label: "Error applying parameter updates from batch")
-          end
+        # Apply if controller enabled - use async updates
+        if socket.assigns.controller_enabled do
+          Runner.update_pattern_params_immediate(pattern_params)
         end
 
         # Return updated socket
@@ -621,6 +547,12 @@ defmodule LegridWeb.HomeLive do
     else
       {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("toggle-render-mode", _params, socket) do
+    new_canvas_mode = !socket.assigns.canvas_mode
+    {:noreply, assign(socket, canvas_mode: new_canvas_mode)}
   end
 
   # Helper functions

@@ -26,6 +26,7 @@ defmodule Legrid.Patterns.Registry do
     FlowField,
     WaveInterference,
     Spiral,
+    VoronoiCells,
     PatternHelpers
   }
 
@@ -98,7 +99,7 @@ defmodule Legrid.Patterns.Registry do
 
   defp discover_patterns do
     # Register our built-in patterns
-    known_patterns = [SineWave, Lissajous, GameOfLife, PixelArt, OpticalIllusion, Clock, RadarSweep, ComplexPixelArt, GradientFlow, AttractorTracer, WaveModulation, PolygonMorph, TheatreText, FlowField, WaveInterference, Spiral]
+    known_patterns = [SineWave, Lissajous, GameOfLife, PixelArt, OpticalIllusion, Clock, RadarSweep, ComplexPixelArt, GradientFlow, AttractorTracer, WaveModulation, PolygonMorph, TheatreText, FlowField, WaveInterference, Spiral, VoronoiCells]
 
     Enum.reduce(known_patterns, %{}, fn module, acc ->
       if implements_behaviour?(module, PatternBehaviour) do
