@@ -8,7 +8,7 @@ defmodule Legrid.Patterns.RadarSweep do
   @behaviour Legrid.Patterns.PatternBehaviour
 
   alias Legrid.Frame
-  alias Legrid.Patterns.PatternHelpers
+  alias Legrid.Patterns.{PatternHelpers, SpatialHelpers}
 
   @default_width 25
   @default_height 24
@@ -108,20 +108,17 @@ defmodule Legrid.Patterns.RadarSweep do
     delta_time = elapsed_ms / 1000.0 * state.speed
     time = state.time + delta_time
 
-    # Update sweep angle (full circle = 2π)
-    sweep_angle = rem_float(state.sweep_angle + delta_time, 2 * :math.pi)
+    # Update sweep angle - let it increase continuously without wrapping
+    sweep_angle = state.sweep_angle + delta_time
 
-    # Update detection history - detect objects that are within the current sweep angle
-    # plus or minus a small detection range based on trail length
+    # Calculate trail angle
     trail_angle = sweep_angle - state.trail_length * 2 * :math.pi
-    trail_angle = if trail_angle < 0, do: trail_angle + 2 * :math.pi, else: trail_angle
 
     detection_history =
       state.objects
       |> Enum.reduce(state.detection_history, fn object, acc ->
         # Calculate angle to object from center
         object_angle = :math.atan2(object.y - state.height / 2, object.x - state.width / 2)
-        object_angle = if object_angle < 0, do: object_angle + 2 * :math.pi, else: object_angle
 
         # Check if the sweep beam is currently over this object
         is_detected = in_sweep_range?(object_angle, sweep_angle, trail_angle)
@@ -255,62 +252,99 @@ defmodule Legrid.Patterns.RadarSweep do
     end
   end
 
-  # Render the radar visualization
+  # Render the radar visualization using spatial operations
   defp render_radar(width, height, sweep_angle, trail_angle, objects, detection_history, time, state) do
-    center_x = width / 2
-    center_y = height / 2
-    max_radius = :math.sqrt(center_x * center_x + center_y * center_y)
+    frame = %Frame{width: width, height: height, pixels: []}
+    center = {width / 2, height / 2}
 
-    # Create pixels
-    for y <- 0..(height-1), x <- 0..(width-1) do
-      # Calculate distance and angle from center
-      dx = x - center_x
-      dy = y - center_y
-      distance = :math.sqrt(dx * dx + dy * dy)
-      angle = :math.atan2(dy, dx)
-      angle = if angle < 0, do: angle + 2 * :math.pi, else: angle
+    # Generate angle field for sweep detection
+    angle_field = SpatialHelpers.angle_field(frame, center)
 
-      # Normalize distance
-      norm_distance = distance / max_radius
+    # Generate distance field for grid and object detection
+    distance_field = SpatialHelpers.distance_field(frame, center)
 
-      # Determine pixel color based on radar elements
-      cond do
-        # Draw radar grid (concentric circles)
-        is_grid_line?(x, y, center_x, center_y, max_radius) ->
-          brightness = 0.3 * state.brightness
-          PatternHelpers.get_color(state.color_scheme, 0.0, brightness)
-
-        # Draw sweep beam
-        in_sweep_range?(angle, sweep_angle, trail_angle) ->
-          # The closer to the current sweep angle, the brighter
-          angle_diff = min(abs(angle - sweep_angle), abs(angle - sweep_angle + 2 * :math.pi))
-          brightness = (1.0 - angle_diff / (state.trail_length * 2 * :math.pi)) * state.brightness
-          PatternHelpers.get_color(state.color_scheme, 0.2, brightness)
-
-        # Draw detected objects
-        is_detected_object?(x, y, objects, detection_history, state.object_size) ->
-          # Lookup object info
-          {object_id, signal_strength} = get_object_at(x, y, objects, detection_history, state.object_size)
-
-          # Pulse the object slightly
-          pulse = (1.0 + :math.sin(time * 4.0 + object_id)) / 2.0 * 0.3 + 0.7
-
-          # Use a bright color for detected objects
-          brightness = signal_strength * pulse * state.brightness
-          PatternHelpers.get_color(state.color_scheme, 0.8, brightness)
-
-        # Background noise
-        :rand.uniform() < state.noise_level ->
-          noise_level = :rand.uniform() * 0.2 * state.brightness
-          PatternHelpers.get_color(state.color_scheme, 0.0, noise_level)
-
-        # Default background
-        true ->
-          # Dim background that gets darker toward the edges
-          background = 0.05 * (1.0 - norm_distance * 0.7) * state.brightness
-          PatternHelpers.get_color(state.color_scheme, 0.0, background)
+    # Create sweep mask
+    sweep_mask = SpatialHelpers.apply_function(angle_field, fn angle ->
+      if in_sweep_range?(angle, sweep_angle, trail_angle) do
+        # Calculate brightness based on distance from sweep line
+        # Use modulo to find the closest sweep position
+        current_sweep = PatternHelpers.rem_float(sweep_angle, 2 * :math.pi)
+        angle_diff = min(
+          min(abs(angle - current_sweep), abs(angle - current_sweep + 2 * :math.pi)),
+          abs(angle - current_sweep - 2 * :math.pi)
+        )
+        max(0.0, 1.0 - (angle_diff / (state.trail_length * 2 * :math.pi)))
+      else
+        0.0
       end
-    end
+    end)
+
+    # Create grid mask using distance field
+    max_radius = SpatialHelpers.max_dimension(frame) / 2
+    grid_mask = SpatialHelpers.apply_function(distance_field, fn distance ->
+      # Concentric circles
+      ring_1 = if abs(distance - max_radius * 0.3) < 0.5, do: 0.3, else: 0.0
+      ring_2 = if abs(distance - max_radius * 0.6) < 0.5, do: 0.3, else: 0.0
+      ring_3 = if abs(distance - max_radius * 0.9) < 0.5, do: 0.3, else: 0.0
+      max(ring_1, max(ring_2, ring_3))
+    end)
+
+    # Add radial grid lines using angle field
+    radial_mask = SpatialHelpers.combine_fields([angle_field, distance_field], fn angle_field, distance_field ->
+      Enum.zip(angle_field, distance_field)
+      |> Enum.map(fn {angle, distance} ->
+        # Create radial lines every 45 degrees
+        line_strength = Enum.reduce(0..7, 0.0, fn i, acc ->
+          target_angle = i * :math.pi / 4
+          angle_diff = abs(PatternHelpers.rem_float(angle - target_angle, 2 * :math.pi))
+          line_strength = if angle_diff < 0.1 || angle_diff > 2 * :math.pi - 0.1 do
+            0.3
+          else
+            0.0
+          end
+          max(acc, line_strength)
+        end)
+
+        # Only show radial lines within radar range
+        if distance < max_radius * 0.9, do: line_strength, else: 0.0
+      end)
+    end)
+
+    # Combine all masks and convert to pixels
+    SpatialHelpers.spatial_to_frame(frame, [distance_field, angle_field, sweep_mask, grid_mask, radial_mask],
+      fn [distance, angle, sweep, grid, radial], x, y ->
+        max_radius = SpatialHelpers.max_dimension(frame) / 2
+        norm_distance = distance / max_radius
+
+        cond do
+          # Draw detected objects
+          is_detected_object?(x, y, objects, detection_history, state.object_size) ->
+            {object_id, signal_strength} = get_object_at(x, y, objects, detection_history, state.object_size)
+            pulse = (1.0 + :math.sin(time * 4.0 + object_id)) / 2.0 * 0.3 + 0.7
+            brightness = signal_strength * pulse * state.brightness
+            PatternHelpers.get_color(state.color_scheme, 0.8, brightness)
+
+          # Draw sweep beam
+          sweep > 0.1 ->
+            brightness = sweep * state.brightness
+            PatternHelpers.get_color(state.color_scheme, 0.2, brightness)
+
+          # Draw grid (combine concentric and radial)
+          max(grid, radial) > 0.1 ->
+            brightness = max(grid, radial) * state.brightness
+            PatternHelpers.get_color(state.color_scheme, 0.0, brightness)
+
+          # Background noise
+          :rand.uniform() < state.noise_level ->
+            noise_level = :rand.uniform() * 0.2 * state.brightness
+            PatternHelpers.get_color(state.color_scheme, 0.0, noise_level)
+
+          # Default background with distance fade
+          true ->
+            background = 0.05 * (1.0 - norm_distance * 0.7) * state.brightness
+            PatternHelpers.get_color(state.color_scheme, 0.0, background)
+        end
+      end)
   end
 
   # Helper function to check if a point is on a grid line
@@ -338,13 +372,7 @@ defmodule Legrid.Patterns.RadarSweep do
 
   # Helper function to check if an angle is within the current sweep range
   defp in_sweep_range?(angle, sweep_angle, trail_angle) do
-    if sweep_angle >= trail_angle do
-      # Normal case: sweep angle is ahead of trail angle
-      angle >= trail_angle && angle <= sweep_angle
-    else
-      # Wrap-around case: trail angle is in previous revolution
-      angle >= trail_angle || angle <= sweep_angle
-    end
+    SpatialHelpers.angle_in_sweep?(angle, sweep_angle, trail_angle)
   end
 
   # Helper function to check if a point is part of a detected object

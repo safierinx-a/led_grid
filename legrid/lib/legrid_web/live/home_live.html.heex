@@ -86,66 +86,75 @@
     <div class="main-panel">
       <div class="grid-display">
         <div class="grid-frame">
-          <div class="grid-container" style={"width: #{@grid_width * @pixel_size}px; height: #{@grid_height * @pixel_size}px;"}>
-            <%= for {{r, g, b}, index} <- Enum.with_index(@pixels) do %>
-              <% 
-                x = rem(index, @grid_width)
-                y = div(index, @grid_width)
-                # If even row, x stays the same; if odd row, invert x (serpentine pattern)
-                adjusted_x = if rem(y, 2) == 0, do: x, else: @grid_width - 1 - x
-                position_index = y * @grid_width + adjusted_x
-                
-                left = x * @pixel_size
-                top = y * @pixel_size
-                color = rgb_to_css({r, g, b})
-                
-                # Improved brightness calculation using perceived brightness formula
-                # Uses non-linear perceived brightness based on human vision and LED physics
-                # Formula: 0.299*R + 0.587*G + 0.114*B (standard luminance formula)
-                perceived_brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-                
-                # Apply gamma correction to better match LED physics (gamma ~2.2)
-                # WS2812B LEDs have nonlinear brightness response
-                corrected_brightness = :math.pow(perceived_brightness, 1/2.2)
-                brightness_percent = round(corrected_brightness * 100)
-                
-                # Improved active detection with lower threshold (real LEDs visible at lower brightness)
-                is_active = perceived_brightness > 0.03
-                
-                # Enhanced glow effect based on perceived brightness
-                glow_radius = if corrected_brightness > 0.3, do: corrected_brightness * 30, else: 0
-                glow_intensity = corrected_brightness * 0.9
-                glow = if glow_radius > 0, 
-                  do: "0 0 #{glow_radius}px rgba(#{r},#{g},#{b},#{glow_intensity})",
-                  else: "none"
+          <%= if @canvas_mode do %>
+            <!-- High-performance Canvas-based LED Grid -->
+            <div id="led-grid-canvas" phx-hook="LEDGrid" class="canvas-container">
+              <!-- Canvas will be inserted here by JavaScript -->
+              <div id="canvas-fps" class="fps-counter">0 FPS</div>
+            </div>
+          <% else %>
+            <!-- Fallback: DOM-based LED Grid (for debugging) -->
+            <div class="grid-container" style={"width: #{@grid_width * @pixel_size}px; height: #{@grid_height * @pixel_size}px;"}>
+              <%= for {{r, g, b}, index} <- Enum.with_index(@pixels || blank_pixels()) do %>
+                <% 
+                  x = rem(index, @grid_width)
+                  y = div(index, @grid_width)
+                  # If even row, x stays the same; if odd row, invert x (serpentine pattern)
+                  adjusted_x = if rem(y, 2) == 0, do: x, else: @grid_width - 1 - x
+                  position_index = y * @grid_width + adjusted_x
                   
-                # Dynamic border color based on brightness
-                border_color = if perceived_brightness > 0.12, 
-                  do: "rgba(255,255,255,#{perceived_brightness * 0.12})",
-                  else: "rgba(0,0,0,0.3)"
-              %>
-              <div class={"pixel #{if is_active, do: "active", else: ""}"} 
-                   style={"left: #{left}px; top: #{top}px; background-color: #{color}; width: #{@pixel_size-2}px; height: #{@pixel_size-2}px; border: 1px solid #{border_color}; box-shadow: #{glow};"}
-                   data-x={x} data-y={y} data-rgb="#{r},#{g},#{b}" data-pos={position_index} data-brightness={brightness_percent}>
-              </div>
-            <% end %>
-            <div class="grid-overlay"></div>
-            
-            <div class="serpentine-indicator">
-              <%= for row <- 0..(@grid_height-1) do %>
-                <div class="row-indicator" style={"top: #{row * @pixel_size + @pixel_size/2}px"}>
-                  <%= if rem(row, 2) == 0 do %>
-                    <div class="arrow arrow-right"></div>
-                  <% else %>
-                    <div class="arrow arrow-left"></div>
-                  <% end %>
+                  left = x * @pixel_size
+                  top = y * @pixel_size
+                  color = rgb_to_css({r, g, b})
+                  
+                  # Improved brightness calculation using perceived brightness formula
+                  # Uses non-linear perceived brightness based on human vision and LED physics
+                  # Formula: 0.299*R + 0.587*G + 0.114*B (standard luminance formula)
+                  perceived_brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+                  
+                  # Apply gamma correction to better match LED physics (gamma ~2.2)
+                  # WS2812B LEDs have nonlinear brightness response
+                  corrected_brightness = :math.pow(perceived_brightness, 1/2.2)
+                  brightness_percent = round(corrected_brightness * 100)
+                  
+                  # Improved active detection with lower threshold (real LEDs visible at lower brightness)
+                  is_active = perceived_brightness > 0.03
+                  
+                  # Enhanced glow effect based on perceived brightness
+                  glow_radius = if corrected_brightness > 0.3, do: corrected_brightness * 30, else: 0
+                  glow_intensity = corrected_brightness * 0.9
+                  glow = if glow_radius > 0, 
+                    do: "0 0 #{glow_radius}px rgba(#{r},#{g},#{b},#{glow_intensity})",
+                    else: "none"
+                    
+                  # Dynamic border color based on brightness
+                  border_color = if perceived_brightness > 0.12, 
+                    do: "rgba(255,255,255,#{perceived_brightness * 0.12})",
+                    else: "rgba(0,0,0,0.3)"
+                %>
+                <div class={"pixel #{if is_active, do: "active", else: ""}"} 
+                     style={"left: #{left}px; top: #{top}px; background-color: #{color}; width: #{@pixel_size-2}px; height: #{@pixel_size-2}px; border: 1px solid #{border_color}; box-shadow: #{glow};"}
+                     data-x={x} data-y={y} data-rgb="#{r},#{g},#{b}" data-pos={position_index} data-brightness={brightness_percent}>
                 </div>
               <% end %>
+              <div class="grid-overlay"></div>
+              
+              <div class="serpentine-indicator">
+                <%= for row <- 0..(@grid_height-1) do %>
+                  <div class="row-indicator" style={"top: #{row * @pixel_size + @pixel_size/2}px"}>
+                    <%= if rem(row, 2) == 0 do %>
+                      <div class="arrow arrow-right"></div>
+                    <% else %>
+                      <div class="arrow arrow-left"></div>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+              
+              <div class="strip-connector top-left"></div>
+              <div class="strip-connector bottom-right"></div>
             </div>
-            
-            <div class="strip-connector top-left"></div>
-            <div class="strip-connector bottom-right"></div>
-          </div>
+          <% end %>
         </div>
         <div class="grid-info">
           <div class="grid-dimensions">WS2812B LED Matrix (#{@grid_width} × #{@grid_height}) - 60px/m</div>

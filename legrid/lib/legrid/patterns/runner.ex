@@ -54,15 +54,16 @@ defmodule Legrid.Patterns.Runner do
   - params: Map of parameters to pass to the pattern generator
   """
   def update_pattern_params(params) do
-    # First, send a parameter change notification to all controllers
-    # This ensures clean transitions when parameters change significantly
-    Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:frames", {:parameter_change, params})
+    # Use async cast instead of blocking call
+    GenServer.cast(__MODULE__, {:queue_param_update, params})
+  end
 
-    # Small delay to ensure parameter change command is processed
-    Process.sleep(50)
-
-    # Then update the parameters
-    GenServer.call(__MODULE__, {:update_params, params})
+  @doc """
+  Updates parameters immediately for low-latency response.
+  Used for important parameter changes that need instant feedback.
+  """
+  def update_pattern_params_immediate(params) do
+    GenServer.cast(__MODULE__, {:immediate_param_update, params})
   end
 
   @doc """
@@ -119,6 +120,20 @@ defmodule Legrid.Patterns.Runner do
     rate_check_timer = schedule_rate_limit_check()
 
     {:ok, %{state | rate_check_timer: rate_check_timer}}
+  end
+
+  @impl true
+  def handle_cast({:queue_param_update, params}, state) do
+    # Add parameter update to the rate-limited queue
+    new_queue = :queue.in(params, state.update_queue)
+    {:noreply, %{state | update_queue: new_queue}}
+  end
+
+  @impl true
+  def handle_cast({:immediate_param_update, params}, state) do
+    # Apply parameter update immediately for low-latency response
+    new_state = apply_param_update(state, params)
+    {:noreply, new_state}
   end
 
   @impl true
@@ -191,42 +206,6 @@ defmodule Legrid.Patterns.Runner do
 
             {:reply, :ok, new_state}
         end
-    end
-  end
-
-  @impl true
-  def handle_call({:update_params, params}, _from, state) do
-    if state.current_pattern && state.module && state.state do
-      # Check if the module supports parameter updates
-      if function_exported?(state.module, :update_params, 2) do
-        case state.module.update_params(state.state, params) do
-          {:ok, new_state} ->
-            # Increment parameter version to track significant changes
-            try do
-              Legrid.Controller.FrameBuffer.increment_parameter_version()
-            rescue
-              _ -> :ok # Ignore errors if FrameBuffer is not available
-            end
-
-            # Ensure we flush the FrameBuffer when parameters change
-            try do
-              Legrid.Controller.FrameBuffer.flush()
-            rescue
-              _ -> :ok # Ignore errors if FrameBuffer is not available
-            end
-
-            {:reply, :ok, %{state | state: new_state}}
-
-          {:error, _} = error ->
-            {:reply, error, state}
-        end
-      else
-        # If the module doesn't support parameter updates, restart the pattern
-        # with the new parameters
-        {:reply, :ok, state}
-      end
-    else
-      {:reply, {:error, :no_pattern_running}, state}
     end
   end
 
@@ -393,37 +372,34 @@ defmodule Legrid.Patterns.Runner do
 
       case state.module.update_params(state.state, params) do
         {:ok, new_state} ->
-          # Generate frame with updated parameters
-          try do
-            case state.module.render(new_state, 0) do
-              {:ok, frame, _} ->
-                # Send frame immediately
-                frame = ensure_pattern_id_in_metadata(frame, state.current_pattern)
-                Phoenix.PubSub.broadcast(Legrid.PubSub, "frames", {:frame, frame})
-              _ -> :ok
+          # Only generate immediate frame if enough time has passed since last frame
+          # This prevents excessive frame generation during rapid parameter changes
+          now = System.monotonic_time(:millisecond)
+          time_since_last = now - (state.last_frame_time || 0)
+
+          if time_since_last >= 50 do  # Throttle to max 20fps for parameter updates
+            try do
+              case state.module.render(new_state, 0) do
+                {:ok, frame, _} ->
+                  # Add pattern ID to frame metadata
+                  frame = ensure_pattern_id_in_metadata(frame, state.current_pattern)
+                  # Broadcast the frame for instant feedback
+                  Phoenix.PubSub.broadcast(Legrid.PubSub, "frames", {:frame, frame})
+                error ->
+                  # Silently handle render errors
+                  :ok
+              end
+            rescue
+              _error ->
+                # Silently handle exceptions
+                :ok
             end
-          rescue
-            _ -> :ok
           end
-
-          # Flush FrameBuffer
-          try do
-            Legrid.Controller.FrameBuffer.flush()
-          rescue
-            _ -> :ok
-          end
-
-          # Extract UI params and broadcast change
-          ui_params = extract_ui_params(params)
-          Phoenix.PubSub.broadcast(
-            Legrid.PubSub,
-            "pattern_updates",
-            {:pattern_changed, state.current_pattern, ui_params}
-          )
 
           %{state | state: new_state}
 
-        {:error, _} ->
+        {:error, _reason} ->
+          # Silently handle update errors
           state
       end
     else

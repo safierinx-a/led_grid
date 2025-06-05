@@ -7,7 +7,7 @@ defmodule LegridWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_legrid_key",
-    signing_salt: "CuI4sp4w",
+    signing_salt: "LgRZoU2h",
     same_site: "Lax"
   ]
 
@@ -15,9 +15,9 @@ defmodule LegridWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
-  # Add a socket for controllers to connect to
-  socket "/controller", LegridWeb.ControllerSocket,
-    websocket: true
+  socket "/socket", LegridWeb.UserSocket,
+    websocket: true,
+    longpoll: false
 
   # Serve at "/" the static files from "priv/static" directory.
   #
