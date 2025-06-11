@@ -23,6 +23,11 @@ defmodule LegridWeb.ControllerChannel do
     # Notify controller interface that a controller has joined
     Phoenix.PubSub.broadcast(Legrid.PubSub, "controller:events", {:controller_joined, controller_id})
 
+    # Send an initial time sync request so the controller can calculate clock offset
+    push(socket, "time_sync_request", %{
+      server_time: System.system_time(:millisecond)
+    })
+
     {:ok, socket}
   end
 
@@ -376,6 +381,22 @@ defmodule LegridWeb.ControllerChannel do
 
     # This confirms the controller can receive and process messages
     {:reply, {:ok, %{received: true, server_time: System.system_time(:millisecond)}}, socket}
+  end
+
+  @impl true
+  def handle_in("time_sync_response", payload, socket) do
+    controller_id = socket.assigns.controller_id
+
+    # Log round-trip timing information for debugging
+    server_time = Map.get(payload, "server_time")
+    client_time = Map.get(payload, "client_time")
+    receive_time = System.system_time(:millisecond)
+
+    rtt = receive_time - server_time
+
+    Logger.info("Time-sync response from #{controller_id}: RTT=#{rtt} ms, client_time=#{client_time}, server_time=#{server_time}")
+
+    {:reply, {:ok, %{received: true}}, socket}
   end
 
   @impl true

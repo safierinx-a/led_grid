@@ -57,6 +57,9 @@ class ConnectionManager:
         # Last received data for potential reconnection recovery
         self.last_pattern_id = None
 
+        # Clock sync offset (server_time - local_time) in milliseconds
+        self.clock_offset_ms = 0  # Updated after time_sync_request/response
+
     def connect(self):
         """Connect to the Phoenix WebSocket server"""
         logger.info(f"Connecting to server: {self.server_url}")
@@ -443,6 +446,35 @@ class ConnectionManager:
                 except Exception as e:
                     logger.error(f"Error handling parameter_change: {e}")
 
+            elif event == "time_sync_request":
+                # Handle initial time synchronisation with server
+                try:
+                    server_time = payload.get("server_time", 0)
+                    local_receive = int(time.time() * 1000)
+
+                    # Estimate offset (server - client)
+                    self.clock_offset_ms = server_time - local_receive
+
+                    logger.info(
+                        f"Time sync: server_time={server_time}, local={local_receive}, offset={self.clock_offset_ms} ms"
+                    )
+
+                    # Respond so server can measure RTT (optional)
+                    sync_resp = {
+                        "topic": "controller:lobby",
+                        "event": "time_sync_response",
+                        "payload": {
+                            "client_time": local_receive,
+                            "server_time": server_time,
+                        },
+                        "ref": str(self._next_ref()),
+                    }
+
+                    self.ws.send(json.dumps(sync_resp))
+                    logger.debug("Sent time_sync_response")
+                except Exception as e:
+                    logger.error(f"Error handling time_sync_request: {e}")
+
         except Exception as e:
             logger.error(f"Error processing message: {e}")
             if isinstance(message, bytes):
@@ -708,6 +740,19 @@ class ConnectionManager:
             logger.info(
                 f"Batch header: frames={frame_count}, priority={priority_flag}, seq={sequence}, timestamp={timestamp}"
             )
+
+            # Delay rendering until the designated display time using clock offset
+            try:
+                target_time = timestamp + getattr(self, "clock_offset_ms", 0)
+                now_ms = int(time.time() * 1000)
+                wait_ms = target_time - now_ms
+
+                # Allow small positive waits; clamp large waits to avoid long stalls
+                if wait_ms > 1 and wait_ms < 500:
+                    logger.debug(f"Waiting {wait_ms} ms to sync frame display")
+                    time.sleep(wait_ms / 1000.0)
+            except Exception as e:
+                logger.debug(f"Timing sync error: {e}")
 
             # Process each frame in the batch
             offset = 18  # Start after header
