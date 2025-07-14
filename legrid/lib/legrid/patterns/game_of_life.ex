@@ -72,6 +72,13 @@ defmodule Legrid.Patterns.GameOfLife do
           type: :boolean,
           default: true,
           description: "Whether cells wrap around grid edges"
+        },
+        "perturbation_strength" => %{
+          type: :float,
+          default: 0.05,
+          min: 0.0,
+          max: 0.2,
+          description: "Strength of random perturbations to prevent stalling"
         }
       }
     }
@@ -91,11 +98,16 @@ defmodule Legrid.Patterns.GameOfLife do
       cell_age_factor: PatternHelpers.get_param(params, "cell_age_factor", 0.1, :float),
       reset_interval: PatternHelpers.get_param(params, "reset_interval", 0.0, :float),
       wrap_edges: PatternHelpers.get_param(params, "wrap_edges", true, :boolean),
+      perturbation_strength: PatternHelpers.get_param(params, "perturbation_strength", 0.05, :float),
       # Animation state
       grid: initialize_grid(@default_width, @default_height, PatternHelpers.get_param(params, "initial_density", 0.3, :float)),
       cell_ages: %{},
       time_since_reset: 0.0,
-      generation: 0
+      generation: 0,
+      # Performance optimizations
+      previous_grid: nil,
+      static_count: 0,
+      last_update_time: 0.0
     }
 
     {:ok, state}
@@ -115,7 +127,9 @@ defmodule Legrid.Patterns.GameOfLife do
         grid: initialize_grid(state.width, state.height, state.initial_density),
         cell_ages: %{},
         time_since_reset: 0.0,
-        generation: 0
+        generation: 0,
+        previous_grid: nil,
+        static_count: 0
       }
     else
       # Only update grid based on speed (slower speeds update less frequently)
@@ -123,13 +137,21 @@ defmodule Legrid.Patterns.GameOfLife do
 
       if time_since_reset - state.generation * update_interval >= update_interval do
         # Update the grid according to Game of Life rules
-        {new_grid, new_ages} = update_grid(state.grid, state.cell_ages, state.wrap_edges, state.width, state.height)
+        {new_grid, new_ages} = update_grid_optimized(state.grid, state.cell_ages, state.wrap_edges, state.width, state.height)
+
+        # Check for static state and apply perturbation if needed
+        {final_grid, final_ages, static_count} = handle_static_state(
+          new_grid, new_ages, state.grid, state.static_count,
+          state.perturbation_strength, state.width, state.height
+        )
 
         %{state |
-          grid: new_grid,
-          cell_ages: new_ages,
+          grid: final_grid,
+          cell_ages: final_ages,
           generation: state.generation + 1,
-          time_since_reset: time_since_reset
+          time_since_reset: time_since_reset,
+          previous_grid: state.grid,
+          static_count: static_count
         }
       else
         %{state | time_since_reset: time_since_reset}
@@ -137,7 +159,7 @@ defmodule Legrid.Patterns.GameOfLife do
     end
 
     # Generate pixels for the frame
-    pixels = render_grid(state.grid, state.cell_ages, state.width, state.height,
+    pixels = render_grid_optimized(state.grid, state.cell_ages, state.width, state.height,
                         state.cell_age_factor, state.color_scheme, state.brightness)
 
     # Create the frame
@@ -156,7 +178,8 @@ defmodule Legrid.Patterns.GameOfLife do
       initial_density: PatternHelpers.get_param(params, "initial_density", state.initial_density, :float),
       cell_age_factor: PatternHelpers.get_param(params, "cell_age_factor", state.cell_age_factor, :float),
       reset_interval: PatternHelpers.get_param(params, "reset_interval", state.reset_interval, :float),
-      wrap_edges: PatternHelpers.get_param(params, "wrap_edges", state.wrap_edges, :boolean)
+      wrap_edges: PatternHelpers.get_param(params, "wrap_edges", state.wrap_edges, :boolean),
+      perturbation_strength: PatternHelpers.get_param(params, "perturbation_strength", state.perturbation_strength, :float)
     }
 
     # Reset grid if initial_density changed significantly
@@ -165,7 +188,8 @@ defmodule Legrid.Patterns.GameOfLife do
       %{updated_state |
         grid: initialize_grid(state.width, state.height, updated_state.initial_density),
         cell_ages: %{},
-        generation: 0
+        generation: 0,
+        static_count: 0
       }
     else
       updated_state
@@ -174,7 +198,7 @@ defmodule Legrid.Patterns.GameOfLife do
     {:ok, updated_state}
   end
 
-  # Helper functions
+  # Optimized helper functions
 
   # Initialize a random grid based on density
   defp initialize_grid(width, height, density) do
@@ -184,82 +208,134 @@ defmodule Legrid.Patterns.GameOfLife do
     end
   end
 
-  # Update the grid according to Game of Life rules
-  defp update_grid(grid, ages, wrap_edges, width, height) do
+  # Optimized grid update with better performance
+  defp update_grid_optimized(grid, ages, wrap_edges, width, height) do
+    # Pre-calculate neighbor offsets for better performance
+    neighbor_offsets = [
+      {-1, -1}, {-1, 0}, {-1, 1},
+      {0, -1},           {0, 1},
+      {1, -1},  {1, 0},  {1, 1}
+    ]
+
     # Create the next generation grid and updated ages
     Enum.reduce(0..(height-1), {%{}, ages}, fn y, {new_grid, new_ages} ->
       Enum.reduce(0..(width-1), {new_grid, new_ages}, fn x, {grid_acc, ages_acc} ->
         position = {x, y}
         current_state = Map.get(grid, position, false)
-        neighbors = count_neighbors(grid, position, wrap_edges, width, height)
+        neighbors = count_neighbors_optimized(grid, position, neighbor_offsets, wrap_edges, width, height)
 
         # Apply Conway's rules
         new_state = cond do
           current_state && (neighbors < 2 || neighbors > 3) -> false  # Dies from loneliness or overcrowding
           current_state && (neighbors == 2 || neighbors == 3) -> true # Survives
           !current_state && neighbors == 3 -> true                    # New cell born
-          true -> false                                               # Remains dead
+          true -> false                                                # Stays dead
         end
 
-        # Update cell age for living cells
-        ages_acc = if new_state do
-          # Increment age for living cells, or set to 1 for newly born cells
-          Map.put(ages_acc, position, Map.get(ages_acc, position, 0) + 1)
+        # Update ages
+        new_ages = if new_state do
+          current_age = Map.get(ages_acc, position, 0)
+          Map.put(ages_acc, position, current_age + 1)
         else
-          # Remove dead cells from the ages map
           Map.delete(ages_acc, position)
         end
 
-        {Map.put(grid_acc, position, new_state), ages_acc}
+        {Map.put(grid_acc, position, new_state), new_ages}
       end)
     end)
   end
 
-  # Count living neighbors for a cell
-  defp count_neighbors(grid, {x, y}, wrap_edges, width, height) do
-    # Define the 8 neighboring positions
-    neighbors = for dx <- -1..1, dy <- -1..1, {dx, dy} != {0, 0} do
-      if wrap_edges do
-        # Wrap around edges
-        {rem(x + dx + width, width), rem(y + dy + height, height)}
-      else
-        # Check bounds
-        nx = x + dx
-        ny = y + dy
-        if nx >= 0 && nx < width && ny >= 0 && ny < height do
-          {nx, ny}
-        else
-          nil
-        end
-      end
-    end
+  # Optimized neighbor counting
+  defp count_neighbors_optimized(grid, {x, y}, neighbor_offsets, wrap_edges, width, height) do
+    Enum.count(neighbor_offsets, fn {dx, dy} ->
+      nx = x + dx
+      ny = y + dy
 
-    # Filter out nil positions and count living cells
-    neighbors
-    |> Enum.reject(&is_nil/1)
-    |> Enum.count(fn pos -> Map.get(grid, pos, false) end)
+      # Handle wrapping
+      {final_x, final_y} = if wrap_edges do
+        {rem(nx + width, width), rem(ny + height, height)}
+      else
+        {nx, ny}
+      end
+
+      # Check if neighbor is alive
+      Map.get(grid, {final_x, final_y}, false)
+    end)
   end
 
-  # Render the grid to pixels
-  defp render_grid(grid, ages, width, height, age_factor, color_scheme, brightness) do
+  # Handle static state detection and perturbation
+  defp handle_static_state(new_grid, new_ages, previous_grid, static_count, perturbation_strength, width, height) do
+    if new_grid == previous_grid do
+      # Grid is static, increment counter
+      new_static_count = static_count + 1
+
+      if new_static_count >= 5 do
+        # Apply perturbation to break static state
+        perturbed_grid = apply_perturbation(new_grid, perturbation_strength, width, height)
+        {perturbed_grid, new_ages, 0}  # Reset static count
+      else
+        {new_grid, new_ages, new_static_count}
+      end
+    else
+      {new_grid, new_ages, 0}  # Reset static count
+    end
+  end
+
+  # Apply random perturbation to break static states
+  defp apply_perturbation(grid, strength, width, height) do
+    perturbation_count = trunc(width * height * strength)
+
+    Enum.reduce(1..perturbation_count, grid, fn _i, acc ->
+      x = :rand.uniform(width) - 1
+      y = :rand.uniform(height) - 1
+      position = {x, y}
+
+      # Toggle cell state
+      current_state = Map.get(acc, position, false)
+      Map.put(acc, position, !current_state)
+    end)
+  end
+
+  # Optimized grid rendering
+  defp render_grid_optimized(grid, cell_ages, width, height, cell_age_factor, color_scheme, brightness) do
     for y <- 0..(height-1), x <- 0..(width-1) do
       position = {x, y}
       alive = Map.get(grid, position, false)
 
       if alive do
-        # Get the cell's age and use it to determine color
-        age = Map.get(ages, position, 0)
-        color_value = PatternHelpers.rem_float(age * age_factor, 1.0)
+        # Get cell age for color variation
+        age = Map.get(cell_ages, position, 0)
+        age_factor = min(age * cell_age_factor, 1.0)
 
-        # Determine brightness based on newness of cell
-        age_brightness = min(1.0, 0.5 + (1 / (age * 0.1 + 1)))
+                # Calculate color based on age and position
+        color_value = PatternHelpers.rem_float(
+          (x / width) * 0.3 + (y / height) * 0.3 + age_factor * 0.4,
+          1.0
+        )
 
-        # Get color based on scheme and brightness
-        PatternHelpers.get_color(color_scheme, color_value, brightness * age_brightness)
+        # Use color schemes with gamma correction
+        PatternHelpers.get_color(color_scheme, color_value, brightness)
       else
-        # Return black for dead cells
-        {0, 0, 0}
+        {0, 0, 0}  # Dead cells are black
       end
     end
   end
+
+  # Legacy functions for compatibility (kept for potential future use)
+  # defp update_grid(grid, ages, wrap_edges, width, height) do
+  #   update_grid_optimized(grid, ages, wrap_edges, width, height)
+  # end
+
+  # defp count_neighbors(grid, position, wrap_edges, width, height) do
+  #   neighbor_offsets = [
+  #     {-1, -1}, {-1, 0}, {-1, 1},
+  #     {0, -1},           {0, 1},
+  #     {1, -1},  {1, 0},  {1, 1}
+  #   ]
+  #   count_neighbors_optimized(grid, position, neighbor_offsets, wrap_edges, width, height)
+  # end
+
+  # defp render_grid(grid, cell_ages, width, height, cell_age_factor, color_scheme, brightness) do
+  #   render_grid_optimized(grid, cell_ages, width, height, cell_age_factor, color_scheme, brightness)
+  # end
 end

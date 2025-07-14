@@ -21,7 +21,7 @@ Now you can visit [`localhost:4000`](http://localhost:4000) from your browser to
 The server automatically:
 
 1. Accepts connections from LED grid controllers via WebSockets
-2. Starts a default pattern (sine_wave) when a controller connects
+2. Starts a default pattern (sine_field) when a controller connects
 3. Processes batch acknowledgments from controllers
 4. Manages sequence numbers for reliable delivery
 5. Distributes frames to all connected controllers
@@ -57,7 +57,7 @@ The batch frame system provides:
 
 The server includes multiple pattern generators:
 
-- Sine waves
+- Sine fields
 - Game of Life
 - Plasma effects
 - Clock displays

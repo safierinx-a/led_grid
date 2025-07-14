@@ -74,6 +74,13 @@ defmodule Legrid.Patterns.OpticalIllusion do
           max: 1.0,
           description: "Contrast between elements"
         }
+      },
+      visible_parameters: %{
+        "pulsing_grid" => ["illusion_type", "phase_shift", "density", "contrast", "brightness", "color_scheme", "speed"],
+        "rotating_rings" => ["illusion_type", "density", "brightness", "color_scheme", "speed"],
+        "moving_waves" => ["illusion_type", "phase_shift", "density", "brightness", "color_scheme", "speed"],
+        "expanding_circles" => ["illusion_type", "density", "brightness", "color_scheme", "speed"],
+        "spiral" => ["illusion_type", "phase_shift", "density", "brightness", "color_scheme", "speed"]
       }
     }
   end

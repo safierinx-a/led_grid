@@ -16,6 +16,9 @@ defmodule Legrid.Patterns.PatternBehaviour do
   - name: Human-readable name
   - description: Brief explanation of what the pattern does
   - parameters: Map of parameter names to parameter definitions
+  - visible_parameters: Optional map specifying which parameters to show in UI
+    for different variants. If not present, all parameters are shown.
+    Format: %{"variant_name" => ["param1", "param2", ...]}
 
   Each pattern should support the following global parameters:
   - "brightness": Overall brightness adjustment (0.0-1.0)
@@ -33,7 +36,8 @@ defmodule Legrid.Patterns.PatternBehaviour do
       max: number() | nil,
       options: list() | nil,
       description: String.t()
-    }}
+    }},
+    visible_parameters: %{optional(String.t()) => [String.t()]} | nil
   }
 
   @doc """

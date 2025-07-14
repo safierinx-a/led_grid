@@ -204,7 +204,7 @@ defmodule LegridWeb.GridControlLive do
               <button class="stop-btn" phx-click="stop-pattern">Stop</button>
             </div>
             <div id="parameter-controls" data-pattern-id={@current_pattern} phx-hook="ParameterControls">
-              <%= for {key, param} <- @pattern_metadata.parameters do %>
+              <%= for {key, param} <- filter_visible_parameters(@pattern_metadata, @pattern_params) do %>
                 <div class="parameter-item" data-param-key={key} data-param-type={param.type} data-param-default={param.default}>
                   <div class="param-header">
                     <label for={key}><%= key %></label>
@@ -485,6 +485,46 @@ defmodule LegridWeb.GridControlLive do
       end
     rescue
       _ -> :ok
+    end
+  end
+
+    # Filter parameters based on visible_parameters metadata and current variant
+  defp filter_visible_parameters(metadata, pattern_params) do
+    case Map.get(metadata, :visible_parameters) do
+      nil ->
+        # If no visible_parameters specified, show all parameters
+        metadata.parameters
+
+      visible_params ->
+        # Determine current variant based on pattern_params
+        variant = determine_current_variant(metadata, pattern_params)
+
+        # Get the list of visible parameters for this variant
+        visible_param_names = Map.get(visible_params, variant, [])
+
+        # Filter parameters to only show the visible ones
+        metadata.parameters
+        |> Enum.filter(fn {key, _param} -> key in visible_param_names end)
+        |> Enum.into(%{})
+    end
+  end
+
+  # Determine the current variant based on pattern parameters
+  defp determine_current_variant(metadata, pattern_params) do
+    # Look for variant-determining parameters (like curve_type, illusion_type, etc.)
+    variant_params = ["curve_type", "illusion_type", "wave_type", "display_mode"]
+
+    # Find the first variant parameter that exists in the current pattern
+    variant_param = Enum.find(variant_params, fn param ->
+      Map.has_key?(metadata.parameters, param)
+    end)
+
+    if variant_param do
+      # Get the current value of the variant parameter
+      Map.get(pattern_params, variant_param, "default")
+    else
+      # Default variant if no variant parameter found
+      "default"
     end
   end
 end

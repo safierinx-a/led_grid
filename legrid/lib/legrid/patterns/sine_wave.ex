@@ -1,8 +1,8 @@
-defmodule Legrid.Patterns.SineWave do
+defmodule Legrid.Patterns.SineField do
   @moduledoc """
-  Pattern generator for sine wave animations.
+  Pattern generator for sine field animations.
 
-  Creates colorful sine waves that move across the grid.
+  Creates colorful sine fields that move across the grid.
   """
 
   @behaviour Legrid.Patterns.PatternBehaviour
@@ -15,14 +15,10 @@ defmodule Legrid.Patterns.SineWave do
 
   @impl true
   def metadata do
-    # Get all available color schemes
-    color_schemes = PatternHelpers.color_schemes()
-    color_scheme_options = Map.keys(color_schemes)
-
     %{
-      id: "sine_wave",
-      name: "Sine Wave",
-      description: "Colorful sine waves that move across the grid",
+      id: "sine_field",
+      name: "Sine Field",
+      description: "Enhanced sine fields with gamma-corrected colors",
       parameters: %{
         # Global parameters
         "brightness" => %{
@@ -34,9 +30,10 @@ defmodule Legrid.Patterns.SineWave do
         },
         "color_scheme" => %{
           type: :enum,
-          default: "rainbow",
-          options: color_scheme_options,
-          description: "Color scheme to use"
+          default: "enhanced_rainbow",
+          options: ["enhanced_rainbow", "enhanced_fire", "enhanced_ocean", "enhanced_sunset",
+                   "enhanced_neon", "enhanced_forest", "enhanced_pastel", "enhanced_monochrome"],
+          description: "Enhanced color scheme with gamma correction"
         },
         "speed" => %{
           type: :float,
@@ -59,13 +56,6 @@ defmodule Legrid.Patterns.SineWave do
           min: 0.1,
           max: 5.0,
           description: "Number of waves across the grid"
-        },
-        "color_speed" => %{
-          type: :float,
-          default: 0.2,
-          min: 0.0,
-          max: 1.0,
-          description: "Speed of color cycling"
         }
       }
     }
@@ -83,10 +73,8 @@ defmodule Legrid.Patterns.SineWave do
       # Pattern-specific parameters
       amplitude: PatternHelpers.get_param(params, "amplitude", 0.5, :float),
       frequency: PatternHelpers.get_param(params, "frequency", 1.0, :float),
-      color_speed: PatternHelpers.get_param(params, "color_speed", 0.2, :float),
       # Animation state
-      phase: 0.0,
-      color_phase: 0.0
+      time: 0.0
     }
 
     {:ok, state}
@@ -94,21 +82,36 @@ defmodule Legrid.Patterns.SineWave do
 
   @impl true
   def render(state, elapsed_ms) do
-    # Update phases
+    # Convert elapsed time to seconds with speed factor
     delta_time = elapsed_ms / 1000.0
-    phase = state.phase + (state.speed * delta_time)
-    color_phase = state.color_phase + (state.color_speed * delta_time)
+    time = state.time + delta_time
 
-    # Generate pixels for the frame
-    pixels = generate_sine_wave(state.width, state.height,
-                               state.amplitude, state.frequency,
-                               phase, color_phase, state.color_scheme, state.brightness)
+    # Generate pixels using enhanced color schemes
+    pixels = for y <- 0..(state.height-1), x <- 0..(state.width-1) do
+      # Calculate wave value
+      wave_x = x / state.width * 2 * :math.pi * state.frequency
+      wave_y = y / state.height * 2 * :math.pi * state.frequency
+
+      # Combine waves with time animation
+      wave_value = :math.sin(wave_x + time * state.speed) * state.amplitude +
+                   :math.sin(wave_y + time * state.speed * 0.7) * state.amplitude * 0.5
+
+      # Normalize to 0-1 range
+      normalized_value = (wave_value + 1) / 2
+
+      # Apply color scheme with gamma correction
+      PatternHelpers.get_color(
+        state.color_scheme,
+        normalized_value,
+        state.brightness
+      )
+    end
 
     # Create the frame
-    frame = Frame.new("sine_wave", state.width, state.height, pixels)
+    frame = Frame.new("sine_field", state.width, state.height, pixels)
 
-    # Update state with new phases
-    new_state = %{state | phase: phase, color_phase: color_phase}
+    # Update state with new time
+    new_state = %{state | time: time}
 
     {:ok, frame, new_state}
   end
@@ -121,36 +124,11 @@ defmodule Legrid.Patterns.SineWave do
     # Apply pattern-specific parameters
     updated_state = %{updated_state |
       amplitude: PatternHelpers.get_param(params, "amplitude", state.amplitude, :float),
-      frequency: PatternHelpers.get_param(params, "frequency", state.frequency, :float),
-      color_speed: PatternHelpers.get_param(params, "color_speed", state.color_speed, :float)
+      frequency: PatternHelpers.get_param(params, "frequency", state.frequency, :float)
     }
 
     {:ok, updated_state}
   end
 
-  # Helper function to generate sine wave pattern
-  defp generate_sine_wave(width, height, amplitude, frequency, phase, color_phase, color_scheme, brightness) do
-    for y <- 0..(height - 1), x <- 0..(width - 1) do
-      # Calculate wave value at this x position
-      wave_val = amplitude * :math.sin(2 * :math.pi * frequency * (x / width) + phase)
 
-      # Map to y position
-      wave_y = trunc((height / 2) + (wave_val * height / 2))
-
-      # Distance from wave
-      dist = abs(y - wave_y)
-
-      # Calculate brightness based on distance from wave
-      pixel_brightness = if dist < 3, do: 1.0 - (dist / 3), else: 0.0
-
-      # Apply global brightness
-      pixel_brightness = pixel_brightness * brightness
-
-      # Calculate color value (normalized position for color selection)
-      color_value = PatternHelpers.rem_float(color_phase + x / width, 1.0)
-
-      # Get color based on scheme
-      PatternHelpers.get_color(color_scheme, color_value, pixel_brightness)
-    end
-  end
 end
