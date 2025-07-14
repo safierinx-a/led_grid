@@ -45,18 +45,59 @@ defmodule Legrid.Patterns.PatternHelpers do
         name: "Warm",
         description: "Warm colors (reds and yellows)",
         colors: &warm_color/2
+      },
+      # Enhanced color schemes with gamma correction
+      "enhanced_rainbow" => %{
+        name: "Enhanced Rainbow",
+        description: "Improved rainbow with better color transitions",
+        colors: &enhanced_rainbow_color/2
+      },
+      "enhanced_fire" => %{
+        name: "Enhanced Fire",
+        description: "Enhanced fire effect with better orange/red balance",
+        colors: &enhanced_fire_color/2
+      },
+      "enhanced_ocean" => %{
+        name: "Enhanced Ocean",
+        description: "Enhanced ocean with better blue/cyan balance",
+        colors: &enhanced_ocean_color/2
+      },
+      "enhanced_sunset" => %{
+        name: "Enhanced Sunset",
+        description: "Enhanced sunset with better orange/pink balance",
+        colors: &enhanced_sunset_color/2
+      },
+      "enhanced_forest" => %{
+        name: "Enhanced Forest",
+        description: "Enhanced forest with better green balance",
+        colors: &enhanced_forest_color/2
+      },
+      "enhanced_neon" => %{
+        name: "Enhanced Neon",
+        description: "Enhanced neon with better saturation",
+        colors: &enhanced_neon_color/2
+      },
+      "enhanced_pastel" => %{
+        name: "Enhanced Pastel",
+        description: "Enhanced pastel with softer colors",
+        colors: &enhanced_pastel_color/2
+      },
+      "enhanced_monochrome" => %{
+        name: "Enhanced Monochrome",
+        description: "Enhanced monochrome with better contrast",
+        colors: &enhanced_monochrome_color/2
       }
     }
   end
 
   @doc """
-  Get color based on the selected scheme.
+  Get color based on the selected scheme with gamma correction.
 
   - scheme: Name of the color scheme to use
   - value: Normalized value between 0.0 and 1.0
   - brightness: Brightness multiplier (0.0-1.0)
 
-  Returns RGB tuple {r, g, b} with values 0-255
+  Returns RGB tuple {r, g, b} with values 0-255, gamma-corrected for LED displays
   """
   def get_color(scheme, value, brightness \\ 1.0) do
     schemes = color_schemes()
@@ -69,7 +110,8 @@ defmodule Legrid.Patterns.PatternHelpers do
     # Apply the color function and adjust brightness
     {r, g, b} = color_fn.(value, brightness)
 
-    {r, g, b}
+    # Apply gamma correction for better LED display accuracy
+    gamma_correct_rgb({r, g, b})
   end
 
   @doc """
@@ -151,7 +193,91 @@ defmodule Legrid.Patterns.PatternHelpers do
     hsv_to_rgb(hue, 0.9, brightness)
   end
 
+  # Enhanced color scheme implementations
+
+  defp enhanced_rainbow_color(value, brightness) do
+    # Improved rainbow with better color transitions
+    hue = value * 360.0
+    rgb = enhanced_hsv_to_rgb(hue, 1.0, brightness)
+    rgb
+  end
+
+  defp enhanced_fire_color(value, brightness) do
+    # Enhanced fire effect with better orange/red balance
+    r = min(255, trunc(255 * brightness * (1.0 + value * 0.5)))
+    g = min(255, trunc(100 * brightness * value))
+    b = min(255, trunc(20 * brightness * value * value))
+    {r, g, b}
+  end
+
+  defp enhanced_ocean_color(value, brightness) do
+    # Enhanced ocean with better blue/cyan balance
+    r = min(255, trunc(20 * brightness * value))
+    g = min(255, trunc(150 * brightness * (0.3 + value * 0.7)))
+    b = min(255, trunc(255 * brightness * (0.5 + value * 0.5)))
+    {r, g, b}
+  end
+
+  defp enhanced_sunset_color(value, brightness) do
+    # Enhanced sunset with better orange/pink balance
+    r = min(255, trunc(255 * brightness * (0.7 + value * 0.3)))
+    g = min(255, trunc(100 * brightness * value))
+    b = min(255, trunc(50 * brightness * value * value))
+    {r, g, b}
+  end
+
+  defp enhanced_forest_color(value, brightness) do
+    # Enhanced forest with better green balance
+    r = min(255, trunc(50 * brightness * value))
+    g = min(255, trunc(200 * brightness * (0.4 + value * 0.6)))
+    b = min(255, trunc(30 * brightness * value))
+    {r, g, b}
+  end
+
+  defp enhanced_neon_color(value, brightness) do
+    # Enhanced neon with better saturation
+    hue = value * 360.0
+    rgb = enhanced_hsv_to_rgb(hue, 1.0, brightness * 1.2)
+    rgb
+  end
+
+  defp enhanced_pastel_color(value, brightness) do
+    # Enhanced pastel with softer colors
+    hue = value * 360.0
+    rgb = enhanced_hsv_to_rgb(hue, 0.6, brightness * 0.8)
+    rgb
+  end
+
+  defp enhanced_monochrome_color(value, brightness) do
+    # Enhanced monochrome with better contrast
+    intensity = trunc(255 * brightness * value)
+    {intensity, intensity, intensity}
+  end
+
   # Helper functions
+
+  # Gamma correction value for LED displays (typically 2.2-2.4)
+  @gamma 2.2
+
+  # Apply gamma correction to a color value (0.0 to 1.0)
+  defp gamma_correct(value) when is_float(value) and value >= 0.0 and value <= 1.0 do
+    :math.pow(value, 1.0 / @gamma)
+  end
+
+  defp gamma_correct(value) when is_integer(value) and value >= 0 and value <= 255 do
+    normalized = value / 255.0
+    corrected = gamma_correct(normalized)
+    trunc(corrected * 255)
+  end
+
+  # Apply gamma correction to an RGB tuple
+  defp gamma_correct_rgb({r, g, b}) do
+    {
+      gamma_correct(r),
+      gamma_correct(g),
+      gamma_correct(b)
+    }
+  end
 
   # Floating point remainder operation
   def rem_float(a, b) do
@@ -176,6 +302,28 @@ defmodule Legrid.Patterns.PatternHelpers do
     end
 
     {trunc(r * 255), trunc(g * 255), trunc(b * 255)}
+  end
+
+  # Enhanced HSV to RGB with better color accuracy
+  defp enhanced_hsv_to_rgb(h, s, v) do
+    c = v * s
+    x = c * (1 - abs(rem(trunc(h / 60), 2) - 1))
+    m = v - c
+
+    {r1, g1, b1} = cond do
+      h < 60 -> {c, x, 0}
+      h < 120 -> {x, c, 0}
+      h < 180 -> {0, c, x}
+      h < 240 -> {0, x, c}
+      h < 300 -> {x, 0, c}
+      true -> {c, 0, x}
+    end
+
+    {
+      trunc((r1 + m) * 255),
+      trunc((g1 + m) * 255),
+      trunc((b1 + m) * 255)
+    }
   end
 
   @doc """

@@ -15,106 +15,117 @@ defmodule Legrid.Patterns.Clock do
   @default_width 25
   @default_height 24
 
-  # Digital digit patterns (5x7 matrix for each digit)
+  # Digital digit patterns (6x8 matrix for better readability on 25x24 grid)
   @digits %{
     0 => [
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1]
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1]
     ],
     1 => [
-      [0, 0, 1, 0, 0],
-      [0, 1, 1, 0, 0],
-      [0, 0, 1, 0, 0],
-      [0, 0, 1, 0, 0],
-      [0, 0, 1, 0, 0],
-      [0, 0, 1, 0, 0],
-      [0, 1, 1, 1, 0]
+      [0, 0, 0, 1, 1, 0],
+      [0, 0, 1, 1, 1, 0],
+      [0, 0, 0, 1, 1, 0],
+      [0, 0, 0, 1, 1, 0],
+      [0, 0, 0, 1, 1, 0],
+      [0, 0, 0, 1, 1, 0],
+      [0, 0, 0, 1, 1, 0],
+      [0, 1, 1, 1, 1, 1]
     ],
     2 => [
-      [1, 1, 1, 1, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 0],
-      [1, 0, 0, 0, 0],
-      [1, 1, 1, 1, 1]
+      [1, 1, 1, 1, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 0, 0],
+      [1, 1, 0, 0, 0, 0],
+      [1, 1, 0, 0, 0, 0],
+      [1, 1, 1, 1, 1, 1]
     ],
     3 => [
-      [1, 1, 1, 1, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1]
+      [1, 1, 1, 1, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1]
     ],
     4 => [
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1]
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1]
     ],
     5 => [
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 0],
-      [1, 0, 0, 0, 0],
-      [1, 1, 1, 1, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1]
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 0, 0],
+      [1, 1, 0, 0, 0, 0],
+      [1, 1, 1, 1, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1]
     ],
     6 => [
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 0],
-      [1, 0, 0, 0, 0],
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1]
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 0, 0],
+      [1, 1, 0, 0, 0, 0],
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1]
     ],
     7 => [
-      [1, 1, 1, 1, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 1, 0],
-      [0, 0, 1, 0, 0],
-      [0, 1, 0, 0, 0],
-      [1, 0, 0, 0, 0]
+      [1, 1, 1, 1, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 1, 1, 0],
+      [0, 0, 1, 1, 0, 0],
+      [0, 1, 1, 0, 0, 0],
+      [1, 1, 0, 0, 0, 0],
+      [1, 0, 0, 0, 0, 0]
     ],
     8 => [
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1]
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1]
     ],
     9 => [
-      [1, 1, 1, 1, 1],
-      [1, 0, 0, 0, 1],
-      [1, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1],
-      [0, 0, 0, 0, 1],
-      [0, 0, 0, 0, 1],
-      [1, 1, 1, 1, 1]
+      [1, 1, 1, 1, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 1, 1],
+      [1, 1, 1, 1, 1, 1]
     ],
     "colon" => [
-      [0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0],
-      [0, 0, 1, 0, 0],
-      [0, 0, 0, 0, 0],
-      [0, 0, 1, 0, 0],
-      [0, 0, 0, 0, 0],
-      [0, 0, 0, 0, 0]
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 1, 1, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 1, 1, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0]
     ]
   }
 
@@ -256,9 +267,9 @@ defmodule Legrid.Patterns.Clock do
     # Check if we should show seconds
     show_seconds = state.show_seconds
 
-    # Calculate digit dimensions - 5 pixels wide, 7 tall
-    digit_width = 5
-    digit_height = 7
+    # Calculate digit dimensions - 6 pixels wide, 8 tall (updated for larger digits)
+    digit_width = 6
+    digit_height = 8
 
     # Calculate positions (centered on screen)
     if show_seconds do
@@ -266,6 +277,10 @@ defmodule Legrid.Patterns.Clock do
       total_width = digit_width * 8  # 2 digits for hour, 2 for minute, 2 for second, 2 colons
       start_x = div(width - total_width, 2)
       start_y = div(height - digit_height, 2)
+
+      # Ensure we don't go off-screen
+      start_x = max(0, start_x)
+      start_y = max(0, start_y)
 
       # Draw each digit
       canvas = draw_digit(canvas, width, div(hour, 10), start_x, start_y, time, state)
@@ -275,19 +290,23 @@ defmodule Legrid.Patterns.Clock do
       canvas = draw_digit(canvas, width, rem(minute, 10), start_x + digit_width * 4, start_y, time, state)
       canvas = draw_digit(canvas, width, "colon", start_x + digit_width * 5, start_y, time, state)
       canvas = draw_digit(canvas, width, div(second, 10), start_x + digit_width * 6, start_y, time, state)
-      canvas = draw_digit(canvas, width, rem(second, 10), start_x + digit_width * 7, start_y, time, state)
+      _canvas = draw_digit(canvas, width, rem(second, 10), start_x + digit_width * 7, start_y, time, state)
     else
       # Format: HH:MM (5 elements with one colon)
       total_width = digit_width * 5  # 2 digits for hour, 2 for minute, 1 colon
       start_x = div(width - total_width, 2)
       start_y = div(height - digit_height, 2)
 
+      # Ensure we don't go off-screen
+      start_x = max(0, start_x)
+      start_y = max(0, start_y)
+
       # Draw each digit
       canvas = draw_digit(canvas, width, div(hour, 10), start_x, start_y, time, state)
       canvas = draw_digit(canvas, width, rem(hour, 10), start_x + digit_width, start_y, time, state)
       canvas = draw_digit(canvas, width, "colon", start_x + digit_width * 2, start_y, time, state)
       canvas = draw_digit(canvas, width, div(minute, 10), start_x + digit_width * 3, start_y, time, state)
-      canvas = draw_digit(canvas, width, rem(minute, 10), start_x + digit_width * 4, start_y, time, state)
+      _canvas = draw_digit(canvas, width, rem(minute, 10), start_x + digit_width * 4, start_y, time, state)
     end
 
     canvas
@@ -330,7 +349,7 @@ defmodule Legrid.Patterns.Clock do
       second_end_y = center_y + trunc(second_length * :math.sin(second_angle))
 
       # Use a different color for second hand
-      canvas = draw_line(canvas, width, center_x, center_y, second_end_x, second_end_y, 1.0, time,
+      _canvas = draw_line(canvas, width, center_x, center_y, second_end_x, second_end_y, 1.0, time,
                          %{state | color_scheme: "mono_red"})
     end
 
@@ -371,14 +390,14 @@ defmodule Legrid.Patterns.Clock do
 
     if state.show_seconds do
       canvas = draw_binary_component(canvas, width, second_tens, 4, 0, cell_width, cell_height, time, state)
-      canvas = draw_binary_component(canvas, width, second_ones, 5, 0, cell_width, cell_height, time, state)
+      _canvas = draw_binary_component(canvas, width, second_ones, 5, 0, cell_width, cell_height, time, state)
     end
 
     canvas
   end
 
   # Word clock: Displays time as words (approximated)
-  defp render_word_clock(width, height, hour, minute, second, time, state) do
+  defp render_word_clock(width, height, hour, minute, _second, time, state) do
     # Create black canvas
     canvas = for _y <- 0..(height-1), _x <- 0..(width-1), do: {0, 0, 0}
 
@@ -391,7 +410,7 @@ defmodule Legrid.Patterns.Clock do
 
     # Determine the phrase to display
     minute_rounded = div(minute, 5) * 5
-    phrase = get_time_phrase(hour, minute_rounded)
+    _phrase = get_time_phrase(hour, minute_rounded)
 
     # Draw the text centered (very simplified, just for demonstration)
     # In a real word clock, we'd highlight specific letters in a grid
@@ -415,6 +434,27 @@ defmodule Legrid.Patterns.Clock do
     center_index = center_y * width + center_x
     List.replace_at(canvas, center_index, color)
   end
+
+  # Helper function for word clock
+  defp get_time_phrase(_hour, minute) do
+    # Simple time phrase mapping
+    cond do
+      minute == 0 -> "O'CLOCK"
+      minute == 5 -> "FIVE PAST"
+      minute == 10 -> "TEN PAST"
+      minute == 15 -> "QUARTER PAST"
+      minute == 20 -> "TWENTY PAST"
+      minute == 25 -> "TWENTY FIVE PAST"
+      minute == 30 -> "HALF PAST"
+      minute == 35 -> "TWENTY FIVE TO"
+      minute == 40 -> "TWENTY TO"
+      minute == 45 -> "QUARTER TO"
+      minute == 50 -> "TEN TO"
+      minute == 55 -> "FIVE TO"
+      true -> "TIME"
+    end
+  end
+
 
   # Helper functions for drawing
 
@@ -445,7 +485,7 @@ defmodule Legrid.Patterns.Clock do
             color_value = (time * 0.05) + (x + y) * 0.01
             color_value = PatternHelpers.rem_float(color_value, 1.0)
 
-            # Get color
+            # Get color with gamma correction
             color = PatternHelpers.get_color(state.color_scheme, color_value, brightness)
 
             # Update canvas
@@ -509,7 +549,7 @@ defmodule Legrid.Patterns.Clock do
       # Set the end point
       if x >= 0 && x < width && y >= 0 && y < length(canvas) / width do
         index = y * width + x
-        color_value = PatternHelpers.rem_float(time * 0.1, 1.0)
+        color_value = PatternHelpers.rem_float(time * 0.0, 1.0)
         color = PatternHelpers.get_color(state.color_scheme, color_value, brightness)
         List.replace_at(canvas, index, color)
       else
@@ -522,7 +562,7 @@ defmodule Legrid.Patterns.Clock do
         # Vary color slightly along the line
         progress = PatternHelpers.rem_float(((x - x1) * (x - x1) + (y - y1) * (y - y1)) * 0.01, 1.0)
         color_value = PatternHelpers.rem_float(time * 0.1 + progress, 1.0)
-        color = PatternHelpers.get_color(state.color_scheme, color_value, brightness)
+        color = Legrid.Patterns.EnhancedColors.get_enhanced_color(state.color_scheme, color_value, brightness)
         List.replace_at(canvas, index, color)
       else
         canvas
@@ -610,14 +650,5 @@ defmodule Legrid.Patterns.Clock do
     end
   end
 
-  # Get a phrase that represents the current time
-  defp get_time_phrase(hour, minute) do
-    # Very simple mapping
-    cond do
-      minute == 0 -> "#{hour} o'clock"
-      minute == 30 -> "half past #{hour}"
-      minute < 30 -> "#{minute} past #{hour}"
-      true -> "#{60 - minute} to #{hour + 1}"
-    end
-  end
+
 end

@@ -55,7 +55,7 @@
           Pattern Parameters
         </h3>
         <form phx-submit="start-pattern">
-          <%= for {key, param} <- @pattern_metadata.parameters do %>
+          <%= for {key, param} <- filter_visible_parameters(@pattern_metadata, @pattern_params) do %>
             <div class="param-control">
               <label for={key}><%= key %></label>
               <p class="param-description"><%= param.description %></p>

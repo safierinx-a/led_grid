@@ -18,7 +18,7 @@ defmodule Legrid.Patterns.FlowField do
   @field_types %{
     "perlin" => "Perlin noise based flow",
     "circular" => "Circular/vortex flow",
-    "sine_wave" => "Sine wave based flow",
+    "sine_field" => "Sine field based flow",
     "attractor" => "Strange attractor inspired flow"
   }
 
@@ -308,8 +308,8 @@ defmodule Legrid.Patterns.FlowField do
         {-center_y / dist * field_strength * rotation_factor,
          center_x / dist * field_strength * rotation_factor}
 
-      "sine_wave" ->
-        # Sine wave based flow
+      "sine_field" ->
+        # Sine field based flow
         wave_x = :math.sin(y * field_scale + time_factor)
         wave_y = :math.cos(x * field_scale + time_factor * 0.7)
 

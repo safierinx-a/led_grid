@@ -12,7 +12,17 @@ config :legrid,
   # Frame batch configuration
   batch_size: 120,                 # Max frames per batch
   batch_max_delay: 500,            # Max delay in ms before sending a partial batch
-  batch_min_frames: 5              # Min frames before sending a partial batch
+  batch_min_frames: 5,             # Min frames before sending a partial batch
+  # Same-machine mode configuration
+  same_machine_mode: true,         # Enable same-machine mode (no WebSocket)
+  local_controller: [
+    enabled: true,                  # Enable local controller
+    led_pin: 18,                   # GPIO pin for LED data
+    led_count: 600,                # Number of LEDs (25x24)
+    width: 25,                     # Grid width
+    height: 24,                    # Grid height
+    controller_type: "python"      # "python" or "rust"
+  ]
 
 # Configures the endpoint
 config :legrid, LegridWeb.Endpoint,

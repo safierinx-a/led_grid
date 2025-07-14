@@ -65,12 +65,12 @@ defmodule LegridWeb.ControllerChannel do
 
     # Start a default pattern if one is not already running
     try do
-      # Try to start a simple pattern - we'll use the sine wave pattern
+      # Try to start a simple pattern - we'll use the sine field pattern
       # If it's not already running
       case Legrid.Patterns.Runner.current_pattern() do
         {:error, _} ->
           # No pattern is running, start one
-          pattern_id = "sine_wave"  # Default pattern
+          pattern_id = "sine_field"  # Default pattern
           Logger.info("Starting default pattern (#{pattern_id}) for controller #{controller_id}")
           Legrid.Patterns.Runner.start_pattern(pattern_id)
         {:ok, _} ->

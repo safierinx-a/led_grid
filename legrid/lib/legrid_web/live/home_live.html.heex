@@ -178,7 +178,7 @@
           </div>
           <div class="parameters-container">
             <div id="parameter-controls" phx-update="ignore" data-pattern-id={@current_pattern}>
-              <%= for {key, param} <- @pattern_metadata.parameters do %>
+              <%= for {key, param} <- filter_visible_parameters(@pattern_metadata, @pattern_params) do %>
                 <div class="parameter-row" data-param-key={key} data-param-type={param.type} data-param-default={param.default}>
                   <div class="parameter-header">
                     <label for={key}><%= key %></label>
