@@ -12,7 +12,8 @@ import Config
 
 # Configure Legrid application settings
 config :legrid,
-  controller_url: "ws://100.124.195.32:8080",
+  # controller_url is not used in same-machine mode
+  # controller_url: "ws://100.124.195.32:8080",
   grid_width: 25,
   grid_height: 24
 

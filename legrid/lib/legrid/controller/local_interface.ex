@@ -75,7 +75,16 @@ defmodule Legrid.Controller.LocalInterface do
 
     Logger.info("Local Controller Interface started")
 
-    {:ok, state}
+    # Start the local controller automatically
+    case start_local_controller_process(state) do
+      {:ok, pid} ->
+        Logger.info("Local LED controller started automatically with PID: #{inspect(pid)}")
+        {:ok, %{state | connected: true, local_controller_pid: pid}}
+
+      {:error, reason} ->
+        Logger.error("Failed to start local LED controller automatically: #{inspect(reason)}")
+        {:ok, state}
+    end
   end
 
   @impl true
@@ -153,6 +162,12 @@ defmodule Legrid.Controller.LocalInterface do
   def handle_info({:controller_stats, stats}, state) do
     Logger.debug("Received stats from local controller: #{inspect(stats)}")
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({port, {:exit_status, status}}, state) when is_port(port) do
+    Logger.warning("Local controller process exited with status: #{status}")
+    {:noreply, %{state | connected: false, local_controller_pid: nil}}
   end
 
   # Private functions
