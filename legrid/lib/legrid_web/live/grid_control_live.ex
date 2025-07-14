@@ -16,20 +16,32 @@ defmodule LegridWeb.GridControlLive do
       PubSub.subscribe(Legrid.PubSub, "controller_stats")
       PubSub.subscribe(Legrid.PubSub, "pattern_updates")
 
-      # Initialize monitoring
-      try do
-        Interface.activate_monitor()
-      rescue
-        _ -> :ok
+      # Initialize monitoring (only in networked mode)
+      same_machine_mode = Application.get_env(:legrid, :same_machine_mode, false)
+      if !same_machine_mode do
+        try do
+          Interface.activate_monitor()
+        rescue
+          _ -> :ok
+        end
       end
     end
 
     # Get available patterns
     patterns = Registry.list_patterns()
 
-    # Get controller status
+    # Get controller status - handle both local and networked modes
     controller_status = try do
-      Interface.status()
+      # Check if we're in local mode
+      same_machine_mode = Application.get_env(:legrid, :same_machine_mode, false)
+
+      if same_machine_mode do
+        # Local mode - controller is always connected
+        %{connected: true, url: "local", width: @grid_width, height: @grid_height}
+      else
+        # Networked mode - check Interface status
+        Interface.status()
+      end
     rescue
       _ -> %{connected: false, url: nil, width: @grid_width, height: @grid_height}
     end
@@ -381,20 +393,23 @@ defmodule LegridWeb.GridControlLive do
   def handle_event("toggle-stats", _, socket) do
     show_stats = !socket.assigns.show_stats
 
-    # Activate/deactivate detailed monitoring
-    if show_stats do
-      try do
-        Interface.activate_monitor()
-        # Request stats immediately
-        request_stats()
-      rescue
-        _ -> :ok
-      end
-    else
-      try do
-        Interface.deactivate_monitor()
-      rescue
-        _ -> :ok
+    # Activate/deactivate detailed monitoring (only in networked mode)
+    same_machine_mode = Application.get_env(:legrid, :same_machine_mode, false)
+    if !same_machine_mode do
+      if show_stats do
+        try do
+          Interface.activate_monitor()
+          # Request stats immediately
+          request_stats()
+        rescue
+          _ -> :ok
+        end
+      else
+        try do
+          Interface.deactivate_monitor()
+        rescue
+          _ -> :ok
+        end
       end
     end
 
@@ -477,14 +492,18 @@ defmodule LegridWeb.GridControlLive do
   end
 
   defp request_stats do
-    try do
-      if connected_status = Interface.status() do
-        if connected_status.connected && function_exported?(Interface, :request_stats, 0) do
-          Interface.request_stats()
+    # Only request stats in networked mode
+    same_machine_mode = Application.get_env(:legrid, :same_machine_mode, false)
+    if !same_machine_mode do
+      try do
+        if connected_status = Interface.status() do
+          if connected_status.connected && function_exported?(Interface, :request_stats, 0) do
+            Interface.request_stats()
+          end
         end
+      rescue
+        _ -> :ok
       end
-    rescue
-      _ -> :ok
     end
   end
 
