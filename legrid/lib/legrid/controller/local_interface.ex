@@ -186,7 +186,7 @@ defmodule Legrid.Controller.LocalInterface do
     python_script = Path.join([:code.priv_dir(:legrid), "scripts", "local_controller.py"])
 
     if File.exists?(python_script) do
-      port = Port.open({:spawn, "python3 #{python_script} --width #{state.width} --height #{state.height} --led-pin #{state.led_pin}"}, [
+      port = Port.open({:spawn, "sudo python3 #{python_script} --width #{state.width} --height #{state.height} --led-pin #{state.led_pin}"}, [
         {:packet, 4},
         :binary,
         :exit_status
