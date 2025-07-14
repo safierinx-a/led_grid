@@ -131,8 +131,14 @@ defmodule Legrid.Controller.LocalInterface do
   @impl true
   def handle_cast({:send_frame, frame}, state) do
     if state.connected and state.local_controller_pid do
-      # Send frame directly to local controller
-      send(state.local_controller_pid, {:frame, frame})
+      # Send frame data through port to local controller
+      frame_data = %{
+        width: state.width,
+        height: state.height,
+        pixels: frame.pixels
+      }
+
+      Port.command(state.local_controller_pid, :erlang.term_to_binary(frame_data))
 
       # Update statistics
       current_time = System.monotonic_time(:millisecond)
