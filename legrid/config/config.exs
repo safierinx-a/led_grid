@@ -14,7 +14,7 @@ config :legrid,
   batch_max_delay: 500,            # Max delay in ms before sending a partial batch
   batch_min_frames: 5,             # Min frames before sending a partial batch
   # Same-machine mode configuration
-  same_machine_mode: true,         # Enable same-machine mode (no WebSocket)
+  same_machine_mode: false,         # Enable same-machine mode (no WebSocket)
   local_controller: [
     enabled: true,                  # Enable local controller
     led_pin: 18,                   # GPIO pin for LED data
